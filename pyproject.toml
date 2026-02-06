@@ -1,0 +1,44 @@
+[project]
+name = "vae-latent-risk-factor"
+version = "0.1.0"
+description = "VAE-based latent risk factor discovery for portfolio construction"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "cvxpy>=1.4",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "statsmodels>=0.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pyright",
+    "pylint",
+    "flake8",
+]
+mosek = [
+    "mosek",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
+[tool.pylint.messages_control]
+disable = ["C0114", "C0115", "C0116"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
