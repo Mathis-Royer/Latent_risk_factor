@@ -1219,18 +1219,18 @@ model, info = build_vae(n=1000, T=504, T_annee=30, F=2, K=200, s_train=21)
 
 ```python
 """
-build_vae.py — Construction du VAE pour la découverte de facteurs de risque latents.
+build_vae.py — VAE construction for latent risk factor discovery.
 
-L'architecture est entièrement déterminée par 5 paramètres variables :
-    n        : nombre d'actions dans l'univers
-    T        : longueur de la fenêtre d'entrée (jours de trading)
-    T_annee  : profondeur historique en années (converti en T_hist = T_annee × 252)
-    F        : features par pas de temps (1 = rendement seul, 5 = OHLCV)
-    K        : dimension de l'espace latent (nombre de facteurs)
+The architecture is entirely determined by 5 variable parameters:
+    n        : number of stocks in the universe
+    T        : input window length (trading days)
+    T_annee  : historical depth in years (converted to T_hist = T_annee × 252)
+    F        : features per time step (1 = return only, 5 = OHLCV)
+    K        : latent space dimension (number of factors)
 
-Tous les autres hyperparamètres sont fixés à des valeurs justifiées par la
-littérature (cf. Section 4.3 du document). La fonction vérifie la contrainte
-capacité-données P_total / N ≤ r_max avant d'instancier le modèle.
+All other hyperparameters are fixed at literature-justified values
+(see Section 4.3). The function verifies the capacity-data constraint
+P_total / N ≤ r_max before instantiating the model.
 """
 
 import math
@@ -1240,43 +1240,43 @@ import torch.nn.functional as F_torch
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Hyperparamètres fixes
+# Fixed hyperparameters
 # ═══════════════════════════════════════════════════════════════════════════════
 
-K_HEAD      = (5, 21, 63)    # Kernels Inception (≈ semaine / mois / trimestre)
-C_BRANCH    = 48             # Filtres par branche (InceptionTime default)
+K_HEAD      = (5, 21, 63)    # Inception kernels (≈ week / month / quarter)
+C_BRANCH    = 48             # Filters per branch (InceptionTime default)
 C_HEAD      = len(K_HEAD) * C_BRANCH  # = 144
-K_BODY      = 7              # Kernel corps résiduel (He et al., 2016)
-STRIDE      = 2              # Sous-échantillonnage par bloc
-ALPHA_PROJ  = 1.3            # Ratio de compression
-C_MIN       = 384            # Largeur minimale dernière couche
+K_BODY      = 7              # Residual body kernel (He et al., 2016)
+STRIDE      = 2              # Per-block downsampling
+ALPHA_PROJ  = 1.3            # Compression ratio
+C_MIN       = 384            # Minimum final layer width
 DROPOUT     = 0.1            # Dropout (Srivastava et al., 2014)
-BETA        = 1.0            # Poids KL (Kingma & Welling, 2014)
-WEIGHT_DECAY = 1e-5          # Régularisation L2
+BETA        = 1.0            # KL weight (Kingma & Welling, 2014)
+WEIGHT_DECAY = 1e-5          # L2 regularization
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Règles de dimensionnement
+# Sizing rules
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _round_to(x: float, base: int = 16) -> int:
-    """Arrondi au multiple de base le plus proche, plancher = base."""
+    """Round to nearest multiple of base, floor = base."""
     return max(base, int(round(x / base)) * base)
 
 
 def compute_depth(T: int) -> int:
-    """Règle 1 — L(T) = max(3, ⌈log₂(T / k_max)⌉ + 2)."""
+    """Rule 1 — L(T) = max(3, ⌈log₂(T / k_max)⌉ + 2)."""
     k_max = max(K_HEAD)
     return max(3, math.ceil(math.log2(T / k_max)) + 2)
 
 
 def compute_final_width(K: int) -> int:
-    """Règle 2 — C_L(K) = round₁₆(max(C_min, ⌈α × 2K⌉))."""
+    """Rule 2 — C_L(K) = round₁₆(max(C_min, ⌈α × 2K⌉))."""
     return _round_to(max(C_MIN, math.ceil(ALPHA_PROJ * 2 * K)))
 
 
 def compute_channel_progression(L: int, C_L: int) -> list[int]:
-    """Règle 3 — Interpolation géométrique C_head → C_L."""
+    """Rule 3 — Geometric interpolation C_head → C_L."""
     channels = [C_HEAD]
     for l in range(1, L + 1):
         c = C_HEAD * (C_L / C_HEAD) ** (l / L)
@@ -1285,7 +1285,7 @@ def compute_channel_progression(L: int, C_L: int) -> list[int]:
 
 
 def compute_temporal_sizes(T: int, L: int) -> list[int]:
-    """Taille temporelle après chaque bloc stride-2."""
+    """Temporal size after each stride-2 block."""
     sizes = [T]
     t = T
     for _ in range(L):
@@ -1295,22 +1295,22 @@ def compute_temporal_sizes(T: int, L: int) -> list[int]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Comptage analytique des paramètres
+# Analytical parameter counting
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def count_encoder_params(F: int, K: int, channels: list[int]) -> int:
     p = 0
-    # Tête Inception
+    # Inception head
     for k in K_HEAD:
         p += F * C_BRANCH * k + C_BRANCH + 2 * C_BRANCH
-    # Corps résiduel
+    # Residual body
     L = len(channels) - 1
     for l in range(1, L + 1):
         c_in, c_out = channels[l - 1], channels[l]
         p += c_in * c_out * K_BODY + c_out + 2 * c_out   # Conv1 + BN
         p += c_out * c_out * K_BODY + c_out + 2 * c_out   # Conv2 + BN
         p += c_in * c_out + c_out + 2 * c_out              # Skip 1×1 + BN
-    # Projection (μ et log σ²)
+    # Projection (μ and log σ²)
     p += channels[-1] * K + K    # μ
     p += channels[-1] * K + K    # log σ²
     return p
@@ -1320,9 +1320,9 @@ def count_decoder_params(F: int, K: int, channels: list[int],
                          T_compressed: int) -> int:
     p = 0
     C_L = channels[-1]
-    # Projection initiale
+    # Initial projection
     p += K * (C_L * T_compressed) + (C_L * T_compressed)
-    # Corps transposé (canaux inversés)
+    # Transposed body (reversed channels)
     L = len(channels) - 1
     for l in range(L):
         c_in = channels[L - l]
@@ -1330,13 +1330,13 @@ def count_decoder_params(F: int, K: int, channels: list[int],
         p += c_in * c_out * K_BODY + c_out + 2 * c_out   # ConvT + BN
         p += c_out * c_out * K_BODY + c_out + 2 * c_out   # Conv + BN
         p += c_in * c_out + c_out + 2 * c_out              # Skip + BN
-    # Tête de sortie
+    # Output head
     p += C_HEAD * F + F
     return p
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Modules PyTorch
+# PyTorch modules
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class InceptionHead(nn.Module):
@@ -1505,40 +1505,40 @@ class LatentRiskVAE(nn.Module):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Fonction principale
+# Main function
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_vae(n: int, T: int, T_annee: int, F: int, K: int,
               s_train: int = 1, r_max: float = 5.0,
               beta: float = BETA, learn_obs_var: bool = True) -> tuple[LatentRiskVAE, dict]:
     """
-    Construit le VAE à partir des 5 paramètres variables.
+    Build the VAE from 5 variable parameters.
 
-    1. Conversion T_annee → T_hist = T_annee × 252
-    2. Calcul N = n × (T_hist − T + 1)          (capacité, toujours à s=1)
-    3. Calcul N_train = n × ⌊(T_hist − T)/s⌋ + n (taille réelle du dataset)
-    4. Dimensionnement : L(T), C_L(K), canaux
-    5. Comptage P_total = P_enc + P_dec
-    6. Vérification P_total / N ≤ r_max
-    7. Instanciation du modèle
+    1. Convert T_annee → T_hist = T_annee × 252
+    2. Compute N = n × (T_hist − T + 1)          (capacity, always at s=1)
+    3. Compute N_train = n × ⌊(T_hist − T)/s⌋ + n (actual dataset size)
+    4. Sizing: L(T), C_L(K), channels
+    5. Count P_total = P_enc + P_dec
+    6. Verify P_total / N ≤ r_max
+    7. Instantiate the model
 
-    Modes d'équilibrage recon/KL (Section 4.4) :
-    - Mode P (défaut) : learn_obs_var=True,  beta=1.0 → σ² appris
-    - Mode F (fallback): learn_obs_var=False, beta<1.0 → KL annealing (β_t externe), D/2 conservé
-    - Mode A (avancé) :  learn_obs_var=True,  beta>1.0 → β-VAE + σ² appris
+    Recon/KL balancing modes (Section 4.4):
+    - Mode P (default):  learn_obs_var=True,  beta=1.0 → σ² learned
+    - Mode F (fallback): learn_obs_var=False, beta<1.0 → KL annealing (external β_t), D/2 retained
+    - Mode A (advanced):  learn_obs_var=True,  beta>1.0 → β-VAE + σ² learned
 
-    Le ratio r utilise toujours N(s=1) : le stride sous-échantillonne des
-    fenêtres redondantes (T-1 jours partagés) sans réduire le contenu
-    informationnel. La protection contre l'overfitting vient du KL, dropout,
-    weight decay, early stopping et walk-forward OOS.
+    The ratio r always uses N(s=1): stride subsamples redundant windows
+    (T-1 shared days) without reducing informational content. Overfitting
+    protection comes from KL, dropout, weight decay, early stopping
+    and walk-forward OOS.
 
-    Raises ValueError si la contrainte est violée.
+    Raises ValueError if the constraint is violated.
     """
     T_hist = T_annee * 252
     N = n * (T_hist - T + 1)                          # capacity (s=1)
     N_train = n * ((T_hist - T) // s_train + 1)       # actual training set
     if N <= 0:
-        raise ValueError(f"N = {N} ≤ 0 : T_hist doit être > T.")
+        raise ValueError(f"N = {N} <= 0: T_hist must be > T.")
 
     L = compute_depth(T)
     C_L = compute_final_width(K)
@@ -1553,9 +1553,9 @@ def build_vae(n: int, T: int, T_annee: int, F: int, K: int,
     r = P_total / N
     if r > r_max:
         raise ValueError(
-            f"Contrainte violée : r = {P_total:,}/{N:,} = {r:.2f} > {r_max}\n"
-            f"  Canaux : {' → '.join(map(str, channels))}\n"
-            f"  Leviers : ↑n, ↑T_annee, ↓K, ou ↑r_max.")
+            f"Constraint violated: r = {P_total:,}/{N:,} = {r:.2f} > {r_max}\n"
+            f"  Channels: {' → '.join(map(str, channels))}\n"
+            f"  Levers: ↑n, ↑T_annee, ↓K, or ↑r_max.")
 
     encoder = Encoder(F, K, channels)
     decoder = Decoder(F, K, channels, T_compressed, T)
@@ -1669,6 +1669,6 @@ def build_vae(n: int, T: int, T_annee: int, F: int, K: int,
 
 ## TODO
 
-- [x] Expliquer d'abord l'architecture globale (encodeur-décodeur) avant de parler spécifiquement de l'encodeur — le lecteur doit comprendre dans quel cadre l'encodeur s'inscrit avant d'en voir les détails
-- [x] Lister tous les éléments non encore définis clairement dans le document
-- [x] Demander un esprit critique et objectif sur la stratégie et les affirmations faites en vérifiant leur véracité par la littérature scientifique
+- [x] Explain the global architecture (encoder-decoder) before discussing the encoder specifically — the reader must understand the framework before seeing details
+- [x] List all elements not yet clearly defined in the document
+- [x] Apply critical and objective analysis to the strategy and its claims by verifying against the scientific literature
