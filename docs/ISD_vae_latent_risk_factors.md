@@ -17,7 +17,7 @@ Implement an end-to-end portfolio construction pipeline based on latent risk fac
 ### Pipeline Architecture
 
 ```
-[CRSP Data] → [data_pipeline] → windows (N×T×F) + crisis_labels
+[Stock Data (synthetic / EODHD)] → [data_pipeline] → windows (N×T×F) + crisis_labels
                                         ↓
                                [vae_architecture] → VAEModel
                                         ↓
@@ -314,7 +314,7 @@ latent_risk_factors/
 │   ├── config.py               # Centralized configuration (dataclasses)
 │   ├── data_pipeline/
 │   │   ├── __init__.py
-│   │   ├── data_loader.py      # CRSP / alternative data loading
+│   │   ├── data_loader.py      # Stock data loading (synthetic / EODHD)
 │   │   ├── returns.py          # Log-return calculation
 │   │   ├── universe.py         # Point-in-time universe construction
 │   │   ├── windowing.py        # Sliding window + z-scoring
@@ -500,6 +500,731 @@ def verify_portfolio_output(w, n_stocks, w_min=0.001, w_max=0.05):
 
 ---
 
+## ISD Sections — Phase 1 (parallel: infrastructure)
+
+---
+
+### MOD-001 — data_pipeline
+
+**Phase:** 1 | **Mode:** teammate | **Dependencies:** — | **Density:** medium
+**Files:** `src/data_pipeline/*.py`, `tests/unit/test_data_pipeline.py`
+
+#### Objective
+
+Implement end-to-end financial data preparation: stock data loading (synthetic for development, EODHD for production) with survivorship-bias-free handling, log-return computation, point-in-time universe construction, sliding window creation with per-window z-scoring, crisis labeling via VIX threshold, and trailing realized volatility computation. This module feeds every downstream component — errors here silently corrupt the entire pipeline.
+
+#### Outputs
+
+| Name | Type | Shape | Description |
+|------|------|-------|-------------|
+| `windows` | `torch.Tensor` | `(N, T, F)` | Z-scored sliding windows (T=504, F=2) |
+| `window_metadata` | `pd.DataFrame` | `(N, 3)` | stock_id, start_date, end_date per window |
+| `crisis_fractions` | `torch.Tensor` | `(N,)` | $f_c^{(w)} \in [0, 1]$ per window |
+| `returns_df` | `pd.DataFrame` | `(n_dates, n_stocks)` | Raw log-returns (for co-movement loss and risk model) |
+| `trailing_vol` | `pd.DataFrame` | `(n_dates, n_stocks)` | 252-day trailing annualized vol |
+| `universe_snapshots` | `dict` | `date → list[str]` | Point-in-time universe at each date |
+
+#### Sub-task 1: Data loading (data_loader.py)
+
+**Development strategy — two phases:**
+
+1. **Phase A (development):** Use **synthetic CSV data** to validate the entire pipeline
+   end-to-end without requiring any external data subscription. A helper function
+   generates a CSV file with the exact same schema, allowing all downstream code
+   to be tested for correctness, shapes, and invariants.
+2. **Phase B (production):** Once the pipeline is bug-free on synthetic data, switch to
+   **EODHD** (End-Of-Day Historical Data) as the real data source. EODHD provides
+   26,000+ US equities including delisted stocks, with history from ~2000 onward.
+   Subscription: "All-In-One" plan (~100 EUR/month). API or bulk CSV download.
+
+**Backtest period adjustment:** With EODHD data starting ~2000, the backtest period
+becomes **2000–2025** (25 years) instead of 1993–2023 (30 years). Impact:
+- Walk-forward folds: ~21 (vs ~34), still statistically sufficient
+- AU_max_stat ≈ 77 (vs 85), adequate capacity check
+- All pipeline logic, fold scheduling, and metrics remain identical
+
+---
+
+**Data schema — Core columns (required for F=2 baseline):**
+
+The baseline model uses F=2 features per time step: **log-returns** and **21-day rolling
+realized volatility** (DVT Section 4.2). The following columns are always required:
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| `permno` | int | Unique stock identifier | `10001` |
+| `date` | str (YYYY-MM-DD) | Trading date | `2005-03-15` |
+| `adj_price` | float | Split- and dividend-adjusted closing price (> 0) | `42.57` |
+| `exchange_code` | int | 1 = NYSE, 2 = AMEX, 3 = NASDAQ | `1` |
+| `share_code` | int | Share type code (10/11 = common equity) | `11` |
+| `market_cap` | float | Float-adjusted market cap in USD | `2.5e9` |
+| `delisting_return` | float or NaN | Return on delisting day (NaN if unknown) | `-0.30` |
+
+Notes:
+- `exchange_code` is used by the Shumway (1997) delisting return imputation:
+  -30% for NYSE/AMEX (codes 1, 2), -55% for NASDAQ (code 3). No `delisting_code`
+  column is needed — the strategy never uses it.
+- `adj_price` is the sole input for computing log-returns (CONV-01) and
+  21-day rolling realized volatility (DVT Section 4.2).
+- `market_cap` is used for universe construction (top-n ranking).
+
+**Data schema — Extended columns (required for F > 2 iterations):**
+
+When extending the model beyond F=2 (DVT Section 6.5, Iteration 4), additional
+features per time step are introduced. These columns become required:
+
+| Column | Type | Description | Feature derived |
+|--------|------|-------------|-----------------|
+| `volume` | int | Daily trading volume in shares | Z-scored trading volume |
+| `high` | float | Intraday high price | Intraday range (high - low) / close |
+| `low` | float | Intraday low price | Intraday range (high - low) / close |
+| `sector` | str | Sector classification (GICS or SIC) | Sector-relative return deviation |
+
+Additional derived feature (no extra column needed):
+- **Realized skewness**: computed from the existing `adj_price` column
+  (rolling window of raw returns).
+
+The encoder Inception head and decoder output layer adjust automatically for F > 2
+(~0.1% parameter change); all downstream pipeline components are unchanged.
+
+---
+
+**EODHD column mapping (Phase B):**
+
+| EODHD field | Internal column | Notes |
+|-------------|-----------------|-------|
+| `Code` / `Ticker` | `permno` | Map to integer ID via lookup table |
+| `Date` | `date` | Already YYYY-MM-DD |
+| `Adjusted_close` | `adj_price` | Split+dividend adjusted |
+| `Volume` | `volume` | Extended only (F > 2) |
+| `High` | `high` | Extended only (F > 2) |
+| `Low` | `low` | Extended only (F > 2) |
+| `Exchange` | `exchange_code` | Map: NYSE→1, AMEX→2, NASDAQ→3 |
+| — | `share_code` | Filter common equity via security type metadata |
+| — | `market_cap` | Compute from Adjusted_close × shares outstanding (fundamentals API) |
+| — | `delisting_return` | Compute from last available price vs prior close; impute Shumway if missing |
+
+---
+
+**Synthetic data generator** (in `data_loader.py` or called from `tests/fixtures/synthetic_data.py`):
+
+```python
+def generate_synthetic_csv(
+    output_path: str,
+    n_stocks: int = 200,
+    start_date: str = "2000-01-03",
+    end_date: str = "2025-12-31",
+    n_delistings: int = 20,
+    seed: int = 42,
+    include_extended: bool = False,
+) -> str:
+    """
+    Generate a synthetic stock data CSV file with realistic properties.
+
+    Price dynamics: geometric Brownian motion per stock.
+      P_{t+1} = P_t × exp(μ_i + σ_i × ε_t),  ε ~ N(0,1)
+      μ_i ~ U(0.0001, 0.0005) (daily drift),
+      σ_i ~ U(0.005, 0.03)    (daily vol, annualized ~8%-48%)
+      P_0,i ~ U(10, 200)
+
+    Core columns (always generated):
+      permno, date, adj_price, exchange_code, share_code, market_cap,
+      delisting_return.
+
+    Extended columns (if include_extended=True):
+      volume, high, low, sector.
+
+    Market cap: P × shares_outstanding, shares ~ U(10M, 500M).
+    Exchange codes: random assignment (1/2/3) with realistic proportions
+      (60% NYSE, 10% AMEX, 30% NASDAQ).
+    Share codes: all 10 or 11 (common equity).
+    Sectors: random assignment from 11 GICS sectors.
+
+    Delistings: n_delistings stocks are delisted at random dates
+      in the second half of history. Delisting return = NaN for ~50%,
+      imputed value for the rest.
+
+    Missing data: ~2% of stock-days have NaN adj_price (random gaps).
+
+    Returns: path to the generated CSV file.
+    """
+```
+
+**Loader functions:**
+
+```python
+def load_stock_data(
+    data_path: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """
+    Load daily stock data from CSV or Parquet file.
+    Accepts both synthetic data (Phase A) and EODHD data (Phase B) — same schema.
+
+    Must include delisted stocks with full pre-delisting history.
+
+    Returns: DataFrame with core columns [permno, date, adj_price,
+             exchange_code, share_code, market_cap, delisting_return].
+             Extended columns [volume, high, low, sector] present if available.
+    Sorted by (permno, date). date is pd.Timestamp.
+    """
+```
+
+#### Sub-task 2: Log-return computation (returns.py)
+
+```python
+def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    r_{i,t} = ln(P^adj_{i,t} / P^adj_{i,t-1})
+
+    CONV-01: Log returns, NEVER arithmetic.
+
+    Missing value handling:
+    - Isolated gaps ≤ 5 consecutive days: forward-fill price (= 0 return)
+    - Gaps > 5 consecutive days: NaN (excluded from windowing)
+
+    Delisting returns:
+    - If no return available at delisting: impute -30% (NYSE/AMEX)
+      or -55% (Nasdaq) per Shumway (1997) convention.
+
+    Returns: DataFrame (n_dates, n_stocks) of log-returns
+    """
+```
+
+#### Sub-task 3: Point-in-time universe construction (universe.py)
+
+```python
+def construct_universe(
+    stock_data: pd.DataFrame,
+    date: pd.Timestamp,
+    n_max: int = 1000,
+    cap_entry: float = 500e6,
+    cap_exit: float = 400e6,
+    adv_min: float = 2e6,
+    min_listing_days: int = 504,
+) -> list[str]:
+    """
+    Reconstruct the universe as it existed at each historical date.
+    CONV-10: Point-in-time, no future data.
+
+    Eligibility criteria:
+    1. Float-adjusted market cap ≥ cap_entry (entry) / cap_exit (exit buffer)
+    2. ADV ≥ adv_min over trailing 3 months (filter, not ranking)
+    3. Continuous listing ≥ min_listing_days (= T = 504)
+    4. Common equities only (exclude ETFs, ADRs, REITs, preferred, warrants, SPACs)
+    5. NYSE + NASDAQ + AMEX
+
+    If more than n_max stocks qualify: top n_max by float-adjusted market cap.
+
+    Training universe for a fold = union of all U_t' for t' in training period
+    (includes since-delisted stocks).
+    """
+
+def handle_delisting(
+    universe: list[str],
+    w: np.ndarray,
+    returns_oos: pd.DataFrame,
+    H_last: float,
+    alpha_trigger: float = 0.90,
+) -> tuple[np.ndarray, bool]:
+    """
+    Between reconstitutions:
+    - Delisted positions: liquidated at last available price (or imputed return).
+      Freed capital held as cash.
+    - Exceptional rebalancing triggered if:
+      H(w_post_delisting) < alpha_trigger × H(w_last_rebalancing)
+    """
+```
+
+#### Sub-task 4: Sliding windows + z-scoring (windowing.py)
+
+```python
+def create_windows(
+    returns_df: pd.DataFrame,
+    vol_df: pd.DataFrame,
+    stock_ids: list[str],
+    T: int = 504,
+    stride: int = 1,
+    sigma_min: float = 1e-8,
+    max_zero_frac: float = 0.20,
+) -> tuple[torch.Tensor, pd.DataFrame]:
+    """
+    For each stock i and window ending at date t:
+    1. Extract raw returns r_{i, t-T+1:t} and vol v_{i, t-T+1:t}
+    2. Exclude window if > max_zero_frac of days have zero return (suspension)
+    3. Z-score returns PER WINDOW: r̃ = (r - μ_r) / max(σ_r, σ_min)
+    4. Z-score volatility PER WINDOW: ṽ = (v - μ_v) / max(σ_v, σ_min)
+    5. Stack → tensor (T, F=2): [r̃, ṽ]
+
+    CONV-02: Z-score per-window, per-feature.
+    CONV-05: Window shape (batch, T, F) — time is dim 1, features dim 2.
+
+    Returns: (windows tensor (N, T, F), metadata DataFrame)
+    """
+```
+
+#### Sub-task 5: Crisis labeling (crisis.py)
+
+```python
+def compute_crisis_labels(
+    vix_data: pd.Series,
+    window_metadata: pd.DataFrame,
+    training_end_date: pd.Timestamp,
+    percentile: float = 80.0,
+) -> torch.Tensor:
+    """
+    VIX threshold computed on EXPANDING window of training period only.
+    CONV-10 / INV-005: No look-ahead.
+
+    τ_VIX = Percentile_80(VIX_{t0:t_train})  [recalculated once per fold]
+
+    Pre-1990: use VXO (1986-1990) or realized vol proxy
+    (annualized 21-day rolling std of S&P 500 returns,
+    percentile-matched to VIX over common history).
+
+    For each window w:
+      f_c(w) = fraction of days where VIX > τ_VIX
+
+    Returns: crisis_fractions tensor (N,) with values in [0, 1]
+    """
+```
+
+#### Sub-task 6: Trailing realized volatility (features.py)
+
+```python
+def compute_trailing_volatility(
+    returns_df: pd.DataFrame,
+    window: int = 252,
+) -> pd.DataFrame:
+    """
+    σ_{i,t} = annualized std of r_{i, t-251:t} (trailing 252 days).
+
+    Warm-up: the first 252 days of each stock have NaN vol.
+    The 21-day rolling vol for the VAE input requires an extra
+    21 days of history BEFORE the encoder window start.
+
+    Returns: DataFrame (n_dates, n_stocks) of trailing annualized vol.
+    """
+
+def compute_rolling_realized_vol(
+    returns_df: pd.DataFrame,
+    rolling_window: int = 21,
+) -> pd.DataFrame:
+    """
+    v_{i,τ} = std(r_{i, τ-20:τ}) — 21-day rolling std (not annualized).
+    Used as the second input feature (F=2) for the VAE.
+
+    Warm-up requirement: needs 21 pre-window returns.
+
+    Returns: DataFrame (n_dates, n_stocks) of 21-day rolling vol.
+    """
+```
+
+#### Applicable Invariants
+
+- **CONV-01:** Log returns `r_t = ln(P^adj_t / P^adj_{t-1})`, never arithmetic.
+- **CONV-02:** Z-score per-window, per-feature (mean 0, std 1).
+- **CONV-05:** Window shape `(batch, T, F)`.
+- **CONV-10:** Point-in-time universe reconstruction.
+- **INV-005:** No look-ahead. VIX threshold on expanding training window only.
+
+#### Known Pitfalls
+
+- **DO NOT** use arithmetic returns — log returns are required for additivity and correct z-scoring behavior.
+- **DO NOT** compute z-score on expanding or full-history window — per-window only (DVT Section 4.2).
+- **DO NOT** use future data for VIX threshold — expanding window up to `training_end_date` only.
+- **DO NOT** forget the sigma_min clamp (1e-8) — near-zero volatility windows produce NaN after division.
+- **DO NOT** include delisted stocks without their pre-delisting history — this introduces survivorship bias.
+- **DO NOT** forget the 21-day warm-up for realized volatility — the rolling vol at the start of a window must be based on pre-window returns.
+- **DO NOT** forget the Shumway delisting return imputation (-30% NYSE/AMEX, -55% Nasdaq).
+
+#### Required Tests
+
+1. `test_log_returns_vs_arithmetic`: verify `ln(P_t/P_{t-1})` not `(P_t - P_{t-1})/P_{t-1}`
+2. `test_zscore_per_window`: mean ≈ 0, std ≈ 1 per feature per window (tolerance 1e-5, 1e-3)
+3. `test_window_shape`: output shape `(N, T, F)` with T=504, F=2
+4. `test_sigma_min_clamp`: window with near-zero std does not produce NaN
+5. `test_zero_return_exclusion`: window with >20% zero returns is excluded
+6. `test_missing_value_handling`: forward-fill ≤5 days, NaN >5 days
+7. `test_universe_point_in_time`: stock not in universe before listing, removed after delisting
+8. `test_universe_cap_filter`: stocks below cap_entry excluded, above cap_exit retained
+9. `test_vix_threshold_no_lookahead`: threshold uses only data up to training_end_date
+10. `test_crisis_fraction_range`: all f_c values in [0, 1]
+11. `test_trailing_vol_warmup`: first 252 days are NaN
+12. `test_delisting_return_imputed`: delisting without data gets -30% or -55%
+
+---
+
+### MOD-002 — vae_architecture
+
+**Phase:** 1 | **Mode:** teammate | **Dependencies:** MOD-001 (I: window shapes) | **Density:** high
+**Files:** `src/vae/build_vae.py`, `src/vae/encoder.py`, `src/vae/decoder.py`, `src/vae/model.py`, `tests/unit/test_vae_architecture.py`
+
+#### Objective
+
+Implement the complete VAE architecture: InceptionHead + residual body encoder, transposed residual decoder, VAEModel wrapper (forward, encode, reparameterize), and the `build_vae()` factory function that derives the entire architecture from 5 variable parameters $(n, T, T_{\text{année}}, F, K)$ with capacity-data constraint verification.
+
+#### Sub-task 1: Sizing rules (build_vae.py)
+
+```python
+def compute_depth(T: int) -> int:
+    """Rule 1 — L(T) = max(3, ceil(log2(T / k_max)) + 2), k_max = 63."""
+
+def compute_final_width(K: int) -> int:
+    """Rule 2 — C_L(K) = round_16(max(C_min=384, ceil(1.3 × 2K)))."""
+
+def compute_channel_progression(L: int, C_L: int) -> list[int]:
+    """Rule 3 — Geometric interpolation C_head(=144) → C_L, rounded to multiples of 16."""
+
+def compute_temporal_sizes(T: int, L: int) -> list[int]:
+    """Temporal dimension after each stride-2 block: t → (t-1)//2 + 1."""
+```
+
+**Fixed hyperparameters (all from DVT Section 4.3):**
+
+| Symbol | Value | Component |
+|--------|-------|-----------|
+| `K_HEAD` | (5, 21, 63) | Inception head kernels |
+| `C_BRANCH` | 48 | Filters per Inception branch → C_HEAD = 144 |
+| `K_BODY` | 7 | Residual body kernel |
+| `STRIDE` | 2 | Per-block downsampling |
+| `ALPHA_PROJ` | 1.3 | Projection ratio |
+| `C_MIN` | 384 | Minimum final layer width |
+| `DROPOUT` | 0.1 | Dropout rate |
+| Activation | GELU | All layers |
+| Normalization | BatchNorm1d | After every conv |
+
+#### Sub-task 2: Encoder (encoder.py)
+
+```python
+class InceptionHead(nn.Module):
+    """
+    Three parallel Conv1d branches with kernels (5, 21, 63),
+    each producing C_BRANCH=48 channels → concatenated to C_HEAD=144.
+    Each branch: Conv1d + BatchNorm1d + GELU.
+    Padding: k // 2 (same-length output).
+    """
+
+class ResBlock(nn.Module):
+    """
+    Two convolutions (k=7) with BatchNorm + GELU, skip connection (1×1 conv).
+    First conv: stride=2 (downsamples temporal dimension).
+    Second conv: stride=1.
+    Skip: 1×1 conv with stride=2 (always active since stride changes dimensions).
+    Dropout(0.1) after activation.
+    """
+
+class Encoder(nn.Module):
+    """
+    InceptionHead(F) → L × ResBlock(c_in, c_out) → AdaptiveAvgPool1d(1)
+      → Linear(C_L, K) [mu] + Linear(C_L, K) [log_var]
+
+    Input: (B, F, T) — channels-first for Conv1d.
+    Output: mu (B, K), log_var (B, K).
+
+    NOTE: Input arrives as (B, T, F) from data_pipeline (CONV-05).
+    Transpose to (B, F, T) before Conv1d in model.forward().
+    """
+```
+
+#### Sub-task 3: Decoder (decoder.py)
+
+```python
+class TransposeResBlock(nn.Module):
+    """
+    ConvTranspose1d (stride=2, output_padding=1) + Conv1d (stride=1).
+    Skip: ConvTranspose1d (1×1, stride=2, output_padding=1).
+    Each with BatchNorm + GELU + Dropout.
+    Doubles temporal dimension at each block.
+    """
+
+class Decoder(nn.Module):
+    """
+    Linear(K, C_L × T_comp) → reshape (B, C_L, T_comp)
+      → L × TransposeResBlock (reversed channel progression)
+      → trim/pad to target T → Conv1d(C_HEAD, F, kernel_size=1)
+
+    T_comp = encoder's last temporal size (e.g. 16 for T=504, L=5).
+
+    Temporal mismatch: decoder produces 16→32→64→128→256→512
+    vs encoder 504→252→126→63→32→16. Final trim/pad to exact T.
+
+    Output: (B, F, T) — channels-first.
+    """
+```
+
+#### Sub-task 4: VAEModel (model.py)
+
+```python
+class VAEModel(nn.Module):
+    """
+    Attributes:
+      encoder: Encoder
+      decoder: Decoder
+      K: int — latent dimension
+      log_sigma_sq: nn.Parameter — scalar (INV-002), init 0.0 (σ²=1.0)
+      learn_obs_var: bool — True for Mode P/A, False for Mode F
+
+    Key properties:
+      obs_var: σ² = clamp(exp(log_sigma_sq), 1e-4, 10)
+
+    Methods:
+      forward(x) → (x_hat, mu, log_var)
+        x: (B, T, F) → transpose to (B, F, T) for encoder
+        z = mu + exp(0.5 * log_var) * ε, ε ~ N(0,1)  [reparameterization]
+        x_hat: (B, F, T) → transpose to (B, T, F) for output
+
+      encode(x) → mu
+        Deterministic. For inference only. model.eval() + no_grad().
+        Returns mu (B, K) — no sampling, no reparameterization.
+    """
+```
+
+**CRITICAL:** `encode()` returns mu directly (deterministic). `forward()` uses reparameterization (stochastic, for training). MOD-006 inference MUST use `encode()`.
+
+#### Sub-task 5: Factory function (build_vae.py)
+
+```python
+def build_vae(
+    n: int, T: int, T_annee: int, F: int, K: int,
+    s_train: int = 1, r_max: float = 5.0,
+    beta: float = 1.0, learn_obs_var: bool = True,
+) -> tuple[VAEModel, dict]:
+    """
+    1. T_hist = T_annee × 252
+    2. N = n × (T_hist − T + 1)         [capacity, always at s=1]
+    3. N_train = n × floor((T_hist − T) / s_train) + n
+    4. L = compute_depth(T)
+    5. C_L = compute_final_width(K)
+    6. channels = compute_channel_progression(L, C_L)
+    7. P_total = P_enc + P_dec (analytical count)
+    8. r = P_total / N
+    9. Raise ValueError if r > r_max
+    10. Instantiate Encoder, Decoder, VAEModel
+
+    Mode selection via (learn_obs_var, beta):
+      Mode P: learn_obs_var=True,  beta=1.0
+      Mode F: learn_obs_var=False, beta=<1.0 (external β_t)
+      Mode A: learn_obs_var=True,  beta=>1.0
+
+    Returns: (model, info_dict)
+    info_dict keys: L, channels, temporal_sizes, C_L, T_compressed,
+                    P_enc, P_dec, P_total, N, N_train, s_train, r, r_max, T_hist
+    """
+```
+
+#### Sub-task 6: Analytical parameter counting
+
+```python
+def count_encoder_params(F: int, K: int, channels: list[int]) -> int:
+    """
+    Inception head: Σ_branch (F × C_BRANCH × k + C_BRANCH + 2×C_BRANCH)
+    Residual body: Σ_block (c_in×c_out×K_BODY + c_out + 2×c_out) × 2 convs
+                   + (c_in×c_out + c_out + 2×c_out) skip
+    Projection: C_L×K + K (mu) + C_L×K + K (log_var)
+    """
+
+def count_decoder_params(F: int, K: int, channels: list[int], T_compressed: int) -> int:
+    """
+    Initial projection: K × (C_L × T_comp) + (C_L × T_comp)
+    Transposed body: same block structure, reversed channels
+    Output head: C_HEAD × F + F
+    """
+```
+
+#### Applicable Invariants
+
+- **INV-002:** `log_sigma_sq` is scalar (`ndim == 0` or `numel() == 1`). Clamped to `[1e-4, 10]`.
+- **CONV-05:** Input `(B, T, F)` transposed to `(B, F, T)` for Conv1d, transposed back for output.
+- **CONV-06:** σ² is a single scalar for the entire model.
+
+#### Known Pitfalls
+
+- **DO NOT** forget to transpose `(B, T, F) → (B, F, T)` before Conv1d and back after decoder — PyTorch Conv1d expects channels-first.
+- **DO NOT** make `log_sigma_sq` a vector (per-feature or per-dimension) — it must be a scalar (INV-002).
+- **DO NOT** use `forward()` for inference — use `encode()` which returns mu deterministically without reparameterization noise.
+- **DO NOT** forget `output_padding=1` in TransposeResBlock — without it, stride-2 transposed convolution does not double the temporal dimension correctly.
+- **DO NOT** forget the final trim/pad in the decoder to ensure output length matches T exactly.
+- **DO NOT** set `r_max` lower than the computed ratio without checking the feasibility table (DVT Section 4.3).
+
+#### Required Tests
+
+1. `test_sizing_rule_depth`: L=5 for T=504, L=4 for T=252, L=6 for T=756
+2. `test_sizing_rule_width`: C_L=384 for K≤147, C_L=round_16(1.3×2K) for K>147
+3. `test_channel_progression_monotonic`: channels strictly increasing
+4. `test_capacity_constraint`: ValueError raised when r > r_max
+5. `test_capacity_constraint_table`: known (K, T) combinations match DVT table
+6. `test_encoder_output_shape`: mu and log_var both (B, K)
+7. `test_decoder_output_shape`: x_hat same shape as input (B, T, F)
+8. `test_forward_roundtrip_shape`: forward(x) returns (x_hat, mu, log_var) with correct shapes
+9. `test_encode_deterministic`: two encode() calls on same input produce identical mu
+10. `test_forward_stochastic`: two forward() calls produce different x_hat (reparameterization)
+11. `test_log_sigma_sq_scalar`: `model.log_sigma_sq.ndim == 0`
+12. `test_log_sigma_sq_clamped`: obs_var in [1e-4, 10] after extreme gradient steps
+13. `test_param_count_analytical_vs_pytorch`: `count_encoder_params()` matches `sum(p.numel() for p in encoder.parameters())`
+14. `test_transpose_convention`: input (B, T, F) → encoder sees (B, F, T) → output (B, T, F)
+15. `test_build_vae_modes`: Mode P (learn=True, β=1), Mode F (learn=False, β<1), Mode A (learn=True, β>1)
+
+---
+
+### MOD-003 — test_infrastructure
+
+**Phase:** 1 | **Mode:** teammate | **Dependencies:** — | **Density:** low
+**Files:** `tests/fixtures/synthetic_data.py`, `tests/fixtures/known_solutions.py`, `tests/__init__.py`
+
+#### Objective
+
+Provide deterministic synthetic data generators and known analytical solutions that all unit and integration tests rely on. Every test in the project should be reproducible with fixed seeds and independent of external data.
+
+#### Sub-task 1: Synthetic data generator (synthetic_data.py)
+
+```python
+def generate_synthetic_returns(
+    n_stocks: int = 50,
+    n_days: int = 2520,       # 10 years
+    n_factors: int = 5,
+    noise_std: float = 0.02,
+    seed: int = 42,
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """
+    Generate returns from a known factor model:
+      r_{i,t} = B_true[i, :] @ z_true[t, :] + ε_{i,t}
+
+    Where:
+    - B_true (n_stocks, n_factors): fixed loadings from N(0, 1)
+    - z_true (n_days, n_factors): factor returns from N(0, 0.01)
+    - ε (n_days, n_stocks): idiosyncratic noise ~ N(0, noise_std)
+
+    Returns: (returns_df, B_true, z_true) — for verification of
+    factor regression recovery (z_hat ≈ z_true).
+
+    Deterministic: np.random.seed(seed) at start.
+    """
+
+def generate_synthetic_windows(
+    n_windows: int = 1000,
+    T: int = 504,
+    F: int = 2,
+    K_true: int = 10,
+    seed: int = 42,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate pre-z-scored windows with known latent structure.
+    CONV-02: each window has mean ≈ 0, std ≈ 1 per feature.
+
+    Returns: (windows (N, T, F), true_latents (N, K_true))
+    """
+
+def generate_crisis_labels(
+    n_windows: int = 1000,
+    crisis_fraction: float = 0.20,
+    seed: int = 42,
+) -> torch.Tensor:
+    """
+    Generate realistic crisis fractions:
+    - ~80% of windows with f_c ≈ 0 (calm)
+    - ~20% of windows with f_c ∈ [0.5, 1.0] (crisis)
+    - Bimodal distribution (VIX is autocorrelated)
+
+    Returns: crisis_fractions (N,) in [0, 1]
+    """
+
+def generate_synthetic_universe(
+    n_stocks: int = 50,
+    n_days: int = 2520,
+    n_delistings: int = 5,
+    seed: int = 42,
+) -> dict:
+    """
+    Generate point-in-time universe with delistings.
+
+    Returns: dict with prices, market_caps, volumes, exchange_codes,
+             delisting_dates, universe_snapshots
+    """
+```
+
+#### Sub-task 2: Known analytical solutions (known_solutions.py)
+
+```python
+def diagonal_covariance_solution() -> dict:
+    """
+    Σ = diag(σ²_1, ..., σ²_n), B = I (identity).
+    Known minimum-variance: w_i ∝ 1/σ²_i.
+    Known ERC: w_i ∝ 1/σ_i.
+    Known entropy at ERC: H = ln(n) (maximum, all contributions equal).
+    """
+
+def two_factor_solution() -> dict:
+    """
+    n=4 stocks, 2 factors, known B and Σ_z.
+    Analytical portfolio that maximizes entropy.
+    Useful for verifying the SCA solver converges to the right solution.
+    """
+
+def entropy_gradient_verification() -> dict:
+    """
+    At maximum entropy (ĉ'_k = 1/AU ∀k):
+    - H = ln(AU)
+    - ∇H = 0 (gradient vanishes)
+    Provides w, B_prime, eigenvalues for this test case.
+    """
+
+def factor_regression_identity() -> dict:
+    """
+    B = I (identity), r = z (no noise).
+    z_hat = (B^T B)^{-1} B^T r = r → z_hat ≈ z.
+    """
+
+def rescaling_verification() -> dict:
+    """
+    Known σ_{i,t}, σ_bar_t → expected B_A_estimation and B_A_portfolio
+    with winsorization at [P5, P95].
+    """
+```
+
+#### Sub-task 3: Test configuration and helpers
+
+```python
+# Shared constants for all tests
+TEST_SEED = 42
+TEST_N_STOCKS = 50
+TEST_N_DAYS = 2520  # 10 years
+TEST_T = 504
+TEST_F = 2
+TEST_K = 20        # small K for fast tests
+TEST_BATCH_SIZE = 32
+
+def set_deterministic(seed: int = TEST_SEED):
+    """
+    Set all random seeds for reproducibility:
+    np.random.seed, torch.manual_seed, torch.cuda.manual_seed_all,
+    torch.backends.cudnn.deterministic = True
+    """
+```
+
+#### Applicable Invariants
+
+- All synthetic data must be deterministic (fixed seeds).
+- Known solutions must be analytically verified (not just numerically computed).
+- Test fixtures must be independent of external data (CRSP, VIX files).
+
+#### Known Pitfalls
+
+- **DO NOT** use random data without a fixed seed — tests become non-reproducible.
+- **DO NOT** generate synthetic windows that are NOT z-scored — downstream code expects CONV-02.
+- **DO NOT** make known solutions depend on floating point precision beyond 1e-10 — use tolerance in assertions.
+- **DO NOT** generate factor models with collinear factors — the regression tests become ill-conditioned.
+
+#### Required Tests
+
+1. `test_synthetic_returns_deterministic`: same seed → identical output
+2. `test_synthetic_returns_shape`: correct shapes (n_days, n_stocks) and (n_stocks, n_factors)
+3. `test_synthetic_windows_zscore`: mean ≈ 0, std ≈ 1 per feature per window
+4. `test_diagonal_solution_analytical`: min-var weights match 1/σ²_i (normalized)
+5. `test_entropy_at_maximum`: H = ln(AU) when all contributions equal
+
+---
 
 ---
 
@@ -1646,7 +2371,7 @@ via VAE (1D CNN encoder-decoder). Objective: maximize factor diversification
 (Shannon entropy on principal factor risk contributions).
 
 ## Architecture
-CRSP data → data_pipeline → VAE training → inference → risk_model → portfolio_optimization
+Stock data (synthetic / EODHD) → data_pipeline → VAE training → inference → risk_model → portfolio_optimization
                                                                          ↓
                                                                   walk_forward (34 folds)
                                                                          ↓
