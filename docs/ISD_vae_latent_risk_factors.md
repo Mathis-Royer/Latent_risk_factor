@@ -1,20 +1,20 @@
 # ISD — VAE Latent Risk Factor Discovery Strategy
 
-## Implementation Specification Document — Instanciation opérationnelle
+## Implementation Specification Document — Operational Instantiation
 
-**Source DVT :** `strategie_facteurs_risque_latents_v4_1.md` (v4.1)
-**Source benchmarks :** `Latent_risk_factor_benchmark.md`
-**Méthodologie :** ISD Methodology v1.0
+**DVT Source:** `strategie_facteurs_risque_latents_v4_1.md` (v4.1)
+**Benchmark Source:** `Latent_risk_factor_benchmark.md`
+**Methodology:** ISD Methodology v1.0
 
 ---
 
-## 00 — Contexte global et conventions
+## 00 — Global Context and Conventions
 
-### Objectif du projet
+### Project Objective
 
-Implémenter un pipeline end-to-end de construction de portefeuille basé sur la découverte de facteurs de risque latents par un Variational Autoencoder (VAE). Le pipeline comprend : préparation des données financières, entraînement d'un VAE 1D-CNN, inférence des profils de risque composites, estimation d'un modèle de risque factoriel, optimisation de portefeuille par entropie factorielle, et validation par walk-forward sur 30 ans d'historique. Six benchmarks servent de référence.
+Implement an end-to-end portfolio construction pipeline based on latent risk factor discovery using a Variational Autoencoder (VAE). The pipeline includes: financial data preparation, 1D-CNN VAE training, composite risk profile inference, factor risk model estimation, portfolio optimization via factor entropy, and walk-forward validation over 30 years of history. Six benchmarks serve as reference.
 
-### Architecture du pipeline
+### Pipeline Architecture
 
 ```
 [CRSP Data] → [data_pipeline] → windows (N×T×F) + crisis_labels
@@ -38,71 +38,71 @@ Implémenter un pipeline end-to-end de construction de portefeuille basé sur la
                         [integration] → final report, statistical tests
 ```
 
-### Conventions critiques — NE PAS VIOLER
+### Critical Conventions — DO NOT VIOLATE
 
-| ID | Convention | Modules concernés |
+| ID | Convention | Affected Modules |
 |----|-----------|-------------------|
-| CONV-01 | **Rendements en log** : $r_t = \ln(P_t^{\text{adj}} / P_{t-1}^{\text{adj}})$, jamais arithmétiques | Tous |
-| CONV-02 | **Z-score per-window** : chaque fenêtre (T, F) est normalisée indépendamment (moyenne 0, std 1 par feature) | data_pipeline, loss_function, inference |
-| CONV-03 | **Indices 0-based** partout (Python standard) | Tous |
-| CONV-04 | **Tenseurs PyTorch** pour le VAE ; **NumPy/arrays** pour le pipeline downstream (risk_model, optimization) | Tous |
-| CONV-05 | **Shape des fenêtres** : (batch, T, F) — le temps est la dimension 1, les features la dimension 2 | data_pipeline, vae_architecture, loss_function, training |
-| CONV-06 | **σ² est scalaire** (une seule valeur pour tout le modèle), pas vectoriel par feature ou par dimension | loss_function, training, vae_architecture |
-| CONV-07 | **AU** = nombre de dimensions actives = |{k : KL_k > 0.01 nats}|, déterminé une fois par retraining | inference, risk_model, portfolio_optimization |
-| CONV-08 | **Rescaling duale** : date-specific pour l'estimation historique, current-date pour la construction de portefeuille | risk_model, portfolio_optimization |
-| CONV-09 | **Expanding window** pour le training (tout l'historique), pas rolling | walk_forward, training |
-| CONV-10 | **Point-in-time** : aucune donnée future dans aucun calcul ; univers reconstitué à chaque date | data_pipeline, walk_forward |
+| CONV-01 | **Log returns**: $r_t = \ln(P_t^{\text{adj}} / P_{t-1}^{\text{adj}})$, never arithmetic | All |
+| CONV-02 | **Z-score per-window**: each window (T, F) is normalized independently (mean 0, std 1 per feature) | data_pipeline, loss_function, inference |
+| CONV-03 | **0-based indices** everywhere (Python standard) | All |
+| CONV-04 | **PyTorch tensors** for the VAE; **NumPy/arrays** for the downstream pipeline (risk_model, optimization) | All |
+| CONV-05 | **Window shape**: (batch, T, F) — time is dimension 1, features are dimension 2 | data_pipeline, vae_architecture, loss_function, training |
+| CONV-06 | **σ² is scalar** (a single value for the entire model), not per-feature or per-dimension vector | loss_function, training, vae_architecture |
+| CONV-07 | **AU** = number of active dimensions = |{k : KL_k > 0.01 nats}|, determined once per retraining | inference, risk_model, portfolio_optimization |
+| CONV-08 | **Dual rescaling**: date-specific for historical estimation, current-date for portfolio construction | risk_model, portfolio_optimization |
+| CONV-09 | **Expanding window** for training (all history), not rolling | walk_forward, training |
+| CONV-10 | **Point-in-time**: no future data in any computation; universe reconstituted at each date | data_pipeline, walk_forward |
 
-### Invariants critiques
+### Critical Invariants
 
 ```yaml
 invariants:
   - id: INV-001
     category: mathematical
-    description: "Le facteur D = T × F DOIT apparaître dans le numérateur de la reconstruction loss.
-                  La loss reconstruction est D/(2σ²) · L_recon, PAS 1/(2σ²) · L_recon."
+    description: "The factor D = T × F MUST appear in the numerator of the reconstruction loss.
+                  The reconstruction loss is D/(2σ²) · L_recon, NOT 1/(2σ²) · L_recon."
     modules: [loss_function, training, monitoring]
-    violation: "Posterior collapse — toutes les dimensions convergent vers le prior,
-               AU → 0, le modèle est inutile"
-    detection: "AU < 5 après entraînement complet ; σ² → borne inférieure (1e-4)"
+    violation: "Posterior collapse — all dimensions converge to the prior,
+               AU → 0, the model is useless"
+    detection: "AU < 5 after full training; σ² → lower bound (1e-4)"
     test: "assert loss_recon_coefficient == (T * F) / (2 * sigma_sq)"
 
   - id: INV-002
     category: mathematical
-    description: "σ² est un scalaire appris (pas un vecteur). Un seul paramètre log_sigma_sq,
-                  avec σ² = exp(log_sigma_sq), clampé à [1e-4, 10]."
+    description: "σ² is a learned scalar (not a vector). A single parameter log_sigma_sq,
+                  with σ² = exp(log_sigma_sq), clamped to [1e-4, 10]."
     modules: [vae_architecture, loss_function]
-    violation: "Si σ² vectoriel (per-feature ou per-dimension), le balancement auto-régulé
-               recon/KL est rompu — chaque dimension a son propre trade-off"
+    violation: "If σ² is vectorial (per-feature or per-dimension), the self-regulated
+               recon/KL balancing is broken — each dimension has its own trade-off"
     test: "assert log_sigma_sq.ndim == 0 or log_sigma_sq.numel() == 1"
 
   - id: INV-003
     category: inter_module
-    description: "La matrice B après filtrage a la shape (n, AU) avec AU ≤ AU_max_stat.
-                  AU_max_stat = floor(sqrt(2 * N_obs / r_min)) avec r_min = 2, N_obs = T_hist_jours."
+    description: "The matrix B after filtering has shape (n, AU) with AU ≤ AU_max_stat.
+                  AU_max_stat = floor(sqrt(2 * N_obs / r_min)) with r_min = 2, N_obs = T_hist_days."
     modules: [inference, risk_model]
-    violation: "Σ_z sous-estimée (rapport observations/paramètres < 1), optimisation instable"
+    violation: "Σ_z underestimated (observations/parameters ratio < 1), unstable optimization"
     test: |
       assert B_A.shape == (n_stocks, AU)
       assert AU <= AU_max_stat
 
   - id: INV-004
     category: convention
-    description: "Rescaling duale : B_A_estimation[i,t] = (σ_i,t / σ_bar_t) · μ_A_i ;
+    description: "Dual rescaling: B_A_estimation[i,t] = (σ_i,t / σ_bar_t) · μ_A_i;
                   B_A_portfolio[i] = (σ_i,now / σ_bar_now) · μ_A_i.
-                  NE PAS utiliser la même rescaling pour les deux."
+                  DO NOT use the same rescaling for both."
     modules: [risk_model, portfolio_optimization]
-    violation: "Utiliser current-date vol pour l'estimation historique attribue incorrectement
-               le risque systématique aux résidus, gonflant D_ε"
-    test: "Vérifier que z_hat_t utilise B_A_t (date-specific) et que Σ_assets utilise B_A_port (current)"
+    violation: "Using current-date vol for historical estimation incorrectly attributes
+               systematic risk to residuals, inflating D_ε"
+    test: "Verify that z_hat_t uses B_A_t (date-specific) and that Σ_assets uses B_A_port (current)"
 
   - id: INV-005
     category: safety
-    description: "Aucun look-ahead. Les données de test ne sont jamais vues pendant l'entraînement.
-                  L'embargo de 21 jours sépare training et OOS. Le VIX threshold est calculé
-                  sur expanding window du training set uniquement."
+    description: "No look-ahead. Test data is never seen during training.
+                  The 21-day embargo separates training and OOS. The VIX threshold is computed
+                  on expanding window of the training set only."
     modules: [data_pipeline, walk_forward, training]
-    violation: "Backtest invalide — résultats artificiellement optimistes"
+    violation: "Invalid backtest — artificially optimistic results"
     test: |
       assert all(train_dates < embargo_start)
       assert all(test_dates > embargo_end)
@@ -110,110 +110,110 @@ invariants:
 
   - id: INV-006
     category: mathematical
-    description: "Les trois modes de loss (P/F/A) sont MUTUELLEMENT EXCLUSIFS.
-                  Mode P : σ² appris, β=1 fixe.
-                  Mode F : σ²=1 gelé, β_t annealing, D/2 scaling retenu.
-                  Mode A : σ² appris, β>1 fixe.
-                  NE PAS combiner σ² appris avec β annealing."
+    description: "The three loss modes (P/F/A) are MUTUALLY EXCLUSIVE.
+                  Mode P: σ² learned, β=1 fixed.
+                  Mode F: σ²=1 frozen, β_t annealing, D/2 scaling retained.
+                  Mode A: σ² learned, β>1 fixed.
+                  DO NOT combine learned σ² with β annealing."
     modules: [loss_function, training]
-    violation: "Interaction imprévisible σ²/β — le modèle compense le double KL pressure"
+    violation: "Unpredictable σ²/β interaction — the model compensates for double KL pressure"
     test: "assert not (sigma_sq_learned and beta_annealing_enabled)"
 
   - id: INV-007
     category: mathematical
-    description: "L'entropie H(w) est calculée dans la base des FACTEURS PRINCIPAUX de Σ_z
-                  (après rotation V de l'eigendecomposition Σ_z = VΛV^T), PAS dans la base
-                  latente brute. Les contributions c'_k = (β'_p,k)² · λ_k sont toujours ≥ 0."
+    description: "The entropy H(w) is computed in the PRINCIPAL FACTOR basis of Σ_z
+                  (after V rotation from the eigendecomposition Σ_z = VΛV^T), NOT in the
+                  raw latent basis. The contributions c'_k = (β'_p,k)² · λ_k are always ≥ 0."
     modules: [portfolio_optimization, risk_model]
-    violation: "Contributions négatives → entropie indéfinie → solver diverge"
+    violation: "Negative contributions → undefined entropy → solver diverges"
     test: |
       assert all(c_prime_k >= 0)
       assert all(eigenvalues >= 0)
 
   - id: INV-008
     category: inter_module
-    description: "Le ratio σ_i,t / σ_bar_t est WINSORISÉ cross-sectionnellement à chaque date
-                  aux percentiles [P5, P95] AVANT rescaling. Le même ratio winsorisé est utilisé
-                  pour B_A_estimation ET B_A_portfolio."
+    description: "The ratio σ_i,t / σ_bar_t is WINSORIZED cross-sectionally at each date
+                  at percentiles [P5, P95] BEFORE rescaling. The same winsorized ratio is used
+                  for both B_A_estimation AND B_A_portfolio."
     modules: [risk_model]
-    violation: "Un stock à R=15 reçoit 225× le poids de régression, le bruit idiosyncratique
-               contamine Σ_z"
+    violation: "A stock with R=15 receives 225× the regression weight, idiosyncratic noise
+               contaminates Σ_z"
     test: "assert all(ratio >= percentile_5) and all(ratio <= percentile_95)"
 
   - id: INV-009
     category: mathematical
-    description: "Le gradient de H par rapport à w est :
-                  ∇_w H = -(2/C) · B' · φ, avec φ_k = λ_k · β'_k · (ln(ĉ'_k) + H)
-                  où B' = B_A_port_rotated, C = Σ_k λ_k (β'_k)²"
+    description: "The gradient of H with respect to w is:
+                  ∇_w H = -(2/C) · B' · φ, with φ_k = λ_k · β'_k · (ln(ĉ'_k) + H)
+                  where B' = B_A_port_rotated, C = Σ_k λ_k (β'_k)²"
     modules: [portfolio_optimization]
-    violation: "Convergence SCA incorrecte, solution sous-optimale"
-    test: "Vérifier que ∇H = 0 quand ĉ'_k = 1/AU pour tout k (maximum entropy)"
+    violation: "Incorrect SCA convergence, suboptimal solution"
+    test: "Verify that ∇H = 0 when ĉ'_k = 1/AU for all k (maximum entropy)"
 
   - id: INV-010
     category: inter_module
-    description: "Le curriculum co-movement a 3 phases : Phase 1 (λ_co = λ_co_max, ~30% epochs),
-                  Phase 2 (décroissance linéaire → 0, ~30%), Phase 3 (λ_co = 0, ~40%).
-                  Le batching change entre phases : synchrone+stratifié (Ph 1-2), random (Ph 3)."
+    description: "The co-movement curriculum has 3 phases: Phase 1 (λ_co = λ_co_max, ~30% epochs),
+                  Phase 2 (linear decay → 0, ~30%), Phase 3 (λ_co = 0, ~40%).
+                  Batching changes between phases: synchronous+stratified (Ph 1-2), random (Ph 3)."
     modules: [loss_function, training]
-    violation: "Batching synchrone en Phase 3 = gradient variance inutilement élevée ;
-               batching random en Phase 1 = co-movement loss non-calculable"
+    violation: "Synchronous batching in Phase 3 = unnecessarily high gradient variance;
+               random batching in Phase 1 = co-movement loss not computable"
 
   - id: INV-011
     category: mathematical
-    description: "La validation ELBO exclut γ (crisis weighting) et λ_co (co-movement loss).
-                  Elle inclut σ². Formule : L_val = D/(2σ²)·L_recon^(γ=1) + (D/2)·ln(σ²) + L_KL"
+    description: "The validation ELBO excludes γ (crisis weighting) and λ_co (co-movement loss).
+                  It includes σ². Formula: L_val = D/(2σ²)·L_recon^(γ=1) + (D/2)·ln(σ²) + L_KL"
     modules: [training]
-    violation: "Selection bias vers les folds riches en crises si γ est inclus dans la validation"
+    violation: "Selection bias toward crisis-rich folds if γ is included in validation"
 
   - id: INV-012
     category: convention
-    description: "Les contraintes de portefeuille sont identiques entre le VAE et tous les benchmarks :
-                  long-only, fully invested, w_max=5%, w_min=0.10% ou 0, P_conc, P_turn, τ_max=30%"
+    description: "Portfolio constraints are identical between the VAE and all benchmarks:
+                  long-only, fully invested, w_max=5%, w_min=0.10% or 0, P_conc, P_turn, τ_max=30%"
     modules: [portfolio_optimization, benchmarks]
-    violation: "Comparaison invalide — les différences reflètent les contraintes, pas le modèle"
+    violation: "Invalid comparison — differences reflect constraints, not the model"
 ```
 
-### Glossaire des symboles
+### Symbol Glossary
 
-| Symbole | Définition | Valeur par défaut |
+| Symbol | Definition | Default Value |
 |---------|-----------|-------------------|
-| $n$ | Nombre de stocks dans l'univers | 1000 |
-| $T$ | Longueur de fenêtre (jours) | 504 |
-| $F$ | Nombre de features par timestep | 2 (return + realized vol) |
-| $K$ | Capacité latente (plafond) | 200 |
-| $AU$ | Dimensions actives (auto-pruning) | Déterminé dynamiquement |
-| $AU_{\max}^{\text{stat}}$ | Garde statistique | $\lfloor\sqrt{2 \cdot N_{\text{obs}} / r_{\min}}\rfloor$ |
-| $D$ | Nombre d'éléments par fenêtre | $T \times F$ |
-| $\sigma^2$ | Bruit d'observation (scalaire appris) | init 1.0, clamp [1e-4, 10] |
-| $\gamma$ | Surpondération crise | 3.0 |
-| $\lambda_{\text{co}}^{\max}$ | Poids max co-movement | 0.5 |
-| $L$ | Profondeur encodeur (blocs résiduels) | $\max(3, \lceil\log_2(T/63)\rceil + 2)$ |
-| $C_L$ | Largeur couche finale | $\max(384, \lceil 1.3 \times 2K \rceil)$ |
-| $\lambda$ | Aversion au risque | 1.0 |
-| $\alpha$ | Poids entropie | Coude de la frontière variance-entropie |
+| $n$ | Number of stocks in the universe | 1000 |
+| $T$ | Window length (days) | 504 |
+| $F$ | Number of features per timestep | 2 (return + realized vol) |
+| $K$ | Latent capacity (ceiling) | 200 |
+| $AU$ | Active dimensions (auto-pruning) | Dynamically determined |
+| $AU_{\max}^{\text{stat}}$ | Statistical guard | $\lfloor\sqrt{2 \cdot N_{\text{obs}} / r_{\min}}\rfloor$ |
+| $D$ | Number of elements per window | $T \times F$ |
+| $\sigma^2$ | Observation noise (learned scalar) | init 1.0, clamp [1e-4, 10] |
+| $\gamma$ | Crisis overweighting | 3.0 |
+| $\lambda_{\text{co}}^{\max}$ | Max co-movement weight | 0.5 |
+| $L$ | Encoder depth (residual blocks) | $\max(3, \lceil\log_2(T/63)\rceil + 2)$ |
+| $C_L$ | Final layer width | $\max(384, \lceil 1.3 \times 2K \rceil)$ |
+| $\lambda$ | Risk aversion | 1.0 |
+| $\alpha$ | Entropy weight | Elbow of the variance-entropy frontier |
 
-### Dépendances techniques
+### Technical Dependencies
 
 ```
 Python 3.11+
 PyTorch >= 2.1
 NumPy >= 1.24
 SciPy >= 1.11
-CVXPY >= 1.4 + MOSEK (ou ECOS fallback)
+CVXPY >= 1.4 + MOSEK (or ECOS fallback)
 pandas >= 2.0
 scikit-learn >= 1.3 (Ledoit-Wolf)
-statsmodels >= 0.14 (tests statistiques)
+statsmodels >= 0.14 (statistical tests)
 pytest >= 7.0
 ```
 
 ---
 
-## Topologie et décomposition modulaire
+## Topology and Modular Decomposition
 
-### Composants fonctionnels et couplage
+### Functional Components and Coupling
 
 ```
-Matrice de couplage (degré 0-4) :
+Coupling matrix (degree 0-4):
 
                  data  vae   loss  train infer risk  optim wf    bench
 data_pipeline    -     1     1     2     1     2     0     2     1
@@ -227,47 +227,47 @@ walk_forward     2     0     0     2     1     1     1     -     2
 benchmarks       1     0     0     0     0     0     1     2     -
 ```
 
-### Points de couplage critiques (degré ≥ 3)
+### Critical Coupling Points (degree ≥ 3)
 
-| Paire | Degré | Invariant |
+| Pair | Degree | Invariant |
 |-------|-------|-----------|
-| vae_architecture ↔ loss_function | 3 (sémantique) | σ² scalaire (INV-002), D dans la loss (INV-001) |
-| loss_function ↔ training | 4 (mathématique) | Modes P/F/A mutuellement exclusifs (INV-006), validation ELBO exclut γ et λ_co (INV-011), curriculum batching lié au curriculum λ_co (INV-010) |
-| vae_architecture ↔ training | 3 (sémantique) | Reparameterization trick dans forward(), architecture détermine le training loop |
-| inference ↔ risk_model | 3 (sémantique) | B_A shape (INV-003), convention AU filtering (KL > 0.01 nats) |
-| risk_model ↔ portfolio_optim | 4 (mathématique) | Rescaling duale (INV-004), rotation principal factor basis (INV-007), gradient H (INV-009) |
+| vae_architecture ↔ loss_function | 3 (semantic) | σ² scalar (INV-002), D in the loss (INV-001) |
+| loss_function ↔ training | 4 (mathematical) | P/F/A modes mutually exclusive (INV-006), validation ELBO excludes γ and λ_co (INV-011), curriculum batching linked to λ_co curriculum (INV-010) |
+| vae_architecture ↔ training | 3 (semantic) | Reparameterization trick in forward(), architecture determines the training loop |
+| inference ↔ risk_model | 3 (semantic) | B_A shape (INV-003), AU filtering convention (KL > 0.01 nats) |
+| risk_model ↔ portfolio_optim | 4 (mathematical) | Dual rescaling (INV-004), principal factor basis rotation (INV-007), gradient H (INV-009) |
 
-### Décomposition en modules
+### Module Decomposition
 
-| ID | Module | Composants | Dépendances | Densité contexte | Mode |
+| ID | Module | Components | Dependencies | Context Density | Mode |
 |----|--------|-----------|-------------|------------------|------|
-| MOD-001 | `data_pipeline` | Data loading, returns, universe, windowing, z-scoring, VIX, crisis labels | — | Moyenne | teammate |
-| MOD-002 | `vae_architecture` | build_vae.py, encoder, decoder, sizing rules | MOD-001 (I: shapes) | Haute | teammate |
-| MOD-003 | `test_infrastructure` | Synthetic data, assertion framework, test fixtures | — | Faible | teammate |
-| MOD-004 | `loss_function` | 3 modes, crisis weighting, co-movement loss, curriculum | MOD-002 (C) | Très haute | lead_session |
-| MOD-005 | `training` | Training loop, batching, optimizer, early stopping, LR scheduler | MOD-004 (C), MOD-001 (D) | Très haute | lead_session |
-| MOD-006 | `inference` | Composite profiles, aggregation, exposure matrix B | MOD-002 (C), MOD-005 (D: trained model) | Moyenne | subagent |
-| MOD-007 | `risk_model` | AU filtering, rescaling, factor regression, Σ_z, D_ε, Σ_assets | MOD-006 (D) | Haute | subagent |
-| MOD-008 | `portfolio_optimization` | Entropy, gradient, SCA, Armijo, cardinality, constraints | MOD-007 (D) | Très haute | lead_session |
-| MOD-009 | `walk_forward` | Fold scheduling, Phase A/B, HP selection, metrics, holdout | MOD-001–008 (D) | Haute | lead_session |
-| MOD-010 | `bench_equal_weight` | 1/N benchmark | MOD-001 (D), shared infra | Faible | teammate |
-| MOD-011 | `bench_inverse_vol` | Inverse-volatility benchmark | MOD-001 (D) | Faible | teammate |
-| MOD-012 | `bench_min_variance` | Minimum-variance Ledoit-Wolf | MOD-001 (D) | Moyenne | teammate |
-| MOD-013 | `bench_erc` | Equal Risk Contribution (Spinu) | MOD-001 (D), MOD-012 (C: LW) | Moyenne | teammate |
-| MOD-014 | `bench_pca_factor_rp` | PCA factor risk parity (Bai-Ng IC₂ + SCA) | MOD-001 (D), MOD-008 (C: SCA solver) | Haute | teammate |
-| MOD-015 | `bench_pca_vol` | PCA + realized vol feature | MOD-014 (C) | Faible | teammate |
-| MOD-016 | `integration` | E2E orchestration, reporting, statistical tests | Tous | Haute | lead_session |
+| MOD-001 | `data_pipeline` | Data loading, returns, universe, windowing, z-scoring, VIX, crisis labels | — | Medium | teammate |
+| MOD-002 | `vae_architecture` | build_vae.py, encoder, decoder, sizing rules | MOD-001 (I: shapes) | High | teammate |
+| MOD-003 | `test_infrastructure` | Synthetic data, assertion framework, test fixtures | — | Low | teammate |
+| MOD-004 | `loss_function` | 3 modes, crisis weighting, co-movement loss, curriculum | MOD-002 (C) | Very high | lead_session |
+| MOD-005 | `training` | Training loop, batching, optimizer, early stopping, LR scheduler | MOD-004 (C), MOD-001 (D) | Very high | lead_session |
+| MOD-006 | `inference` | Composite profiles, aggregation, exposure matrix B | MOD-002 (C), MOD-005 (D: trained model) | Medium | subagent |
+| MOD-007 | `risk_model` | AU filtering, rescaling, factor regression, Σ_z, D_ε, Σ_assets | MOD-006 (D) | High | subagent |
+| MOD-008 | `portfolio_optimization` | Entropy, gradient, SCA, Armijo, cardinality, constraints | MOD-007 (D) | Very high | lead_session |
+| MOD-009 | `walk_forward` | Fold scheduling, Phase A/B, HP selection, metrics, holdout | MOD-001–008 (D) | High | lead_session |
+| MOD-010 | `bench_equal_weight` | 1/N benchmark | MOD-001 (D), shared infra | Low | teammate |
+| MOD-011 | `bench_inverse_vol` | Inverse-volatility benchmark | MOD-001 (D) | Low | teammate |
+| MOD-012 | `bench_min_variance` | Minimum-variance Ledoit-Wolf | MOD-001 (D) | Medium | teammate |
+| MOD-013 | `bench_erc` | Equal Risk Contribution (Spinu) | MOD-001 (D), MOD-012 (C: LW) | Medium | teammate |
+| MOD-014 | `bench_pca_factor_rp` | PCA factor risk parity (Bai-Ng IC₂ + SCA) | MOD-001 (D), MOD-008 (C: SCA solver) | High | teammate |
+| MOD-015 | `bench_pca_vol` | PCA + realized vol feature | MOD-014 (C) | Low | teammate |
+| MOD-016 | `integration` | E2E orchestration, reporting, statistical tests | All | High | lead_session |
 
-### Graphe de dépendances (DAG)
+### Dependency Graph (DAG)
 
 ```
-Phase 1 (parallèle — Agent Team "infrastructure")
+Phase 1 (parallel — Agent Team "infrastructure")
   MOD-001 (data_pipeline)
   MOD-002 (vae_architecture)
   MOD-003 (test_infrastructure)
-      ↓ synchronisation
+      ↓ synchronization
 
-Phase 2 (séquentiel — Subagents builder-validator)
+Phase 2 (sequential — Subagents builder-validator)
   MOD-004 (loss_function) ← MOD-002(C)
       ↓
   MOD-005 (training) ← MOD-004(C), MOD-001(D)
@@ -277,24 +277,24 @@ Phase 2 (séquentiel — Subagents builder-validator)
   MOD-007 (risk_model) ← MOD-006(D)
       ↓
   MOD-008 (portfolio_optimization) ← MOD-007(D)
-      ↓ synchronisation
+      ↓ synchronization
 
-Phase 3 (parallèle — Agent Team "benchmarks")
+Phase 3 (parallel — Agent Team "benchmarks")
   MOD-010 (bench_equal_weight) ← MOD-001(D)
   MOD-011 (bench_inverse_vol) ← MOD-001(D)
   MOD-012 (bench_min_variance) ← MOD-001(D)
   MOD-013 (bench_erc) ← MOD-012(C)
   MOD-014 (bench_pca_factor_rp) ← MOD-001(D), MOD-008(C: SCA)
   MOD-015 (bench_pca_vol) ← MOD-014(C)
-      ↓ synchronisation
+      ↓ synchronization
 
-Phase 4 (séquentiel — lead session)
+Phase 4 (sequential — lead session)
   MOD-009 (walk_forward) ← MOD-001–008(D)
       ↓
-  MOD-016 (integration) ← Tous
+  MOD-016 (integration) ← All
 ```
 
-### Structure du code
+### Code Structure
 
 ```
 latent_risk_factors/
@@ -302,7 +302,7 @@ latent_risk_factors/
 ├── pyproject.toml
 ├── docs/
 │   ├── isd/
-│   │   ├── 00_global.md          ← ce fichier
+│   │   ├── 00_global.md          ← this file
 │   │   ├── 01_data_pipeline.md
 │   │   ├── 02_vae_architecture.md
 │   │   ├── ...
@@ -311,7 +311,7 @@ latent_risk_factors/
 │       └── contracts.yaml
 ├── src/
 │   ├── __init__.py
-│   ├── config.py               # Configuration centralisée (dataclasses)
+│   ├── config.py               # Centralized configuration (dataclasses)
 │   ├── data_pipeline/
 │   │   ├── __init__.py
 │   │   ├── data_loader.py      # CRSP / alternative data loading
@@ -393,26 +393,26 @@ latent_risk_factors/
 
 ---
 
-## Assertions d'interface inter-modules
+## Inter-Module Interface Assertions
 
 ### MOD-001 → MOD-004/005 (data_pipeline → loss/training)
 
 ```python
 def verify_data_pipeline_output(windows, crisis_labels, returns_df):
-    """Assertions de sortie du data pipeline."""
+    """Data pipeline output assertions."""
     N, T, F = windows.shape
     assert T == 504, f"Window length {T} != 504"
     assert F == 2, f"Feature count {F} != 2"
     assert windows.dtype == torch.float32
 
-    # Z-scored per window : mean ≈ 0, std ≈ 1 per feature
+    # Z-scored per window: mean ≈ 0, std ≈ 1 per feature
     for i in range(min(100, N)):
         for f in range(F):
             feat = windows[i, :, f]
             assert abs(feat.mean()) < 1e-5, f"Window {i} feature {f} mean {feat.mean():.6f} != 0"
             assert abs(feat.std() - 1.0) < 1e-3, f"Window {i} feature {f} std {feat.std():.6f} != 1"
 
-    # Crisis labels : fraction in [0, 1]
+    # Crisis labels: fraction in [0, 1]
     assert crisis_labels.shape == (N,)
     assert (crisis_labels >= 0).all() and (crisis_labels <= 1).all()
 
@@ -425,7 +425,7 @@ def verify_data_pipeline_output(windows, crisis_labels, returns_df):
 
 ```python
 def verify_vae_forward(model, sample_input):
-    """Assertions de compatibilité VAE ↔ loss."""
+    """VAE ↔ loss compatibility assertions."""
     x = sample_input  # (batch, T, F)
     x_hat, mu, log_var = model(x)
 
@@ -443,7 +443,7 @@ def verify_vae_forward(model, sample_input):
 
 ```python
 def verify_inference_output(B, AU, K, n_stocks, AU_max_stat):
-    """Assertions de sortie de l'inférence."""
+    """Inference output assertions."""
     assert B.shape == (n_stocks, K), f"B shape {B.shape} != ({n_stocks}, {K})"
     assert AU == (np.abs(B[:, :K]).sum(axis=0) > 1e-6).sum()  # Approximation
 
@@ -460,7 +460,7 @@ def verify_inference_output(B, AU, K, n_stocks, AU_max_stat):
 
 ```python
 def verify_risk_model_output(Sigma_z, D_eps, B_A_port, eigenvalues, V, n_stocks, AU):
-    """Assertions de sortie du risk model."""
+    """Risk model output assertions."""
     assert Sigma_z.shape == (AU, AU)
     assert D_eps.shape == (n_stocks,)
     assert B_A_port.shape == (n_stocks, AU)
@@ -487,7 +487,7 @@ def verify_risk_model_output(Sigma_z, D_eps, B_A_port, eigenvalues, V, n_stocks,
 
 ```python
 def verify_portfolio_output(w, n_stocks, w_min=0.001, w_max=0.05):
-    """Assertions de sortie de l'optimisation."""
+    """Optimization output assertions."""
     assert w.shape == (n_stocks,)
     assert abs(w.sum() - 1.0) < 1e-8, f"Weights sum {w.sum():.8f} != 1"
     assert (w >= -1e-10).all(), "Negative weight found"
@@ -503,40 +503,40 @@ def verify_portfolio_output(w, n_stocks, w_min=0.001, w_max=0.05):
 
 ---
 
-## Sections ISD — Phase 2 (séquentiel)
+## ISD Sections — Phase 2 (sequential)
 
 ---
 
 ### MOD-004 — loss_function
 
-**Phase :** 2 | **Mode :** lead_session | **Dépendances :** MOD-002 (C: VAEModel) | **Densité :** très haute
-**Fichiers :** `src/vae/loss.py`, `tests/unit/test_loss_function.py`
+**Phase:** 2 | **Mode:** lead_session | **Dependencies:** MOD-002 (C: VAEModel) | **Density:** very high
+**Files:** `src/vae/loss.py`, `tests/unit/test_loss_function.py`
 
-#### Objectif
+#### Objective
 
-Implémenter les trois modes de calcul de la loss VAE (P/F/A), le mécanisme de crisis weighting, la co-movement loss, et le curriculum scheduling. Ce module est le cœur mathématique du VAE — toute erreur ici invalide silencieusement l'entraînement.
+Implement the three VAE loss computation modes (P/F/A), the crisis weighting mechanism, the co-movement loss, and the curriculum scheduling. This module is the mathematical core of the VAE — any error here silently invalidates training.
 
-#### Entrées
+#### Inputs
 
-| Nom | Type | Shape | Description |
+| Name | Type | Shape | Description |
 |-----|------|-------|-------------|
-| `x` | `torch.Tensor` | `(B, T, F)` | Fenêtres d'entrée z-scorées |
+| `x` | `torch.Tensor` | `(B, T, F)` | Z-scored input windows |
 | `x_hat` | `torch.Tensor` | `(B, T, F)` | Reconstruction |
-| `mu` | `torch.Tensor` | `(B, K)` | Moyenne encodeur |
-| `log_var` | `torch.Tensor` | `(B, K)` | Log-variance encodeur |
-| `log_sigma_sq` | `torch.Tensor` | scalar | Log σ² du modèle |
-| `crisis_fractions` | `torch.Tensor` | `(B,)` | $f_c^{(w)}$ par fenêtre |
-| `epoch` | int | — | Époque courante (pour le curriculum) |
-| `mode` | str | — | "P", "F", ou "A" |
+| `mu` | `torch.Tensor` | `(B, K)` | Encoder mean |
+| `log_var` | `torch.Tensor` | `(B, K)` | Encoder log-variance |
+| `log_sigma_sq` | `torch.Tensor` | scalar | Model log σ² |
+| `crisis_fractions` | `torch.Tensor` | `(B,)` | $f_c^{(w)}$ per window |
+| `epoch` | int | — | Current epoch (for curriculum) |
+| `mode` | str | — | "P", "F", or "A" |
 
-#### Sorties
+#### Outputs
 
-| Nom | Type | Description |
+| Name | Type | Description |
 |-----|------|-------------|
-| `total_loss` | `torch.Tensor` | scalar, loss totale pour backprop |
-| `loss_components` | dict | recon, kl, co_mov, sigma_sq (pour monitoring) |
+| `total_loss` | `torch.Tensor` | scalar, total loss for backprop |
+| `loss_components` | dict | recon, kl, co_mov, sigma_sq (for monitoring) |
 
-#### Sous-tâche 1 : Loss reconstruction pondérée par crise
+#### Sub-task 1: Crisis-weighted reconstruction loss
 
 ```
 MSE(w) = (1/(T×F)) · Σ_{t,f} (x_{w,t,f} - x̂_{w,t,f})²    [per-element mean]
@@ -546,45 +546,45 @@ MSE(w) = (1/(T×F)) · Σ_{t,f} (x_{w,t,f} - x̂_{w,t,f})²    [per-element mean
 L_recon_weighted = (1/|B|) · Σ_w γ_eff(w) · MSE(w)          [batch mean, weighted]
 ```
 
-**ATTENTION :** MSE est une moyenne per-element (divisée par T×F), pas une somme. Le facteur D = T×F est appliqué séparément comme coefficient multiplicatif.
+**WARNING:** MSE is a per-element mean (divided by T×F), not a sum. The factor D = T×F is applied separately as a multiplicative coefficient.
 
-#### Sous-tâche 2 : Loss KL
+#### Sub-task 2: KL Loss
 
 $$\mathcal{L}_{\text{KL}} = \frac{1}{N_{\text{batch}}} \sum_{i=1}^{N_{\text{batch}}} \frac{1}{2} \sum_{k=1}^{K} \left( \mu_{ik}^2 + \exp(\log\_var_{ik}) - \log\_var_{ik} - 1 \right)$$
 
-La KL est moyennée sur le batch (dimension 0) et sommée sur les dimensions latentes (dimension 1). Le 1/2 est à l'extérieur de la somme sur k.
+The KL is averaged over the batch (dimension 0) and summed over the latent dimensions (dimension 1). The 1/2 is outside the sum over k.
 
-#### Sous-tâche 3 : Assemblage — Mode P (primary)
+#### Sub-task 3: Assembly — Mode P (primary)
 
 $$\mathcal{L} = \frac{D}{2\sigma^2} \cdot \mathcal{L}_{\text{recon, weighted}} + \frac{D}{2}\ln\sigma^2 + \mathcal{L}_{\text{KL}} + \lambda_{\text{co}}(t) \cdot \mathcal{L}_{\text{co-mov}}$$
 
-Où :
-- $D = T \times F$ (pour T=504, F=2 : D=1008)
+Where:
+- $D = T \times F$ (for T=504, F=2: D=1008)
 - $\sigma^2 = \text{clamp}(\exp(\log\_sigma\_sq), 10^{-4}, 10)$
-- $\beta = 1$ fixe (NE PAS modifier)
-- $\lambda_{\text{co}}(t)$ suit le curriculum (sous-tâche 5)
+- $\beta = 1$ fixed (DO NOT modify)
+- $\lambda_{\text{co}}(t)$ follows the curriculum (sub-task 5)
 
-Le terme $(D/2)\ln\sigma^2$ est le log-normalisation de la Gaussienne. Il pénalise $\sigma^2$ élevé (le modèle ne peut pas "tricher" en augmentant σ² pour réduire le coût de reconstruction).
+The term $(D/2)\ln\sigma^2$ is the Gaussian log-normalization. It penalizes high $\sigma^2$ (the model cannot "cheat" by increasing σ² to reduce the reconstruction cost).
 
-#### Sous-tâche 4 : Assemblage — Mode F (fallback)
+#### Sub-task 4: Assembly — Mode F (fallback)
 
 $$\mathcal{L}_t = \frac{D}{2} \cdot \mathcal{L}_{\text{recon, weighted}} + \beta_t \cdot \mathcal{L}_{\text{KL}} + \lambda_{\text{co}}(t) \cdot \mathcal{L}_{\text{co-mov}}$$
 
-Où :
-- $\sigma^2 = 1$ GELÉ (pas de gradient sur log_sigma_sq)
-- $D/2$ est RETENU (scaling dimensionnel)
-- $\beta_t = \min(1, t / T_{\text{warmup}})$, rampe linéaire
-- $T_{\text{warmup}}$ : 10-30% des epochs totaux
+Where:
+- $\sigma^2 = 1$ FROZEN (no gradient on log_sigma_sq)
+- $D/2$ is RETAINED (dimensional scaling)
+- $\beta_t = \min(1, t / T_{\text{warmup}})$, linear ramp
+- $T_{\text{warmup}}$: 10-30% of total epochs
 
-**CRUCIAL :** NE PAS retirer D/2. Sans D/2, MSE ≈ 0.3-0.7 serait dominé par KL ≈ 60-120 nats → posterior collapse immédiat.
+**CRUCIAL:** DO NOT remove D/2. Without D/2, MSE ≈ 0.3-0.7 would be dominated by KL ≈ 60-120 nats → immediate posterior collapse.
 
-#### Sous-tâche 5 : Assemblage — Mode A (advanced)
+#### Sub-task 5: Assembly — Mode A (advanced)
 
 $$\mathcal{L} = \frac{D}{2\sigma^2} \cdot \mathcal{L}_{\text{recon, weighted}} + \frac{D}{2}\ln\sigma^2 + \beta \cdot \mathcal{L}_{\text{KL}} + \lambda_{\text{co}}(t) \cdot \mathcal{L}_{\text{co-mov}}$$
 
-Identique au Mode P mais avec $\beta > 1$ (fixe, pas annealé). Range : β ∈ [1.0, 4.0].
+Identical to Mode P but with $\beta > 1$ (fixed, not annealed). Range: β ∈ [1.0, 4.0].
 
-#### Sous-tâche 6 : Co-movement loss
+#### Sub-task 6: Co-movement loss
 
 ```python
 def compute_co_movement_loss(
@@ -595,11 +595,11 @@ def compute_co_movement_loss(
     delta_sync: int = 21,       # max date gap for synchronization
 ) -> torch.Tensor:
     """
-    Pour chaque paire (i, j) éligible dans le batch :
-      1. Vérifier : stocks distincts, |end_date_i - end_date_j| ≤ δ_sync,
-         ≥ 80% données valides dans la période commune
-      2. ρ_ij = Spearman rank correlation sur returns BRUTS (pas z-scorés)
-         dans le segment temporel commun
+    For each eligible pair (i, j) in the batch:
+      1. Verify: distinct stocks, |end_date_i - end_date_j| ≤ δ_sync,
+         ≥ 80% valid data in the common period
+      2. ρ_ij = Spearman rank correlation on RAW returns (not z-scored)
+         in the common time segment
       3. d(z_i, z_j) = cosine distance = 1 - cos_sim(μ_i, μ_j)
       4. g(ρ_ij) = 1 - ρ_ij  (target distance)
       5. L_co = (1/|P|) · Σ (d(z_i, z_j) - g(ρ_ij))²
@@ -608,16 +608,16 @@ def compute_co_movement_loss(
     """
 ```
 
-**Note :** Le calcul de la corrélation Spearman est coûteux dans le forward pass. Pré-calculer les corrélations par paires pour les fenêtres synchrones et les stocker dans un lookup table, mis à jour à chaque fold.
+**Note:** Computing Spearman correlation is expensive in the forward pass. Pre-compute pairwise correlations for synchronous windows and store them in a lookup table, updated at each fold.
 
-#### Sous-tâche 7 : Curriculum scheduling
+#### Sub-task 7: Curriculum scheduling
 
 ```python
 def get_lambda_co(epoch: int, total_epochs: int, lambda_co_max: float = 0.5) -> float:
     """
-    Phase 1 (0 → 30% epochs) : λ_co = λ_co_max
-    Phase 2 (30% → 60% epochs) : λ_co décroît linéairement de λ_co_max à 0
-    Phase 3 (60% → 100% epochs) : λ_co = 0
+    Phase 1 (0 → 30% epochs): λ_co = λ_co_max
+    Phase 2 (30% → 60% epochs): λ_co decays linearly from λ_co_max to 0
+    Phase 3 (60% → 100% epochs): λ_co = 0
 
     Returns: lambda_co for this epoch
     """
@@ -633,82 +633,82 @@ def get_lambda_co(epoch: int, total_epochs: int, lambda_co_max: float = 0.5) -> 
         return 0.0
 ```
 
-#### Sous-tâche 8 : Validation ELBO
+#### Sub-task 8: Validation ELBO
 
 ```python
 def compute_validation_elbo(x, x_hat, mu, log_var, log_sigma_sq, T, F):
     """
-    ELBO de validation — EXCLUT γ et λ_co, INCLUT σ².
+    Validation ELBO — EXCLUDES γ and λ_co, INCLUDES σ².
 
     L_val = D/(2σ²) · L_recon^(γ=1) + (D/2)·ln(σ²) + L_KL
 
-    Où L_recon^(γ=1) est le MSE moyen NON PONDÉRÉ par crise.
+    Where L_recon^(γ=1) is the mean MSE NOT weighted by crisis.
     """
 ```
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-001 :** D = T × F apparaît comme coefficient de L_recon. Vérifier : `assert recon_coeff == T * F / (2 * sigma_sq)`.
-- **INV-002 :** σ² est scalaire. `assert log_sigma_sq.ndim == 0`.
-- **INV-006 :** Modes mutuellement exclusifs. `assert not (mode == 'P' and beta != 1.0)`.
-- **INV-010 :** Le curriculum λ_co retourne 0 en Phase 3.
-- **INV-011 :** Validation ELBO exclut γ et λ_co.
+- **INV-001:** D = T × F appears as coefficient of L_recon. Verify: `assert recon_coeff == T * F / (2 * sigma_sq)`.
+- **INV-002:** σ² is scalar. `assert log_sigma_sq.ndim == 0`.
+- **INV-006:** Modes mutually exclusive. `assert not (mode == 'P' and beta != 1.0)`.
+- **INV-010:** The λ_co curriculum returns 0 in Phase 3.
+- **INV-011:** Validation ELBO excludes γ and λ_co.
 
-#### Pièges connus
+#### Known Pitfalls
 
-- **NE PAS** omettre le facteur D = T × F. C'est l'erreur la plus critique de tout le pipeline. Sans D, la reconstruction (~0.3-0.7 nats) est écrasée par la KL (~60-120 nats), le modèle collapse immédiatement.
-- **NE PAS** confondre MSE per-element (correct) avec MSE sum (incorrect). Le D est appliqué comme coefficient multiplicatif, pas intégré dans le MSE.
-- **NE PAS** combiner σ² appris avec β annealing (Mode P + Mode F simultanés).
-- **NE PAS** inclure γ dans la validation ELBO.
-- **NE PAS** inclure λ_co dans la validation ELBO.
-- **NE PAS** calculer la Spearman correlation sur les données z-scorées — utiliser les returns bruts.
+- **DO NOT** omit the factor D = T × F. This is the most critical error in the entire pipeline. Without D, the reconstruction (~0.3-0.7 nats) is overwhelmed by the KL (~60-120 nats), and the model collapses immediately.
+- **DO NOT** confuse per-element MSE (correct) with sum MSE (incorrect). D is applied as a multiplicative coefficient, not integrated into the MSE.
+- **DO NOT** combine learned σ² with β annealing (Mode P + Mode F simultaneously).
+- **DO NOT** include γ in the validation ELBO.
+- **DO NOT** include λ_co in the validation ELBO.
+- **DO NOT** compute Spearman correlation on z-scored data — use raw returns.
 
-#### Tests requis
+#### Required Tests
 
-1. `test_D_factor_present` : loss_recon_coeff == T*F / (2*sigma_sq) pour Mode P
-2. `test_mode_P_gradients` : σ² reçoit un gradient ; β est fixe à 1
-3. `test_mode_F_sigma_frozen` : σ² n'a pas de gradient, D/2 est retenu
-4. `test_mode_F_beta_annealing` : β_t = min(1, t/T_warmup) correctement calculé
-5. `test_mode_A_beta_applied` : KL multiplié par β > 1
-6. `test_modes_exclusive` : erreur si mode invalide ou combinaison interdite
-7. `test_crisis_weight_gamma_1` : γ=1 → γ_eff=1 pour toutes les fenêtres
-8. `test_crisis_weight_gamma_3` : γ=3, f_c=1 → γ_eff=3 ; f_c=0 → γ_eff=1
-9. `test_curriculum_phases` : λ_co correcte à chaque phase boundary
-10. `test_validation_elbo_excludes_gamma` : même L_val pour γ=1 et γ=3
-11. `test_co_movement_symmetric` : L_co(i,j) == L_co(j,i)
-12. `test_loss_finite` : pas de NaN ou Inf pour inputs valides
+1. `test_D_factor_present`: loss_recon_coeff == T*F / (2*sigma_sq) for Mode P
+2. `test_mode_P_gradients`: σ² receives a gradient; β is fixed at 1
+3. `test_mode_F_sigma_frozen`: σ² has no gradient, D/2 is retained
+4. `test_mode_F_beta_annealing`: β_t = min(1, t/T_warmup) correctly computed
+5. `test_mode_A_beta_applied`: KL multiplied by β > 1
+6. `test_modes_exclusive`: error if invalid mode or forbidden combination
+7. `test_crisis_weight_gamma_1`: γ=1 → γ_eff=1 for all windows
+8. `test_crisis_weight_gamma_3`: γ=3, f_c=1 → γ_eff=3; f_c=0 → γ_eff=1
+9. `test_curriculum_phases`: λ_co correct at each phase boundary
+10. `test_validation_elbo_excludes_gamma`: same L_val for γ=1 and γ=3
+11. `test_co_movement_symmetric`: L_co(i,j) == L_co(j,i)
+12. `test_loss_finite`: no NaN or Inf for valid inputs
 
 ---
 
 ### MOD-005 — training
 
-**Phase :** 2 | **Mode :** lead_session | **Dépendances :** MOD-004 (C), MOD-001 (D: windows) | **Densité :** très haute
-**Fichiers :** `src/training/*.py`, `tests/unit/test_training.py`
+**Phase:** 2 | **Mode:** lead_session | **Dependencies:** MOD-004 (C), MOD-001 (D: windows) | **Density:** very high
+**Files:** `src/training/*.py`, `tests/unit/test_training.py`
 
-#### Objectif
+#### Objective
 
-Implémenter la boucle d'entraînement complète avec curriculum batching (synchrone+stratifié pour co-movement phases, random pour free refinement), early stopping sur validation ELBO, ReduceLROnPlateau, et le protocole de sauvegarde des checkpoints.
+Implement the complete training loop with curriculum batching (synchronous+stratified for co-movement phases, random for free refinement), early stopping on validation ELBO, ReduceLROnPlateau, and the checkpoint saving protocol.
 
-#### Sous-tâche 1 : Curriculum batching (batching.py)
+#### Sub-task 1: Curriculum batching (batching.py)
 
 ```python
 class CurriculumBatchSampler:
     """
-    Phases 1-2 (λ_co > 0) : SYNCHRONOUS + STRATIFIED batching
-      - Sélectionner un bloc temporel aléatoire (δ_sync = 21 jours)
-      - Pré-clusterer les stocks en S strates (10-20 groupes, k-means sur
-        trailing 63j returns, ou GICS sectors comme proxy zero-cost)
-      - Sampler B/S fenêtres par strate
-      - Garantir synchronisation temporelle pour co-movement loss
+    Phases 1-2 (λ_co > 0): SYNCHRONOUS + STRATIFIED batching
+      - Select a random time block (δ_sync = 21 days)
+      - Pre-cluster stocks into S strata (10-20 groups, k-means on
+        trailing 63d returns, or GICS sectors as zero-cost proxy)
+      - Sample B/S windows per stratum
+      - Guarantee temporal synchronization for co-movement loss
 
-    Phase 3 (λ_co = 0) : RANDOM SHUFFLING standard
-      - Fenêtres tirées uniformément sur tous les stocks et périodes
+    Phase 3 (λ_co = 0): Standard RANDOM SHUFFLING
+      - Windows drawn uniformly across all stocks and periods
     """
 ```
 
-**Transition :** Le sampler change de stratégie au moment exact où λ_co atteint 0 (début de Phase 3 du curriculum).
+**Transition:** The sampler switches strategy at the exact moment λ_co reaches 0 (start of Phase 3 of the curriculum).
 
-#### Sous-tâche 2 : Training loop (trainer.py)
+#### Sub-task 2: Training loop (trainer.py)
 
 ```python
 class VAETrainer:
@@ -720,17 +720,17 @@ class VAETrainer:
 
     def train_epoch(self, train_loader, epoch, total_epochs) -> dict:
         """
-        Un epoch :
-        1. Déterminer λ_co via curriculum (get_lambda_co)
-        2. Déterminer le type de batching (synchrone si λ_co > 0, random sinon)
-        3. Pour chaque batch :
+        One epoch:
+        1. Determine λ_co via curriculum (get_lambda_co)
+        2. Determine batching type (synchronous if λ_co > 0, random otherwise)
+        3. For each batch:
            a. Forward pass
-           b. Compute loss (mode P/F/A selon config)
+           b. Compute loss (mode P/F/A per config)
            c. Backward + optimizer step
-           d. Clamp log_sigma_sq pour assurer σ² ∈ [1e-4, 10] :
+           d. Clamp log_sigma_sq to ensure σ² ∈ [1e-4, 10]:
               with torch.no_grad():
                 model.log_sigma_sq.clamp_(math.log(1e-4), math.log(10))
-        4. Collecter les métriques : loss_total, loss_recon, loss_kl,
+        4. Collect metrics: loss_total, loss_recon, loss_kl,
            loss_co, sigma_sq, mse_crisis, mse_normal
 
         Returns: dict of epoch-level metrics
@@ -738,86 +738,86 @@ class VAETrainer:
 
     def validate(self, val_loader) -> float:
         """
-        Compute validation ELBO (INV-011 : exclut γ et λ_co, inclut σ²).
+        Compute validation ELBO (INV-011: excludes γ and λ_co, includes σ²).
         Returns: validation_elbo (lower is better)
         """
 
     def fit(self, train_dataset, val_dataset, max_epochs=100) -> dict:
         """
-        Boucle complète :
-        1. Pour chaque epoch 1..max_epochs :
+        Full loop:
+        1. For each epoch 1..max_epochs:
            a. train_epoch()
            b. validate() → val_elbo
-           c. scheduler.step(val_elbo)  [SAUF si Mode F et epoch < T_warmup]
-           d. early_stopping.check(val_elbo) [SAUF si Mode F et epoch < T_warmup]
-           e. Si early stopping triggered → restore best weights → stop
-        2. Retourner : best_epoch (E*), best_val_elbo, training_history
+           c. scheduler.step(val_elbo)  [EXCEPT if Mode F and epoch < T_warmup]
+           d. early_stopping.check(val_elbo) [EXCEPT if Mode F and epoch < T_warmup]
+           e. If early stopping triggered → restore best weights → stop
+        2. Return: best_epoch (E*), best_val_elbo, training_history
 
-        Mode F spécifique :
-        - Scheduler et early stopping DÉSACTIVÉS pendant T_warmup
-        - Activés uniquement une fois β_t = 1.0
+        Mode F specific:
+        - Scheduler and early stopping DISABLED during T_warmup
+        - Activated only once β_t = 1.0
         """
 ```
 
-#### Sous-tâche 3 : Early stopping (early_stopping.py)
+#### Sub-task 3: Early stopping (early_stopping.py)
 
 ```python
 class EarlyStopping:
     """
-    Patience: 10 epochs sans amélioration de validation ELBO.
-    Restore best weights: oui.
-    Record E* : l'epoch du meilleur checkpoint.
+    Patience: 10 epochs without validation ELBO improvement.
+    Restore best weights: yes.
+    Record E*: the epoch of the best checkpoint.
     """
 ```
 
-#### Sous-tâche 4 : Monitoring
+#### Sub-task 4: Monitoring
 
-Métriques à logger à chaque epoch :
+Metrics to log at each epoch:
 - `train_loss`, `val_elbo`
-- `sigma_sq` (valeur courante)
-- `AU` (nombre de dimensions avec KL_k > 0.01 nats, calculé sur le batch)
+- `sigma_sq` (current value)
+- `AU` (number of dimensions with KL_k > 0.01 nats, computed on the batch)
 - `mse_crisis / mse_normal` (ratio, target [0.5, 2.0])
-- `effective_eta` (contribution effective des crises)
-- `lambda_co` (valeur courante du curriculum)
-- `learning_rate` (valeur courante)
+- `effective_eta` (effective crisis contribution)
+- `lambda_co` (current curriculum value)
+- `learning_rate` (current value)
 
-**Diagnostic overfit :** si val_elbo_best / train_loss_best < 0.85 ou > 1.5, flag le fold.
+**Overfit diagnostic:** if val_elbo_best / train_loss_best < 0.85 or > 1.5, flag the fold.
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-010 :** Batching synchrone en Phases 1-2, random en Phase 3.
-- **INV-011 :** Validation ELBO exclut γ et λ_co.
-- **INV-005 :** Training sur données ≤ training_end_date uniquement.
-- **INV-006 :** Scheduler et early stopping désactivés pendant warmup (Mode F).
+- **INV-010:** Synchronous batching in Phases 1-2, random in Phase 3.
+- **INV-011:** Validation ELBO excludes γ and λ_co.
+- **INV-005:** Training on data ≤ training_end_date only.
+- **INV-006:** Scheduler and early stopping disabled during warmup (Mode F).
 
-#### Pièges connus
+#### Known Pitfalls
 
-- **NE PAS** oublier de clamper log_sigma_sq après chaque optimizer step — sans clamp, σ² peut diverger.
-- **NE PAS** activer le scheduler pendant le warmup de Mode F — les changements mécaniques de loss triggèrent des plateaux artificiels.
-- **NE PAS** utiliser le batching random pendant les phases de co-movement — la co-movement loss n'est pas calculable sans synchronisation temporelle.
-- **NE PAS** oublier de passer en mode `model.eval()` + `torch.no_grad()` pour la validation.
+- **DO NOT** forget to clamp log_sigma_sq after each optimizer step — without clamping, σ² can diverge.
+- **DO NOT** activate the scheduler during Mode F warmup — mechanical loss changes trigger artificial plateaus.
+- **DO NOT** use random batching during co-movement phases — the co-movement loss is not computable without temporal synchronization.
+- **DO NOT** forget to switch to `model.eval()` + `torch.no_grad()` for validation.
 
-#### Tests requis
+#### Required Tests
 
-1. `test_sigma_sq_clamped` : σ² reste dans [1e-4, 10] après 100 steps avec données aléatoires
-2. `test_curriculum_batching_transition` : batching change au bon moment
-3. `test_early_stopping_patience` : stop après 10 epochs sans amélioration
-4. `test_best_checkpoint_restored` : poids du meilleur epoch restaurés
-5. `test_mode_F_warmup_protection` : scheduler/early_stopping inactifs pendant warmup
-6. `test_training_loss_decreases` : loss diminue sur 5 epochs (données synthétiques simples)
+1. `test_sigma_sq_clamped`: σ² stays in [1e-4, 10] after 100 steps with random data
+2. `test_curriculum_batching_transition`: batching changes at the right time
+3. `test_early_stopping_patience`: stops after 10 epochs without improvement
+4. `test_best_checkpoint_restored`: best epoch weights restored
+5. `test_mode_F_warmup_protection`: scheduler/early_stopping inactive during warmup
+6. `test_training_loss_decreases`: loss decreases over 5 epochs (simple synthetic data)
 
 ---
 
 ### MOD-006 — inference
 
-**Phase :** 2 | **Mode :** subagent | **Dépendances :** MOD-002 (C), MOD-005 (D: trained model) | **Densité :** moyenne
-**Fichiers :** `src/inference/*.py`, `tests/unit/test_inference.py`
+**Phase:** 2 | **Mode:** subagent | **Dependencies:** MOD-002 (C), MOD-005 (D: trained model) | **Density:** medium
+**Files:** `src/inference/*.py`, `tests/unit/test_inference.py`
 
-#### Objectif
+#### Objective
 
-Passer toutes les fenêtres de chaque stock à travers l'encodeur entraîné (forward pass sans sampling), agréger les vecteurs latents locaux en profils composites, construire la matrice d'exposition B (n × K), et mesurer AU.
+Pass all windows for each stock through the trained encoder (forward pass without sampling), aggregate local latent vectors into composite profiles, build the exposure matrix B (n × K), and measure AU.
 
-#### Sous-tâche 1 : Inference stride-1
+#### Sub-task 1: Stride-1 inference
 
 ```python
 def infer_latent_trajectories(
@@ -827,16 +827,16 @@ def infer_latent_trajectories(
     batch_size: int = 512,
 ) -> dict[str, np.ndarray]:
     """
-    Forward pass (encode only, pas de sampling) pour toutes les fenêtres.
+    Forward pass (encode only, no sampling) for all windows.
 
-    model.eval() + torch.no_grad() — inférence uniquement.
-    Utilise model.encode(x) qui retourne mu directement.
+    model.eval() + torch.no_grad() — inference only.
+    Uses model.encode(x) which returns mu directly.
 
     Returns: dict mapping stock_id → ndarray of shape (n_windows_for_stock, K)
     """
 ```
 
-#### Sous-tâche 2 : Agrégation → profils composites
+#### Sub-task 2: Aggregation → composite profiles
 
 ```python
 def aggregate_profiles(
@@ -844,16 +844,16 @@ def aggregate_profiles(
     method: str = "mean",
 ) -> np.ndarray:
     """
-    Agrège les vecteurs latents locaux en profils composites.
+    Aggregates local latent vectors into composite profiles.
 
-    Default : mean (toutes les fenêtres contribuent également,
-    préservant la mémoire de tous les régimes historiques).
+    Default: mean (all windows contribute equally,
+    preserving memory of all historical regimes).
 
     Returns: B of shape (n_stocks, K)
     """
 ```
 
-#### Sous-tâche 3 : Mesure AU (active_units.py)
+#### Sub-task 3: AU measurement (active_units.py)
 
 ```python
 def measure_active_units(
@@ -862,72 +862,72 @@ def measure_active_units(
     batch_size: int = 512,
 ) -> tuple[int, np.ndarray, list[int]]:
     """
-    Calcule la KL marginale par dimension :
+    Computes the marginal KL per dimension:
       KL_k = (1/N) Σ_i (1/2)(μ²_ik + exp(log_var_ik) - log_var_ik - 1)
 
     Active unit k ⟺ KL_k > 0.01 nats.
 
     AU_max_stat = floor(sqrt(2 × N_obs / r_min))
-    avec N_obs = nombre de jours d'historique, r_min = 2.
+    with N_obs = number of historical days, r_min = 2.
 
-    Si AU > AU_max_stat, tronquer A aux AU_max_stat dimensions
-    avec la KL marginale la plus élevée.
+    If AU > AU_max_stat, truncate A to the AU_max_stat dimensions
+    with the highest marginal KL.
 
     Returns:
-      AU: int (nombre de dimensions actives, possiblement tronqué)
-      kl_per_dim: ndarray (K,) — KL marginale par dimension
-      active_dims: list[int] — indices des dimensions actives
+      AU: int (number of active dimensions, possibly truncated)
+      kl_per_dim: ndarray (K,) — marginal KL per dimension
+      active_dims: list[int] — indices of active dimensions
     """
 ```
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-003 :** B_A.shape == (n_stocks, AU), AU ≤ AU_max_stat.
-- **CONV-07 :** AU = |{k : KL_k > 0.01 nats}|, déterminé une fois par retraining.
-- **INV-005 :** Inférence utilise uniquement des fenêtres du training set.
+- **INV-003:** B_A.shape == (n_stocks, AU), AU ≤ AU_max_stat.
+- **CONV-07:** AU = |{k : KL_k > 0.01 nats}|, determined once per retraining.
+- **INV-005:** Inference uses only training set windows.
 
-#### Pièges connus
+#### Known Pitfalls
 
-- **NE PAS** utiliser `model.forward()` (qui sample z) — utiliser `model.encode()` (qui retourne mu directement). L'inférence doit être déterministe.
-- **NE PAS** oublier `model.eval()` et `torch.no_grad()` — sinon le dropout est actif et les résultats ne sont pas reproductibles.
-- **NE PAS** oublier la troncation statistique : si AU > AU_max_stat, garder uniquement les AU_max_stat dimensions avec KL_k le plus élevé.
+- **DO NOT** use `model.forward()` (which samples z) — use `model.encode()` (which returns mu directly). Inference must be deterministic.
+- **DO NOT** forget `model.eval()` and `torch.no_grad()` — otherwise dropout is active and results are not reproducible.
+- **DO NOT** forget statistical truncation: if AU > AU_max_stat, keep only the AU_max_stat dimensions with the highest KL_k.
 
-#### Tests requis
+#### Required Tests
 
-1. `test_inference_deterministic` : deux passes identiques sur les mêmes données
-2. `test_B_shape` : B.shape == (n_stocks, K)
-3. `test_AU_measurement` : AU correct sur données synthétiques (facteurs connus)
-4. `test_AU_truncation` : si AU > AU_max_stat, troncation correcte
-5. `test_active_dims_ordering` : dimensions triées par KL décroissante
+1. `test_inference_deterministic`: two identical passes on the same data
+2. `test_B_shape`: B.shape == (n_stocks, K)
+3. `test_AU_measurement`: AU correct on synthetic data (known factors)
+4. `test_AU_truncation`: if AU > AU_max_stat, correct truncation
+5. `test_active_dims_ordering`: dimensions sorted by decreasing KL
 
 ---
 
 ### MOD-007 — risk_model
 
-**Phase :** 2 | **Mode :** subagent | **Dépendances :** MOD-006 (D) | **Densité :** haute
-**Fichiers :** `src/risk_model/*.py`, `tests/unit/test_risk_model.py`
+**Phase:** 2 | **Mode:** subagent | **Dependencies:** MOD-006 (D) | **Density:** high
+**Files:** `src/risk_model/*.py`, `tests/unit/test_risk_model.py`
 
-#### Objectif
+#### Objective
 
-Transformer la matrice d'exposition B_A (shape, sans échelle) en un modèle de risque factoriel complet : rescaling dual, estimation des facteurs par OLS cross-sectionnelle, estimation de Σ_z (Ledoit-Wolf), estimation de D_ε, assemblage de Σ_assets.
+Transform the exposure matrix B_A (shape, unscaled) into a complete factor risk model: dual rescaling, factor estimation via cross-sectional OLS, Σ_z estimation (Ledoit-Wolf), D_ε estimation, Σ_assets assembly.
 
-#### Sous-tâche 1 : Rescaling dual (rescaling.py)
+#### Sub-task 1: Dual rescaling (rescaling.py)
 
-**Pour l'estimation historique** (date-specific) :
+**For historical estimation** (date-specific):
 
 $$\tilde{B}_{\mathcal{A},i,t} = \frac{\sigma_{i,t}}{\bar{\sigma}_t} \cdot \bar{\mu}_{\mathcal{A},i}$$
 
-- $\sigma_{i,t}$ : trailing 252j annualized vol du stock i à la date t (de MOD-001)
-- $\bar{\sigma}_t$ : médiane cross-sectionnelle de $\sigma_{i,t}$ sur l'univers $\mathcal{U}_t$
-- $\bar{\mu}_{\mathcal{A},i}$ : profil composite filtré aux AU dimensions actives
+- $\sigma_{i,t}$: trailing 252d annualized vol of stock i at date t (from MOD-001)
+- $\bar{\sigma}_t$: cross-sectional median of $\sigma_{i,t}$ over the universe $\mathcal{U}_t$
+- $\bar{\mu}_{\mathcal{A},i}$: composite profile filtered to AU active dimensions
 
-**Ratio bounding :** $R_{i,t} = \sigma_{i,t} / \bar{\sigma}_t$ est winsorisé cross-sectionnellement à chaque date aux percentiles $[P_5(R_{\cdot,t}), P_{95}(R_{\cdot,t})]$.
+**Ratio bounding:** $R_{i,t} = \sigma_{i,t} / \bar{\sigma}_t$ is winsorized cross-sectionally at each date at percentiles $[P_5(R_{\cdot,t}), P_{95}(R_{\cdot,t})]$.
 
-**Pour la construction de portefeuille** (current-date) :
+**For portfolio construction** (current-date):
 
 $$\tilde{B}_{\mathcal{A},i}^{\text{port}} = \frac{\sigma_{i,\text{now}}}{\bar{\sigma}_{\text{now}}} \cdot \bar{\mu}_{\mathcal{A},i}$$
 
-Même formule mais avec les volatilités à la date de rebalancement uniquement. Même winsorisation.
+Same formula but with volatilities at the rebalancing date only. Same winsorization.
 
 ```python
 def rescale_estimation(
@@ -951,11 +951,11 @@ def rescale_portfolio(
     """Returns: B_A_port of shape (n, AU)"""
 ```
 
-#### Sous-tâche 2 : Régression cross-sectionnelle (factor_regression.py)
+#### Sub-task 2: Cross-sectional regression (factor_regression.py)
 
 $$\hat{z}_t = (\tilde{B}_{\mathcal{A},t}^T \tilde{B}_{\mathcal{A},t})^{-1} \tilde{B}_{\mathcal{A},t}^T r_t$$
 
-OLS à chaque date t, en utilisant uniquement les stocks actifs à cette date.
+OLS at each date t, using only stocks active at that date.
 
 ```python
 def estimate_factor_returns(
@@ -967,31 +967,31 @@ def estimate_factor_returns(
     """
 ```
 
-**Conditioning guard :** si $\kappa(\tilde{B}_{\mathcal{A},t}^T \tilde{B}_{\mathcal{A},t}) > 10^6$, appliquer un ridge minimal : $\lambda = 10^{-6} \cdot \text{tr}(\tilde{B}_{\mathcal{A},t}^T \tilde{B}_{\mathcal{A},t}) / \text{AU}$.
+**Conditioning guard:** if $\kappa(\tilde{B}_{\mathcal{A},t}^T \tilde{B}_{\mathcal{A},t}) > 10^6$, apply a minimal ridge: $\lambda = 10^{-6} \cdot \text{tr}(\tilde{B}_{\mathcal{A},t}^T \tilde{B}_{\mathcal{A},t}) / \text{AU}$.
 
-#### Sous-tâche 3 : Estimation Σ_z et D_ε (covariance.py)
+#### Sub-task 3: Σ_z and D_ε estimation (covariance.py)
 
-**Σ_z :** Covariance empirique de $\{\hat{z}_t\}$ sur l'historique COMPLET + shrinkage Ledoit-Wolf :
+**Σ_z:** Empirical covariance of $\{\hat{z}_t\}$ over the FULL history + Ledoit-Wolf shrinkage:
 
 $$\hat{\Sigma}_z = (1 - \delta^*) S_{\text{emp}} + \delta^* \frac{\text{tr}(S_{\text{emp}})}{\text{AU}} I_{\text{AU}}$$
 
-$\delta^*$ calculé analytiquement (utiliser `sklearn.covariance.LedoitWolf` ou implémentation directe).
+$\delta^*$ computed analytically (use `sklearn.covariance.LedoitWolf` or direct implementation).
 
-**D_ε :** Variances idiosyncratiques à partir des résidus :
+**D_ε:** Idiosyncratic variances from residuals:
 
 $$\varepsilon_{i,t} = r_{i,t} - \tilde{B}_{\mathcal{A},i,t} \hat{z}_t$$
 
-$D_{\varepsilon,i} = \text{Var}(\varepsilon_{i,\cdot})$ sur toutes les dates où stock i est actif. Floor : $D_{\varepsilon,i} \geq 10^{-6}$.
+$D_{\varepsilon,i} = \text{Var}(\varepsilon_{i,\cdot})$ over all dates where stock i is active. Floor: $D_{\varepsilon,i} \geq 10^{-6}$.
 
-**ATTENTION :** Les résidus utilisent la rescaling DATE-SPECIFIC $\tilde{B}_{\mathcal{A},i,t}$, pas la rescaling portfolio.
+**WARNING:** The residuals use the DATE-SPECIFIC rescaling $\tilde{B}_{\mathcal{A},i,t}$, not the portfolio rescaling.
 
-#### Sous-tâche 4 : Assemblage Σ_assets et eigendecomposition
+#### Sub-task 4: Σ_assets assembly and eigendecomposition
 
 $$\Sigma_{\text{assets}} = \tilde{B}_{\mathcal{A}}^{\text{port}} \cdot \Sigma_z \cdot (\tilde{B}_{\mathcal{A}}^{\text{port}})^T + D_\varepsilon$$
 
-Eigendecomposition de Σ_z : $\Sigma_z = V \Lambda V^T$, avec $\Lambda = \text{diag}(\lambda_1, ..., \lambda_{\text{AU}})$.
+Eigendecomposition of Σ_z: $\Sigma_z = V \Lambda V^T$, with $\Lambda = \text{diag}(\lambda_1, ..., \lambda_{\text{AU}})$.
 
-Rotation de B_A_port dans la base des facteurs principaux :
+Rotation of B_A_port into the principal factor basis:
 
 $$\tilde{B}'^{\text{port}}_{\mathcal{A}} = \tilde{B}_{\mathcal{A}}^{\text{port}} \cdot V$$
 
@@ -1010,67 +1010,67 @@ def assemble_risk_model(
     """
 ```
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-003 :** B_A.shape == (n, AU), AU ≤ AU_max_stat.
-- **INV-004 :** Rescaling date-specific pour estimation, current-date pour portefeuille.
-- **INV-007 :** Eigenvalues de Σ_z ≥ 0 (PSD). La rotation préserve Σ_assets.
-- **INV-008 :** Ratio σ_i,t / σ_bar_t winsorisé [P5, P95].
+- **INV-003:** B_A.shape == (n, AU), AU ≤ AU_max_stat.
+- **INV-004:** Date-specific rescaling for estimation, current-date for portfolio.
+- **INV-007:** Eigenvalues of Σ_z ≥ 0 (PSD). Rotation preserves Σ_assets.
+- **INV-008:** Ratio σ_i,t / σ_bar_t winsorized [P5, P95].
 
-#### Pièges connus
+#### Known Pitfalls
 
-- **NE PAS** utiliser la rescaling portfolio (current-date) pour l'estimation historique — cela attribue incorrectement le risque systématique aux résidus.
-- **NE PAS** oublier le floor D_ε ≥ 1e-6 — sans floor, un stock à variance idiosyncratique nulle reçoit un poids infini dans l'optimisation.
-- **NE PAS** calculer Σ_z sur une fenêtre rolling — utiliser l'historique COMPLET (principe anti-cyclique).
-- **NE PAS** oublier la conditioning guard sur B_A_t^T B_A_t.
+- **DO NOT** use portfolio rescaling (current-date) for historical estimation — this incorrectly attributes systematic risk to residuals.
+- **DO NOT** forget the floor D_ε ≥ 1e-6 — without the floor, a stock with zero idiosyncratic variance receives infinite weight in the optimization.
+- **DO NOT** compute Σ_z on a rolling window — use the FULL history (anti-cyclical principle).
+- **DO NOT** forget the conditioning guard on B_A_t^T B_A_t.
 
-#### Tests requis
+#### Required Tests
 
-1. `test_rescaling_dual` : estimation vs portfolio rescaling produisent des résultats différents
-2. `test_winsorization` : ratios bornés à [P5, P95]
-3. `test_factor_regression_identity` : pour B = I et r = z, z_hat ≈ z
-4. `test_Sigma_z_psd` : toutes les eigenvalues ≥ 0
-5. `test_D_eps_floor` : min(D_eps) ≥ 1e-6
-6. `test_covariance_reconstruction` : B'ΛB'^T + D_ε == BΣ_zB^T + D_ε
-7. `test_conditioning_guard` : ridge appliqué quand κ > 1e6
-8. `test_rotation_preserves_covariance` : Σ_assets identique avant et après rotation
+1. `test_rescaling_dual`: estimation vs portfolio rescaling produce different results
+2. `test_winsorization`: ratios bounded to [P5, P95]
+3. `test_factor_regression_identity`: for B = I and r = z, z_hat ≈ z
+4. `test_Sigma_z_psd`: all eigenvalues ≥ 0
+5. `test_D_eps_floor`: min(D_eps) ≥ 1e-6
+6. `test_covariance_reconstruction`: B'ΛB'^T + D_ε == BΣ_zB^T + D_ε
+7. `test_conditioning_guard`: ridge applied when κ > 1e6
+8. `test_rotation_preserves_covariance`: Σ_assets identical before and after rotation
 
 ---
 
 ### MOD-008 — portfolio_optimization
 
-**Phase :** 2 | **Mode :** lead_session | **Dépendances :** MOD-007 (D) | **Densité :** très haute
-**Fichiers :** `src/portfolio/*.py`, `tests/unit/test_portfolio_optimization.py`
+**Phase:** 2 | **Mode:** lead_session | **Dependencies:** MOD-007 (D) | **Density:** very high
+**Files:** `src/portfolio/*.py`, `tests/unit/test_portfolio_optimization.py`
 
-#### Objectif
+#### Objective
 
-Implémenter l'optimisation de portefeuille par entropie factorielle : calcul de H(w) et ∇H(w) dans la base des facteurs principaux, solver SCA avec Armijo backtracking, multi-start (5 initialisations), cardinality enforcement par élimination séquentielle entropy-aware, et calibration de α via la frontière variance-entropie.
+Implement portfolio optimization via factor entropy: computation of H(w) and ∇H(w) in the principal factor basis, SCA solver with Armijo backtracking, multi-start (5 initializations), cardinality enforcement via sequential entropy-aware elimination, and α calibration via the variance-entropy frontier.
 
-#### Sous-tâche 1 : Entropie et gradient (entropy.py)
+#### Sub-task 1: Entropy and gradient (entropy.py)
 
-**Entropie :**
+**Entropy:**
 
 $$H(w) = -\sum_{k=1}^{\text{AU}} \hat{c}'_k \ln \hat{c}'_k$$
 
-Où :
+Where:
 - $B' = \tilde{B}'^{\text{port}}_{\mathcal{A}}$ (rotated, shape n × AU)
 - $\beta' = B'^T w$ (portfolio exposure, shape AU)
-- $c'_k = (\beta'_k)^2 \cdot \lambda_k$ (risk contribution from principal factor k, toujours ≥ 0)
+- $c'_k = (\beta'_k)^2 \cdot \lambda_k$ (risk contribution from principal factor k, always ≥ 0)
 - $C = \sum_k c'_k$ (total systematic risk)
 - $\hat{c}'_k = c'_k / C$ (normalized risk contributions)
 
-**Gradient :**
+**Gradient:**
 
 $$\nabla_w H = -\frac{2}{C}\; B'\; \phi, \qquad \phi_k = \lambda_k \, \beta'_k \,(\ln \hat{c}'_k + H)$$
 
-**Vérification :** Au maximum d'entropie ($\hat{c}'_k = 1/\text{AU}$ ∀k), $\ln \hat{c}'_k = -\ln(\text{AU}) = -H$, donc $\phi_k = 0$ et $\nabla_w H = 0$.
+**Verification:** At maximum entropy ($\hat{c}'_k = 1/\text{AU}$ ∀k), $\ln \hat{c}'_k = -\ln(\text{AU}) = -H$, so $\phi_k = 0$ and $\nabla_w H = 0$.
 
 ```python
 def compute_entropy_and_gradient(
     w: np.ndarray,              # (n,)
     B_prime: np.ndarray,        # (n, AU)
     eigenvalues: np.ndarray,    # (AU,)
-    eps: float = 1e-30,         # pour la stabilité numérique de ln
+    eps: float = 1e-30,         # for numerical stability of ln
 ) -> tuple[float, np.ndarray]:
     """
     Returns: (H, grad_H) where H is scalar and grad_H is (n,)
@@ -1080,43 +1080,43 @@ def compute_entropy_and_gradient(
     """
 ```
 
-#### Sous-tâche 2 : SCA solver (sca_solver.py)
+#### Sub-task 2: SCA solver (sca_solver.py)
 
-**Multi-start (M=5) :**
-1. Equal-weight : w_i = 1/n
-2. Minimum variance : w* = argmin w^T Σ w (QP convexe)
-3. Approximate ERC (Spinu) : w ∝ solution de $w_i (Σw)_i = \text{const}$
-4-5. Random : cardinality n_r ~ U(30, 300), stocks uniformes, poids Dirichlet(1), projection sur contraintes (clip w_max, renormalize, zero < w_min, renormalize, itérer 2-3 passes)
+**Multi-start (M=5):**
+1. Equal-weight: w_i = 1/n
+2. Minimum variance: w* = argmin w^T Σ w (convex QP)
+3. Approximate ERC (Spinu): w ∝ solution of $w_i (Σw)_i = \text{const}$
+4-5. Random: cardinality n_r ~ U(30, 300), uniform stocks, Dirichlet(1) weights, projection onto constraints (clip w_max, renormalize, zero < w_min, renormalize, iterate 2-3 passes)
 
-**Itérations SCA :**
+**SCA iterations:**
 ```
-Pour chaque start m = 1..M :
+For each start m = 1..M:
   w = w_init_m
-  Pour t = 1..max_iter :
-    1. Lineariser H(w) autour de w^(t) : H_lin(w) = H(w^(t)) + ∇H(w^(t))^T (w - w^(t))
-    2. Résoudre le sous-problème convexe (CVXPY) :
+  For t = 1..max_iter:
+    1. Linearize H(w) around w^(t): H_lin(w) = H(w^(t)) + ∇H(w^(t))^T (w - w^(t))
+    2. Solve the convex sub-problem (CVXPY):
        w* = argmax [ w^T μ - λ w^T Σ w + α · ∇H^T w - φ P_conc(w) - P_turn(w, w_old) ]
        s.t. w_i ∈ [0, w_max], 1^T w = 1, ||w - w_old||_1 / 2 ≤ τ_max
-       (Note : le terme α · ∇H^T w est LINÉAIRE en w — c'est ça qui rend le sous-problème convexe)
-    3. Armijo backtracking pour trouver η_step :
-       η = max{ρ^j : j=0,...,j_max} tel que
+       (Note: the term α · ∇H^T w is LINEAR in w — this is what makes the sub-problem convex)
+    3. Armijo backtracking to find η_step:
+       η = max{ρ^j : j=0,...,j_max} such that
        f(w^(t) + η(w* - w^(t))) ≥ f(w^(t)) + c · η · Δ_surr
-       avec c=1e-4, ρ=0.5, j_max=20
+       with c=1e-4, ρ=0.5, j_max=20
        Δ_surr = f_surr(w*) - f_surr(w^(t)) ≥ 0
-    4. Update : w^(t+1) = w^(t) + η(w* - w^(t))
-    5. Convergence : |f(w^(t+1)) - f(w^(t))| < 1e-8
+    4. Update: w^(t+1) = w^(t) + η(w* - w^(t))
+    5. Convergence: |f(w^(t+1)) - f(w^(t))| < 1e-8
 
-  Appliquer cardinality enforcement (sous-tâche 3)
-  Stocker (w_final_m, f_final_m, H_final_m)
+  Apply cardinality enforcement (sub-task 3)
+  Store (w_final_m, f_final_m, H_final_m)
 
-Sélectionner m* = argmax_m f(w_final_m)
+Select m* = argmax_m f(w_final_m)
 ```
 
-**Objectif f :**
-- Default (μ=0) : $f = -\lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
-- Directional : $f = w^T \mu - \lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
+**Objective f:**
+- Default (μ=0): $f = -\lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
+- Directional: $f = w^T \mu - \lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
 
-#### Sous-tâche 3 : Cardinality enforcement (cardinality.py)
+#### Sub-task 3: Cardinality enforcement (cardinality.py)
 
 ```python
 def enforce_cardinality(
@@ -1127,35 +1127,35 @@ def enforce_cardinality(
     max_eliminations: int = 100,
 ) -> np.ndarray:
     """
-    Répéter :
-    1. S_sub = {i : 0 < w_i < w_min}. Si vide → stop.
-    2. Pour chaque i ∈ S_sub : ΔH_i = H(w) - H(w^(-i)) (coût entropique d'élimination)
-    3. Éliminer i* = argmin ΔH_i (le moins coûteux)
-    4. Re-optimiser via SCA sur l'active set réduit
-    5. Retour à l'étape 1
+    Repeat:
+    1. S_sub = {i : 0 < w_i < w_min}. If empty → stop.
+    2. For each i ∈ S_sub: ΔH_i = H(w) - H(w^(-i)) (entropy cost of elimination)
+    3. Eliminate i* = argmin ΔH_i (the least costly)
+    4. Re-optimize via SCA on the reduced active set
+    5. Return to step 1
 
-    Garantie de convergence : active set diminue strictement à chaque itération.
-    En pratique : 5-15 itérations pour n=1000.
+    Convergence guarantee: active set strictly decreases at each iteration.
+    In practice: 5-15 iterations for n=1000.
     """
 ```
 
-#### Sous-tâche 4 : Contraintes (constraints.py)
+#### Sub-task 4: Constraints (constraints.py)
 
-**Concentration penalty :**
+**Concentration penalty:**
 $$P_{\text{conc}}(w) = \sum_i \max(0, w_i - \bar{w})^2, \quad \bar{w} = 3\%$$
 
-**Turnover penalty (Almgren-Chriss) :**
+**Turnover penalty (Almgren-Chriss):**
 $$P_{\text{turn}}(w, w^{\text{old}}) = \kappa_1 \cdot \frac{1}{2}\sum_i |w_i - w_i^{\text{old}}| + \kappa_2 \cdot \sum_i \max(0, |w_i - w_i^{\text{old}}| - \bar{\delta})^2$$
 
-Premier rebalancement : κ₁ = κ₂ = 0.
+First rebalancing: κ₁ = κ₂ = 0.
 
-**Hard constraints :**
+**Hard constraints:**
 - $w_i \geq 0$ (long-only)
 - $\sum_i w_i = 1$ (fully invested)
 - $w_i \leq w_{\max}^{\text{hard}} = 5\%$
 - $\frac{1}{2}\|w - w^{\text{old}}\|_1 \leq \tau_{\max}^{\text{hard}} = 30\%$
 
-#### Sous-tâche 5 : Frontière variance-entropie (frontier.py)
+#### Sub-task 5: Variance-entropy frontier (frontier.py)
 
 ```python
 def compute_variance_entropy_frontier(
@@ -1165,84 +1165,84 @@ def compute_variance_entropy_frontier(
     **constraint_params,
 ) -> pd.DataFrame:
     """
-    Pour chaque α, résoudre l'optimisation default (μ=0).
-    Retourner DataFrame avec colonnes: alpha, variance, entropy, n_active_positions.
+    For each α, solve the default optimization (μ=0).
+    Return DataFrame with columns: alpha, variance, entropy, n_active_positions.
 
-    Le coude (elbow) de la frontière = operating point.
-    Sélection automatique : α où ΔH/ΔVar < threshold.
+    The elbow of the frontier = operating point.
+    Automatic selection: α where ΔH/ΔVar < threshold.
     """
 ```
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-007 :** H(w) calculé dans la base des facteurs principaux. c'_k ≥ 0 ∀k.
-- **INV-009 :** Gradient exactement comme spécifié. ∇H = 0 au maximum.
-- **INV-012 :** Contraintes identiques pour VAE et benchmarks.
+- **INV-007:** H(w) computed in the principal factor basis. c'_k ≥ 0 ∀k.
+- **INV-009:** Gradient exactly as specified. ∇H = 0 at maximum.
+- **INV-012:** Constraints identical for VAE and benchmarks.
 
-#### Pièges connus
+#### Known Pitfalls
 
-- **NE PAS** calculer l'entropie dans la base latente brute — les contributions c_k peuvent être négatives si Σ_z n'est pas diagonale. Toujours utiliser la base des facteurs principaux (après rotation V).
-- **NE PAS** oublier le terme constant α · H(w^(t)) dans la linéarisation — il n'affecte pas w* mais il est nécessaire pour le calcul de Δ_surr dans Armijo.
-- **NE PAS** utiliser un full step (η=1) sans Armijo — en early iterations, le full step peut DIMINUER l'objectif réel.
-- **NE PAS** oublier la condition de convergence |f(w^(t+1)) - f(w^(t))| < 1e-8, pas |w^(t+1) - w^(t)|.
-- **NE PAS** re-optimiser les paramètres de contrainte (φ, κ₁, κ₂) par benchmark — ils sont fixés une fois pour le VAE et appliqués identiquement à tous les modèles (INV-012).
+- **DO NOT** compute entropy in the raw latent basis — contributions c_k can be negative if Σ_z is not diagonal. Always use the principal factor basis (after V rotation).
+- **DO NOT** forget the constant term α · H(w^(t)) in the linearization — it does not affect w* but is necessary for computing Δ_surr in Armijo.
+- **DO NOT** use a full step (η=1) without Armijo — in early iterations, the full step can DECREASE the actual objective.
+- **DO NOT** forget the convergence condition |f(w^(t+1)) - f(w^(t))| < 1e-8, not |w^(t+1) - w^(t)|.
+- **DO NOT** re-optimize constraint parameters (φ, κ₁, κ₂) per benchmark — they are set once for the VAE and applied identically to all models (INV-012).
 
-#### Tests requis
+#### Required Tests
 
-1. `test_entropy_gradient_at_maximum` : ∇H = 0 quand ĉ'_k = 1/AU ∀k
-2. `test_entropy_gradient_numerical` : gradient analytique ≈ gradient numérique (finite diff)
-3. `test_sca_convergence` : convergence en < 100 iterations sur problème simple
-4. `test_armijo_sufficient_decrease` : f(w_{t+1}) ≥ f(w_t) à chaque iteration
-5. `test_multi_start_deterministic` : mêmes résultats avec même seed
-6. `test_cardinality_enforcement` : aucun w_i dans (0, w_min) après enforcement
-7. `test_constraints_satisfied` : tous les hard constraints respectés
-8. `test_turnover_first_rebalancing` : κ₁ = κ₂ = 0 au premier rebalancement
-9. `test_known_solution` : pour Σ diagonal et B = I, solution analytique retrouvée
+1. `test_entropy_gradient_at_maximum`: ∇H = 0 when ĉ'_k = 1/AU ∀k
+2. `test_entropy_gradient_numerical`: analytical gradient ≈ numerical gradient (finite diff)
+3. `test_sca_convergence`: convergence in < 100 iterations on simple problem
+4. `test_armijo_sufficient_decrease`: f(w_{t+1}) ≥ f(w_t) at each iteration
+5. `test_multi_start_deterministic`: same results with same seed
+6. `test_cardinality_enforcement`: no w_i in (0, w_min) after enforcement
+7. `test_constraints_satisfied`: all hard constraints satisfied
+8. `test_turnover_first_rebalancing`: κ₁ = κ₂ = 0 at first rebalancing
+9. `test_known_solution`: for diagonal Σ and B = I, analytical solution recovered
 
-
----
-
-## Sections ISD — Phase 3 (parallèle : benchmarks)
 
 ---
 
-### MOD-010 à MOD-015 — Benchmarks
+## ISD Sections — Phase 3 (parallel: benchmarks)
 
-**Phase :** 3 | **Mode :** teammates (Agent Team "benchmarks") | **Densité :** faible à haute
-**Fichiers :** `src/benchmarks/*.py`, `tests/unit/test_benchmarks.py`
+---
 
-Tous les benchmarks héritent d'une classe abstraite commune et partagent l'infrastructure de MOD-001 (data_pipeline) et les contraintes de portefeuille de MOD-008.
+### MOD-010 to MOD-015 — Benchmarks
 
-#### Classe abstraite commune (base.py)
+**Phase:** 3 | **Mode:** teammates (Agent Team "benchmarks") | **Density:** low to high
+**Files:** `src/benchmarks/*.py`, `tests/unit/test_benchmarks.py`
+
+All benchmarks inherit from a common abstract class and share the infrastructure from MOD-001 (data_pipeline) and the portfolio constraints from MOD-008.
+
+#### Common Abstract Class (base.py)
 
 ```python
 from abc import ABC, abstractmethod
 
 class BenchmarkModel(ABC):
     """
-    Interface commune pour tous les benchmarks.
+    Common interface for all benchmarks.
 
-    Chaque benchmark reçoit exactement les mêmes inputs (univers, returns,
-    contraintes) et produit exactement le même format de sortie (poids).
+    Each benchmark receives exactly the same inputs (universe, returns,
+    constraints) and produces exactly the same output format (weights).
     """
 
     def __init__(self, constraint_params: dict):
         """
         constraint_params: w_max, w_min, phi, kappa_1, kappa_2,
-        delta_bar, tau_max, lambda_risk (identiques au VAE — INV-012).
+        delta_bar, tau_max, lambda_risk (identical to the VAE — INV-012).
         """
         self.constraint_params = constraint_params
 
     @abstractmethod
     def fit(self, returns: pd.DataFrame, universe: list[str], **kwargs) -> None:
-        """Estime le modèle de risque (si applicable)."""
+        """Estimate the risk model (if applicable)."""
 
     @abstractmethod
     def optimize(self, w_old: np.ndarray = None, is_first: bool = False) -> np.ndarray:
-        """Produit les poids optimaux sous contraintes partagées."""
+        """Produce optimal weights under shared constraints."""
 
     def evaluate(self, w: np.ndarray, returns_oos: pd.DataFrame) -> dict:
-        """Calcule toutes les métriques OOS (partagé)."""
+        """Compute all OOS metrics (shared)."""
 ```
 
 ---
@@ -1256,11 +1256,11 @@ class EqualWeight(BenchmarkModel):
 
     def optimize(self, w_old=None, is_first=False):
         w = np.ones(self.n) / self.n
-        # Hard cap à 5% non-binding pour n=1000
+        # Hard cap at 5% non-binding for n=1000
         return np.clip(w, 0, self.constraint_params['w_max'])
 ```
 
-Pas de modèle de risque, pas de pénalité de turnover (turnover intrinsèquement faible).
+No risk model, no turnover penalty (turnover intrinsically low).
 
 ---
 
@@ -1270,8 +1270,8 @@ Pas de modèle de risque, pas de pénalité de turnover (turnover intrinsèqueme
 class InverseVolatility(BenchmarkModel):
     def fit(self, returns, universe, trailing_vol, current_date, **kwargs):
         """
-        σ_i = trailing 252j annualized vol à current_date.
-        w_i ∝ 1/σ_i, puis projection sur contraintes.
+        σ_i = trailing 252d annualized vol at current_date.
+        w_i ∝ 1/σ_i, then projection onto constraints.
         """
         self.sigma = trailing_vol.loc[current_date, universe].values
         assert (self.sigma > 0).all(), "Zero or negative vol detected"
@@ -1282,7 +1282,7 @@ class InverseVolatility(BenchmarkModel):
         return self._project_to_constraints(w, w_old, is_first)
 
     def _project_to_constraints(self, w, w_old, is_first):
-        """Clip w_max, zero < w_min, renormalize. Itérer 2-3 passes."""
+        """Clip w_max, zero < w_min, renormalize. Iterate 2-3 passes."""
 ```
 
 ---
@@ -1293,10 +1293,10 @@ class InverseVolatility(BenchmarkModel):
 class MinimumVariance(BenchmarkModel):
     def fit(self, returns, universe, **kwargs):
         """
-        Estime Σ_LW par Ledoit-Wolf (2004) shrinkage vers identité scalée
-        sur la fenêtre d'entraînement complète (expanding, anti-cyclique).
+        Estimate Σ_LW via Ledoit-Wolf (2004) shrinkage toward scaled identity
+        on the full training window (expanding, anti-cyclical).
 
-        Utiliser sklearn.covariance.LedoitWolf ou implémentation directe.
+        Use sklearn.covariance.LedoitWolf or direct implementation.
         """
         R = returns[universe].dropna(how='all').values
         lw = LedoitWolf().fit(R)
@@ -1305,13 +1305,13 @@ class MinimumVariance(BenchmarkModel):
     def optimize(self, w_old=None, is_first=False):
         """
         min w^T Σ_LW w
-        s.t. contraintes partagées (P_conc, P_turn, hard caps)
+        s.t. shared constraints (P_conc, P_turn, hard caps)
 
-        QP convexe → CVXPY + MOSEK. Solution globale garantie.
+        Convex QP → CVXPY + MOSEK. Global solution guaranteed.
         """
 ```
 
-Exposer `self.Sigma_LW` pour réutilisation par MOD-013 (ERC).
+Expose `self.Sigma_LW` for reuse by MOD-013 (ERC).
 
 ---
 
@@ -1320,22 +1320,22 @@ Exposer `self.Sigma_LW` pour réutilisation par MOD-013 (ERC).
 ```python
 class EqualRiskContribution(BenchmarkModel):
     def fit(self, returns, universe, **kwargs):
-        """Réutilise Σ_LW de MOD-012."""
-        # Utiliser le même estimateur Ledoit-Wolf
+        """Reuses Σ_LW from MOD-012."""
+        # Use the same Ledoit-Wolf estimator
         R = returns[universe].dropna(how='all').values
         lw = LedoitWolf().fit(R)
         self.Sigma_LW = lw.covariance_
 
     def optimize(self, w_old=None, is_first=False):
         """
-        ERC via Spinu (2013) : formulation log-barrière convexe.
+        ERC via Spinu (2013): convex log-barrier formulation.
 
         min Σ_i Σ_j (w_i(Σw)_i - w_j(Σw)_j)²
-        ou formulation équivalente :
+        or equivalent formulation:
         min (1/2) w^T Σ w - Σ_i ln(w_i)
 
-        Convergence : < 5 itérations de Newton pour n < 1000.
-        Projection post-hoc sur hard caps, puis renormalisation itérée.
+        Convergence: < 5 Newton iterations for n < 1000.
+        Post-hoc projection onto hard caps, then iterative renormalization.
         """
 ```
 
@@ -1343,17 +1343,17 @@ class EqualRiskContribution(BenchmarkModel):
 
 ### MOD-014 — bench_pca_factor_rp
 
-**C'est le benchmark le plus important** — il isole la valeur ajoutée du VAE vs la PCA linéaire.
+**This is the most important benchmark** — it isolates the added value of the VAE vs linear PCA.
 
 ```python
 class PCAFactorRiskParity(BenchmarkModel):
     def fit(self, returns, universe, **kwargs):
         """
-        1. PCA sur la matrice de rendements (T_est × n).
-        2. Nombre de facteurs k par Bai & Ng (2002) IC₂.
-        3. B_PCA ∈ R^(n × k) : loadings PCA.
-        4. Σ_z_PCA = Λ_k (diagonale — composantes principales orthogonales).
-        5. D_ε_PCA : résidus, variance diagonale, floor 1e-6.
+        1. PCA on the return matrix (T_est × n).
+        2. Number of factors k via Bai & Ng (2002) IC₂.
+        3. B_PCA ∈ R^(n × k): PCA loadings.
+        4. Σ_z_PCA = Λ_k (diagonal — orthogonal principal components).
+        5. D_ε_PCA: residuals, diagonal variance, floor 1e-6.
         6. Σ_assets = B_PCA Λ_k B_PCA^T + D_ε_PCA.
         """
 
@@ -1362,25 +1362,25 @@ class PCAFactorRiskParity(BenchmarkModel):
         Information Criterion IC₂ (Bai & Ng, 2002).
         IC₂(k) = ln(V(k)) + k · ((n+T)/(n·T)) · ln(min(n,T))
         V(k) = (1/(n·T)) · ||R - F_k Λ_k^T||²_F
-        Sélectionner k* = argmin IC₂(k).
-        Typiquement k ∈ [5, 15].
+        Select k* = argmin IC₂(k).
+        Typically k ∈ [5, 15].
         """
 
     def optimize(self, w_old=None, is_first=False):
         """
-        MÊME objectif et solver que le VAE :
+        SAME objective and solver as the VAE:
         max -λ w^T Σ w + α H(w)  (μ = 0)
 
-        H(w) calculé dans la base des facteurs principaux de Σ_z_PCA
-        (mais puisque Σ_z_PCA = Λ_k est déjà diagonale, la rotation est triviale : V = I).
+        H(w) computed in the principal factor basis of Σ_z_PCA
+        (but since Σ_z_PCA = Λ_k is already diagonal, the rotation is trivial: V = I).
 
-        SCA solver identique à MOD-008 (import sca_solver).
-        Calibration α identique (frontière variance-entropie).
-        Contraintes identiques.
+        SCA solver identical to MOD-008 (import sca_solver).
+        α calibration identical (variance-entropy frontier).
+        Constraints identical.
         """
 ```
 
-**Dépendances :** MOD-008 (C: import du SCA solver), MOD-001 (D: returns).
+**Dependencies:** MOD-008 (C: SCA solver import), MOD-001 (D: returns).
 
 ---
 
@@ -1389,46 +1389,46 @@ class PCAFactorRiskParity(BenchmarkModel):
 ```python
 class PCAVolRiskParity(PCAFactorRiskParity):
     """
-    Variante du MOD-014 avec matrice augmentée (T × 2n) :
-    - Concaténation rendements z-scorés + volatilités réalisées 21j z-scorées.
-    - PCA sur cette matrice augmentée.
-    - Reste identique (IC₂, SCA, mêmes contraintes).
+    Variant of MOD-014 with augmented matrix (T × 2n):
+    - Concatenation of z-scored returns + z-scored 21d realized volatilities.
+    - PCA on this augmented matrix.
+    - Rest is identical (IC₂, SCA, same constraints).
 
-    Isolement : non-linéarité du VAE indépendamment de l'enrichissement features.
+    Isolation: VAE non-linearity independently of feature enrichment.
     """
 
     def fit(self, returns, universe, trailing_vol, **kwargs):
-        # Z-score per window pour les two features, puis PCA sur matrice augmentée
+        # Z-score per window for the two features, then PCA on augmented matrix
 ```
 
 ---
 
-### Tests requis (tous benchmarks)
+### Required Tests (all benchmarks)
 
-1. `test_constraints_identical` : mêmes paramètres de contrainte pour tous les modèles
-2. `test_equal_weight_sum_to_one` : w.sum() == 1
-3. `test_min_var_beats_random` : min-var < random portfolio variance (sanity)
-4. `test_erc_equal_risk_contributions` : RC_i ≈ RC_j ∀ i,j (tolérance 5%)
-5. `test_pca_ic2_range` : k ∈ [3, 30] pour données réalistes
-6. `test_pca_factor_rp_uses_sca` : le solver SCA converge
-7. `test_benchmark_output_format` : tous les modèles retournent w de shape (n,)
+1. `test_constraints_identical`: same constraint parameters for all models
+2. `test_equal_weight_sum_to_one`: w.sum() == 1
+3. `test_min_var_beats_random`: min-var < random portfolio variance (sanity)
+4. `test_erc_equal_risk_contributions`: RC_i ≈ RC_j ∀ i,j (tolerance 5%)
+5. `test_pca_ic2_range`: k ∈ [3, 30] for realistic data
+6. `test_pca_factor_rp_uses_sca`: the SCA solver converges
+7. `test_benchmark_output_format`: all models return w of shape (n,)
 
 ---
 
-## Sections ISD — Phase 4 (séquentiel)
+## ISD Sections — Phase 4 (sequential)
 
 ---
 
 ### MOD-009 — walk_forward
 
-**Phase :** 4 | **Mode :** lead_session | **Dépendances :** MOD-001–008 (D), MOD-010–015 (D) | **Densité :** haute
-**Fichiers :** `src/walk_forward/*.py`, `tests/integration/test_walk_forward.py`
+**Phase:** 4 | **Mode:** lead_session | **Dependencies:** MOD-001–008 (D), MOD-010–015 (D) | **Density:** high
+**Files:** `src/walk_forward/*.py`, `tests/integration/test_walk_forward.py`
 
-#### Objectif
+#### Objective
 
-Orchestrer la validation walk-forward complète : scheduling des ~34 folds, exécution de Phase A (HP selection) et Phase B (deployment) par fold, calcul des métriques sur 3 couches, scoring composite, et évaluation holdout finale.
+Orchestrate the complete walk-forward validation: scheduling of ~34 folds, execution of Phase A (HP selection) and Phase B (deployment) per fold, metric computation across 3 layers, composite scoring, and final holdout evaluation.
 
-#### Sous-tâche 1 : Scheduling des folds (folds.py)
+#### Sub-task 1: Fold scheduling (folds.py)
 
 ```python
 def generate_fold_schedule(
@@ -1439,17 +1439,17 @@ def generate_fold_schedule(
     holdout_years: int = 3,
 ) -> list[dict]:
     """
-    Génère le schedule des folds walk-forward.
+    Generates the walk-forward fold schedule.
 
-    Fold k :
-      - Training end : Year 10 + k × 0.5
-      - Embargo : 21 trading days after training end
-      - OOS start : training_end + embargo + 1
-      - OOS end : OOS start + 6 months
-      - Validation subset (nested) : [training_end - 2yr, training_end]
-      - Training subset (nested) : [start, training_end - 2yr]
+    Fold k:
+      - Training end: Year 10 + k × 0.5
+      - Embargo: 21 trading days after training end
+      - OOS start: training_end + embargo + 1
+      - OOS end: OOS start + 6 months
+      - Validation subset (nested): [training_end - 2yr, training_end]
+      - Training subset (nested): [start, training_end - 2yr]
 
-    Holdout : last ~3 years (Year 27 to Year 30)
+    Holdout: last ~3 years (Year 27 to Year 30)
 
     Returns: list of dicts with fold_id, train_start, train_end,
              val_start, val_end, embargo_start, embargo_end,
@@ -1457,43 +1457,43 @@ def generate_fold_schedule(
     """
 ```
 
-**~34 folds :** de Year 10 à Year 27, pas de 6 mois.
+**~34 folds:** from Year 10 to Year 27, 6-month steps.
 
-#### Sous-tâche 2 : Phase A — HP selection (phase_a.py)
+#### Sub-task 2: Phase A — HP selection (phase_a.py)
 
 ```python
 def run_phase_a(
     fold: dict,
-    hp_configs: list[dict],  # grille d'hyperparamètres
+    hp_configs: list[dict],  # hyperparameter grid
     data_pipeline_output: dict,
     build_vae_fn,
 ) -> dict:
     """
-    Pour chaque HP config :
-      1. Construire le VAE avec ces HPs
-      2. Entraîner sur [start, train_end - 2yr]
-         avec early stopping sur [train_end - 2yr, train_end]
+    For each HP config:
+      1. Build the VAE with these HPs
+      2. Train on [start, train_end - 2yr]
+         with early stopping on [train_end - 2yr, train_end]
          → record E*_config
       3. Build downstream pipeline (AU, B_A, Σ_z, portfolio)
-      4. Évaluer sur OOS → fold score
+      4. Evaluate on OOS → fold score
 
-    Score composite :
+    Composite score:
       Score = Ĥ_OOS - λ_pen · max(0, MDD_OOS - MDD_threshold) - λ_est · max(0, 1 - R_Σ)
 
-    où Ĥ = H(w) / ln(AU)  (entropie normalisée, ∈ [0, 1])
-    MDD en fraction ∈ [0, 1]
+    where Ĥ = H(w) / ln(AU)  (normalized entropy, ∈ [0, 1])
+    MDD as fraction ∈ [0, 1]
     R_Σ = N_obs / (AU(AU+1)/2)
 
-    Baselines : MDD_threshold = 0.20, λ_pen = 5, λ_est = 2.
+    Baselines: MDD_threshold = 0.20, λ_pen = 5, λ_est = 2.
 
-    Élimination : configs avec AU < max(0.15K, AU_PCA), EP < max(0.40, EP_PCA),
-    OOS/train MSE > 3.0 éliminées avant scoring.
+    Elimination: configs with AU < max(0.15K, AU_PCA), EP < max(0.40, EP_PCA),
+    OOS/train MSE > 3.0 are eliminated before scoring.
 
     Returns: best_config, E_star, fold_scores
     """
 ```
 
-#### Sous-tâche 3 : Phase B — Deployment run (phase_b.py)
+#### Sub-task 3: Phase B — Deployment run (phase_b.py)
 
 ```python
 def run_phase_b(
@@ -1503,46 +1503,46 @@ def run_phase_b(
     data_pipeline_output: dict,
 ) -> dict:
     """
-    Ré-entraîner l'encodeur sur TOUTES les données [start, train_end]
-    pendant E* epochs (pas de validation set, pas d'early stopping).
+    Re-train the encoder on ALL data [start, train_end]
+    for E* epochs (no validation set, no early stopping).
 
-    E* = median des E*_config across folds (robustesse).
+    E* = median of E*_config across folds (robustness).
 
-    Sanity check : si training loss à E* en Phase B est > 20% inférieure
-    à Phase A, flag le fold.
+    Sanity check: if training loss at E* in Phase B is > 20% lower
+    than Phase A, flag the fold.
 
-    Puis : pipeline downstream complet
+    Then: complete downstream pipeline
     (AU, B_A, Σ_z, D_ε, portfolio optimization).
 
-    Évaluer sur OOS.
+    Evaluate on OOS.
 
     Returns: weights, metrics, AU, diagnostics
     """
 ```
 
-#### Sous-tâche 4 : Métriques (metrics.py)
+#### Sub-task 4: Metrics (metrics.py)
 
-**Layer 1 — VAE quality :**
-- OOS reconstruction error par régime (OOS/train MSE < 1.5 ; crisis/normal ∈ [0.5, 2.0])
-- AU (AU ≥ max(0.15K, AU_PCA) ; AU ≤ min(0.85K, AU_max_stat))
-- Latent stability : Spearman ρ > 0.85 des distances pairwise inter-stocks entre retrainings
+**Layer 1 — VAE quality:**
+- OOS reconstruction error by regime (OOS/train MSE < 1.5; crisis/normal ∈ [0.5, 2.0])
+- AU (AU ≥ max(0.15K, AU_PCA); AU ≤ min(0.85K, AU_max_stat))
+- Latent stability: Spearman ρ > 0.85 of pairwise inter-stock distances between retrainings
 
-**Layer 2 — Risk model quality :**
-- Variance réalisée vs prédite : var(r_p^OOS) / (w^T Σ̂ w) ∈ [0.8, 1.2]
-- Factor explanatory power : > max(0.50, EP_PCA + 0.10)
-- Correlation réalisée vs prédite (rank)
+**Layer 2 — Risk model quality:**
+- Realized vs predicted variance: var(r_p^OOS) / (w^T Σ̂ w) ∈ [0.8, 1.2]
+- Factor explanatory power: > max(0.50, EP_PCA + 0.10)
+- Realized vs predicted correlation (rank)
 
-**Layer 3 — Portfolio quality :**
-- Entropie factorielle normalisée OOS (primary)
-- Volatilité annualisée OOS (primary)
+**Layer 3 — Portfolio quality:**
+- Normalized factor entropy OOS (primary)
+- Annualized volatility OOS (primary)
 - Maximum drawdown OOS (primary)
-- Rendement en période de crise (primary)
-- Rendement annualisé, Sharpe, Calmar, Sortino (diagnostic)
-- Turnover au rebalancement (diagnostic, cible < 30%)
+- Crisis-period return (primary)
+- Annualized return, Sharpe, Calmar, Sortino (diagnostic)
+- Turnover at rebalancing (diagnostic, target < 30%)
 - Diversification ratio DR (diagnostic)
-- Nombre effectif de positions 1/Σw²_i (diagnostic)
+- Effective number of positions 1/Σw²_i (diagnostic)
 
-#### Sous-tâche 5 : Holdout
+#### Sub-task 5: Holdout
 
 ```python
 def run_holdout(
@@ -1550,43 +1550,43 @@ def run_holdout(
     E_star_median: int,
     data_pipeline_output: dict,
     holdout_period: tuple,    # (start_date, end_date)
-    benchmark_results: dict,  # résultats des benchmarks sur holdout
+    benchmark_results: dict,  # benchmark results on holdout
 ) -> dict:
     """
-    UNE SEULE EXÉCUTION, à la fin.
-    Entraîner chaque modèle (VAE + 6 benchmarks) sur tout l'historique
-    jusqu'à t_holdout. Évaluer sur les ~3 dernières années.
-    Comparer holdout vs walk-forward pour détecter surapprentissage structurel.
+    A SINGLE EXECUTION, at the end.
+    Train each model (VAE + 6 benchmarks) on all history
+    up to t_holdout. Evaluate on the last ~3 years.
+    Compare holdout vs walk-forward to detect structural overfitting.
     """
 ```
 
-#### Invariants applicables
+#### Applicable Invariants
 
-- **INV-005 :** Aucun look-ahead. Training ≤ train_end, OOS > embargo_end.
-- **CONV-09 :** Expanding window pour le training.
-- **CONV-10 :** Point-in-time universe à chaque date.
-- **INV-012 :** Mêmes contraintes pour VAE et benchmarks.
+- **INV-005:** No look-ahead. Training ≤ train_end, OOS > embargo_end.
+- **CONV-09:** Expanding window for training.
+- **CONV-10:** Point-in-time universe at each date.
+- **INV-012:** Same constraints for VAE and benchmarks.
 
-#### Tests requis
+#### Required Tests
 
-1. `test_fold_no_overlap` : aucun chevauchement training/OOS (avec embargo)
-2. `test_fold_dates_sequential` : folds ordonnés chronologiquement
-3. `test_holdout_untouched` : holdout data jamais vue pendant walk-forward
-4. `test_score_normalization` : Ĥ ∈ [0, 1]
-5. `test_phase_b_no_early_stopping` : E* epochs exécutés sans interruption
+1. `test_fold_no_overlap`: no training/OOS overlap (with embargo)
+2. `test_fold_dates_sequential`: folds ordered chronologically
+3. `test_holdout_untouched`: holdout data never seen during walk-forward
+4. `test_score_normalization`: Ĥ ∈ [0, 1]
+5. `test_phase_b_no_early_stopping`: E* epochs executed without interruption
 
 ---
 
 ### MOD-016 — integration
 
-**Phase :** 4 | **Mode :** lead_session | **Dépendances :** tous | **Densité :** haute
-**Fichiers :** `src/integration/*.py`, `scripts/run_walk_forward.py`, `scripts/run_benchmarks.py`
+**Phase:** 4 | **Mode:** lead_session | **Dependencies:** all | **Density:** high
+**Files:** `src/integration/*.py`, `scripts/run_walk_forward.py`, `scripts/run_benchmarks.py`
 
-#### Objectif
+#### Objective
 
-Orchestrer l'exécution complète end-to-end et produire le rapport de résultats avec tests statistiques de comparaison.
+Orchestrate the complete end-to-end execution and produce the results report with statistical comparison tests.
 
-#### Sous-tâche 1 : Pipeline E2E (pipeline.py)
+#### Sub-task 1: E2E Pipeline (pipeline.py)
 
 ```python
 class FullPipeline:
@@ -1604,46 +1604,46 @@ class FullPipeline:
         """
 ```
 
-#### Sous-tâche 2 : Tests statistiques (statistical_tests.py)
+#### Sub-task 2: Statistical tests (statistical_tests.py)
 
 ```python
 def wilcoxon_paired_test(vae_scores, benchmark_scores):
     """
-    Test de Wilcoxon signé (non-paramétrique) sur les différences par fold.
-    H0 : médiane(Δ_k) = 0.
-    Seuil : p < 0.05.
+    Wilcoxon signed-rank test (non-parametric) on per-fold differences.
+    H0: median(Δ_k) = 0.
+    Threshold: p < 0.05.
     """
 
 def bootstrap_effect_size(vae_scores, benchmark_scores, n_bootstrap=10000):
-    """Médiane de Δ + intervalle de confiance bootstrap (percentile method)."""
+    """Median of Δ + bootstrap confidence interval (percentile method)."""
 
 def holm_bonferroni_correction(p_values: list[float], alpha=0.05):
-    """Correction pour 6 benchmarks × 4 métriques = 24 tests."""
+    """Correction for 6 benchmarks × 4 metrics = 24 tests."""
 
 def regime_decomposition(fold_metrics, vix_data):
     """
-    Séparer folds en "crise" (> 20% jours VIX > P80) et "calme".
-    Rapporter métriques et tests séparément.
+    Separate folds into "crisis" (> 20% days VIX > P80) and "calm".
+    Report metrics and tests separately.
     """
 ```
 
-#### Tests requis
+#### Required Tests
 
-1. `test_pipeline_e2e_synthetic` : pipeline complet sur données synthétiques (50 stocks, 10 ans)
-2. `test_statistical_tests_known` : Wilcoxon correct sur distributions connues
-3. `test_holm_bonferroni` : correction appliquée correctement
+1. `test_pipeline_e2e_synthetic`: complete pipeline on synthetic data (50 stocks, 10 years)
+2. `test_statistical_tests_known`: Wilcoxon correct on known distributions
+3. `test_holm_bonferroni`: correction applied correctly
 
 ---
 
-## CLAUDE.md — Template pour le projet
+## CLAUDE.md — Template for the Project
 
 ```markdown
 # Latent Risk Factor Discovery — VAE Strategy
 
 ## Context
-Pipeline de construction de portefeuille basé sur la découverte de facteurs de risque latents
-par VAE (1D CNN encoder-decoder). Objectif : maximiser la diversification factorielle
-(entropie de Shannon sur les contributions au risque des facteurs principaux).
+Portfolio construction pipeline based on latent risk factor discovery
+via VAE (1D CNN encoder-decoder). Objective: maximize factor diversification
+(Shannon entropy on principal factor risk contributions).
 
 ## Architecture
 CRSP data → data_pipeline → VAE training → inference → risk_model → portfolio_optimization
@@ -1652,98 +1652,98 @@ CRSP data → data_pipeline → VAE training → inference → risk_model → po
                                                                          ↓
                                                                   benchmarks (×6)
 
-## Conventions critiques — NE PAS VIOLER
-- Rendements en LOG, jamais arithmétiques
+## Critical Conventions — DO NOT VIOLATE
+- LOG returns, never arithmetic
 - Z-score PER-WINDOW, PER-FEATURE
-- σ² est un SCALAIRE, pas un vecteur (init 1.0, clamp [1e-4, 10])
-- D = T × F DOIT apparaître dans la reconstruction loss (D/(2σ²) · L_recon)
-- Modes P/F/A sont MUTUELLEMENT EXCLUSIFS
-- Rescaling DUALE : date-specific pour estimation, current-date pour portefeuille
-- Entropie H(w) calculée dans la base des FACTEURS PRINCIPAUX (après rotation V de Σ_z)
-- Ratio σ_i,t / σ_bar_t WINSORISÉ [P5, P95] AVANT rescaling
-- Contraintes de portefeuille IDENTIQUES entre VAE et tous les benchmarks
-- AUCUN look-ahead — point-in-time strict
+- σ² is a SCALAR, not a vector (init 1.0, clamp [1e-4, 10])
+- D = T × F MUST appear in the reconstruction loss (D/(2σ²) · L_recon)
+- P/F/A modes are MUTUALLY EXCLUSIVE
+- DUAL rescaling: date-specific for estimation, current-date for portfolio
+- Entropy H(w) computed in the PRINCIPAL FACTOR basis (after V rotation of Σ_z)
+- Ratio σ_i,t / σ_bar_t WINSORIZED [P5, P95] BEFORE rescaling
+- Portfolio constraints IDENTICAL between VAE and all benchmarks
+- NO look-ahead — strict point-in-time
 
-## Structure du code
-- `src/data_pipeline/` : chargement, returns, univers, fenêtrage, crise
-- `src/vae/` : architecture, loss, model
-- `src/training/` : boucle d'entraînement, batching, early stopping
-- `src/inference/` : profils composites, AU
-- `src/risk_model/` : rescaling, régression factorielle, covariance
-- `src/portfolio/` : entropie, SCA, contraintes, cardinalité
-- `src/walk_forward/` : folds, Phase A/B, métriques
-- `src/benchmarks/` : 6 modèles de benchmark
-- `tests/unit/` et `tests/integration/`
+## Code Structure
+- `src/data_pipeline/`: loading, returns, universe, windowing, crisis
+- `src/vae/`: architecture, loss, model
+- `src/training/`: training loop, batching, early stopping
+- `src/inference/`: composite profiles, AU
+- `src/risk_model/`: rescaling, factor regression, covariance
+- `src/portfolio/`: entropy, SCA, constraints, cardinality
+- `src/walk_forward/`: folds, Phase A/B, metrics
+- `src/benchmarks/`: 6 benchmark models
+- `tests/unit/` and `tests/integration/`
 
-## Workflow pour les agents
-1. Lire `docs/isd/00_global.md` ET la section ISD de votre module
-2. Implémenter les assertions d'interface EN PREMIER
-3. TDD : test avant code pour chaque sous-tâche
-4. Committer après chaque sous-tâche
-5. Si ambigu : commentaire `# AMBIGUITY: ...` et interprétation conservatrice
+## Workflow for Agents
+1. Read `docs/isd/00_global.md` AND the ISD section for your module
+2. Implement interface assertions FIRST
+3. TDD: test before code for each sub-task
+4. Commit after each sub-task
+5. If ambiguous: comment `# AMBIGUITY: ...` and conservative interpretation
 
-## Dépendances
+## Dependencies
 Python 3.11+, PyTorch ≥ 2.1, NumPy, SciPy, CVXPY + MOSEK, pandas, scikit-learn, pytest
 
 ## Tests
-- `pytest tests/unit/` — tests unitaires par module
-- `pytest tests/integration/` — tests d'intégration inter-modules
-- Module complet ⟺ tous ses tests passent + assertions d'interface satisfaites
+- `pytest tests/unit/` — unit tests per module
+- `pytest tests/integration/` — inter-module integration tests
+- Module complete ⟺ all its tests pass + interface assertions satisfied
 ```
 
 ---
 
-## Plan d'exécution opérationnel
+## Operational Execution Plan
 
-### Phase 1 — Infrastructure (parallèle, Agent Team, ~2-3 jours)
+### Phase 1 — Infrastructure (parallel, Agent Team, ~2-3 days)
 
-| Teammate | Module | Livrable principal |
+| Teammate | Module | Main Deliverable |
 |----------|--------|-------------------|
-| `data-engineer` | MOD-001 data_pipeline | Fenêtres z-scorées, univers, crisis labels, trailing vol |
-| `ml-architect` | MOD-002 vae_architecture | VAEModel avec build_vae, sizing rules |
-| `test-lead` | MOD-003 test_infrastructure | Données synthétiques, fixtures, solutions connues |
+| `data-engineer` | MOD-001 data_pipeline | Z-scored windows, universe, crisis labels, trailing vol |
+| `ml-architect` | MOD-002 vae_architecture | VAEModel with build_vae, sizing rules |
+| `test-lead` | MOD-003 test_infrastructure | Synthetic data, fixtures, known solutions |
 
-**Synchronisation :** assertions d'interface entre MOD-001 et MOD-002 (shape windows = (N, T, F), F=2, T=504).
+**Synchronization:** interface assertions between MOD-001 and MOD-002 (window shape = (N, T, F), F=2, T=504).
 
-### Phase 2 — Core pipeline (séquentiel, Subagents builder-validator, ~5-7 jours)
+### Phase 2 — Core Pipeline (sequential, Subagents builder-validator, ~5-7 days)
 
-| Ordre | Module | Justification séquentielle |
+| Order | Module | Sequential Justification |
 |-------|--------|---------------------------|
-| 1 | MOD-004 loss_function | Dépend de MOD-002 (VAEModel). Lead session (densité très haute). |
-| 2 | MOD-005 training | Dépend de MOD-004 (loss). Lead session (couplage math degré 4). |
-| 3 | MOD-006 inference | Dépend de MOD-005 (trained model). Subagent (densité moyenne). |
-| 4 | MOD-007 risk_model | Dépend de MOD-006 (B matrix). Subagent (densité haute). |
-| 5 | MOD-008 portfolio_optimization | Dépend de MOD-007 (Σ_z). Lead session (SCA solver très dense). |
+| 1 | MOD-004 loss_function | Depends on MOD-002 (VAEModel). Lead session (very high density). |
+| 2 | MOD-005 training | Depends on MOD-004 (loss). Lead session (math coupling degree 4). |
+| 3 | MOD-006 inference | Depends on MOD-005 (trained model). Subagent (medium density). |
+| 4 | MOD-007 risk_model | Depends on MOD-006 (B matrix). Subagent (high density). |
+| 5 | MOD-008 portfolio_optimization | Depends on MOD-007 (Σ_z). Lead session (very dense SCA solver). |
 
-**Protocole :** builder-validator pour MOD-006 et MOD-007. Lead session avec supervision humaine pour MOD-004, MOD-005, MOD-008.
+**Protocol:** builder-validator for MOD-006 and MOD-007. Lead session with human supervision for MOD-004, MOD-005, MOD-008.
 
-### Phase 3 — Benchmarks (parallèle, Agent Team, ~2-3 jours)
+### Phase 3 — Benchmarks (parallel, Agent Team, ~2-3 days)
 
 | Teammate | Modules | Notes |
 |----------|---------|-------|
-| `bench-simple` | MOD-010 (1/N), MOD-011 (inverse-vol) | Trivial, ~1 jour |
-| `bench-covariance` | MOD-012 (min-var), MOD-013 (ERC) | Partagent Σ_LW |
-| `bench-factor` | MOD-014 (PCA factor RP), MOD-015 (PCA+vol) | Réutilisent SCA solver de MOD-008 |
+| `bench-simple` | MOD-010 (1/N), MOD-011 (inverse-vol) | Trivial, ~1 day |
+| `bench-covariance` | MOD-012 (min-var), MOD-013 (ERC) | Share Σ_LW |
+| `bench-factor` | MOD-014 (PCA factor RP), MOD-015 (PCA+vol) | Reuse SCA solver from MOD-008 |
 
-**Dépendances :** MOD-014 et MOD-015 importent le SCA solver de MOD-008 — MOD-008 doit être complet et stable.
+**Dependencies:** MOD-014 and MOD-015 import the SCA solver from MOD-008 — MOD-008 must be complete and stable.
 
-### Phase 4 — Intégration (séquentiel, lead session, ~3-5 jours)
+### Phase 4 — Integration (sequential, lead session, ~3-5 days)
 
-| Ordre | Module | Description |
+| Order | Module | Description |
 |-------|--------|-------------|
-| 1 | MOD-009 walk_forward | Orchestration des 34 folds, Phase A/B |
-| 2 | MOD-016 integration | E2E, tests statistiques, rapport final |
+| 1 | MOD-009 walk_forward | Orchestration of 34 folds, Phase A/B |
+| 2 | MOD-016 integration | E2E, statistical tests, final report |
 
-**Validation humaine obligatoire** avant passage Phase 3 → Phase 4 et avant exécution holdout.
+**Mandatory human validation** before Phase 3 → Phase 4 transition and before holdout execution.
 
 ---
 
-## Matrice de décision post-exécution
+## Post-Execution Decision Matrix
 
-| Scénario | Condition | Action |
+| Scenario | Condition | Action |
 |----------|-----------|--------|
-| A — VAE surpasse tout | p < 0.05 sur ≥ 2/4 métriques primaires vs tous benchmarks | Production |
-| B — VAE > PCA mais pas min-var/ERC | Non-linéarité utile, optimisation à revoir | Itérations 1-3 (doc v4.1 Section 6) |
-| C — PCA ≈ VAE | Non-linéarité sans valeur mesurable | Adopter PCA (coût /100) |
-| D — 1/N ≥ tous | Estimation error absorbe tout bénéfice | 1/N ou relâcher contraintes |
-| E — Hétérogène par régime | VAE > en crise, < en calme | Système bi-régime |
+| A — VAE outperforms all | p < 0.05 on ≥ 2/4 primary metrics vs all benchmarks | Production |
+| B — VAE > PCA but not min-var/ERC | Non-linearity useful, optimization to review | Iterations 1-3 (doc v4.1 Section 6) |
+| C — PCA ≈ VAE | Non-linearity without measurable value | Adopt PCA (cost /100) |
+| D — 1/N ≥ all | Estimation error absorbs all benefit | 1/N or relax constraints |
+| E — Heterogeneous by regime | VAE > in crisis, < in calm | Dual-regime system |
