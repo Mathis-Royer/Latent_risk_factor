@@ -5,7 +5,10 @@
   "permissions": {
     "allow": [
       "Bash(find:*)",
-      "Read(//Users/mathis/Latent_risk_factor/Latent_risk_factor/**)"
+      "Read(//Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
+      "Bash(python -m pyright:*)",
+      "Bash(ls:*)",
+      "Bash(.venv/bin/python:*)"
     ],
     "deny": [
       "Bash(rm -rf *)",
