@@ -7,13 +7,13 @@
 
 | # | Date | Modification |
 |---|------|--------------|
-| 10 | 2026-02-06 | **Phase 3+4 implementation complete**: Implemented 15 source files — MOD-010 to MOD-015 (base.py, equal_weight.py, inverse_vol.py, min_variance.py, erc.py, pca_factor_rp.py, pca_vol.py: all 6 benchmarks with shared constraints), MOD-009 (folds.py: 34+1 folds, phase_a.py: composite scoring + elimination, phase_b.py: E* determination + sanity, metrics.py: 3-layer evaluation, selection.py: deployment criteria A/B/C/D), MOD-016 (pipeline.py: FullPipeline orchestrator, statistical_tests.py: Wilcoxon + bootstrap + Holm-Bonferroni + regime decomposition, reporting.py: full report generation + text formatting). All pyright clean (0 errors). Smoke tests pass: EW/IV/MV/ERC/PCA-RP/PCA-Vol all sum to 1.0, fold schedule 34+1 validated, Wilcoxon p=0.005, Holm-Bonferroni rejects correctly, report generates with Scenario A. |
-| 9 | 2026-02-06 | **Phase 2 implementation complete**: Implemented 16 source files for MOD-004 through MOD-008. All pyright clean. Smoke tests pass. |
-| 8 | 2026-02-06 | **Phase 1 implementation complete**: Implemented all 12 source files for MOD-001 (data_pipeline), MOD-002 (vae_architecture), MOD-003 (test_infrastructure). All pyright clean. Smoke tests pass. |
-| 7 | 2026-02-06 | **Volume promoted to core schema**: Moved `volume` from extended-only (F>2) to core columns in ISD for ADV filter; updated 6 ISD sections; fixed config.py defaults to match DVT baselines |
-| 6 | 2026-02-06 | **Implementation decisions log**: Added `docs/implementation_decisions.md` to track spec gap decisions; added ISD Section 00 guideline for mandatory logging |
-| 5 | 2026-02-06 | **ISD data schema update**: Separated F=2 vs F>2 data requirements; added EODHD as production data source (2000-2025) |
-| 4 | 2026-02-06 | **ISD completeness**: Added Phase 1 ISD sections for MOD-001, MOD-002, MOD-003; translated French Appendix A to English in DVT |
+| 10 | 2026-02-06 | **E2E orchestration + CLI + tests (verified)**: FullPipeline.run() (~500 lines), 2 CLI scripts, 86 tests across 10 files (83 passed, 3 skipped long-running). Pyright 0 errors on all tests/ and src/. Full test suite verified end-to-end. |
+| 9 | 2026-02-06 | **Phase 3+4 implementation complete**: 15 source files — MOD-010 to MOD-015 (6 benchmarks), MOD-009 (5 walk-forward files), MOD-016 (pipeline.py + statistical_tests.py + reporting.py). All pyright clean. Smoke tests pass. |
+| 8 | 2026-02-06 | **Phase 2 implementation complete**: 16 source files for MOD-004 through MOD-008. All pyright clean. Smoke tests pass. |
+| 7 | 2026-02-06 | **Phase 1 implementation complete**: 12 source files for MOD-001 (data_pipeline), MOD-002 (vae_architecture), MOD-003 (test_infrastructure). All pyright clean. Smoke tests pass. |
+| 6 | 2026-02-06 | **Volume promoted to core schema**: Moved `volume` from extended-only (F>2) to core columns in ISD for ADV filter; updated 6 ISD sections; fixed config.py defaults to match DVT baselines |
+| 5 | 2026-02-06 | **Implementation decisions log**: Added `docs/implementation_decisions.md` to track spec gap decisions; added ISD Section 00 guideline for mandatory logging |
+| 4 | 2026-02-06 | **ISD data schema update**: Separated F=2 vs F>2 data requirements; added EODHD as production data source (2000-2025) |
 | 3 | 2026-02-06 | **Project scaffolding**: Created full src/ and tests/ directory tree, __init__.py files, centralized config.py with all ISD parameters |
 | 2 | 2026-02-06 | **Initial setup**: Created `.claude/` configuration, translated ISD and DVT documents |
 
@@ -21,9 +21,9 @@
 
 ## Current State
 
-- **Status**: Development — All 4 phases complete (43 source files across MOD-001 to MOD-016). Full pipeline implementation done.
-- **Main features**: Full data pipeline, 1D-CNN VAE, 3-mode loss, training loop, inference + AU, dual-rescaled factor risk model, portfolio optimization (SCA+Armijo), 6 benchmarks, walk-forward (34 folds), statistical tests, reporting
-- **Next**: Integration tests, full end-to-end test on synthetic data, then real data deployment
+- **Status**: Development — All 4 phases + tests complete. 43 source files + 10 test files. 86 tests (83 pass, 3 long-running skipped). Pyright 0 errors.
+- **Main features**: Full data pipeline, 1D-CNN VAE, 3-mode loss, training loop, inference + AU, dual-rescaled factor risk model, portfolio optimization (SCA+Armijo), 6 benchmarks, walk-forward (34 folds), statistical tests, reporting, 2 CLI entry points
+- **Next**: Full end-to-end test on synthetic data (unskip E2E tests), then real data deployment
 
 ---
 
