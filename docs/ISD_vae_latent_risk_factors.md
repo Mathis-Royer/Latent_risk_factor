@@ -17,7 +17,7 @@ Implement an end-to-end portfolio construction pipeline based on latent risk fac
 ### Pipeline Architecture
 
 ```
-[CRSP Data] → [data_pipeline] → windows (N×T×F) + crisis_labels
+[Stock Data (synthetic / EODHD)] → [data_pipeline] → windows (N×T×F) + crisis_labels
                                         ↓
                                [vae_architecture] → VAEModel
                                         ↓
@@ -314,7 +314,7 @@ latent_risk_factors/
 │   ├── config.py               # Centralized configuration (dataclasses)
 │   ├── data_pipeline/
 │   │   ├── __init__.py
-│   │   ├── data_loader.py      # CRSP / alternative data loading
+│   │   ├── data_loader.py      # Stock data loading (synthetic / EODHD)
 │   │   ├── returns.py          # Log-return calculation
 │   │   ├── universe.py         # Point-in-time universe construction
 │   │   ├── windowing.py        # Sliding window + z-scoring
@@ -511,7 +511,7 @@ def verify_portfolio_output(w, n_stocks, w_min=0.001, w_max=0.05):
 
 #### Objective
 
-Implement end-to-end financial data preparation: CRSP data loading with survivorship-bias-free handling, log-return computation, point-in-time universe construction, sliding window creation with per-window z-scoring, crisis labeling via VIX threshold, and trailing realized volatility computation. This module feeds every downstream component — errors here silently corrupt the entire pipeline.
+Implement end-to-end financial data preparation: stock data loading (synthetic for development, EODHD for production) with survivorship-bias-free handling, log-return computation, point-in-time universe construction, sliding window creation with per-window z-scoring, crisis labeling via VIX threshold, and trailing realized volatility computation. This module feeds every downstream component — errors here silently corrupt the entire pipeline.
 
 #### Outputs
 
@@ -526,38 +526,100 @@ Implement end-to-end financial data preparation: CRSP data loading with survivor
 
 #### Sub-task 1: Data loading (data_loader.py)
 
-**Development strategy:** Real CRSP data is not available during development.
-The loader must support a **synthetic CSV mode** for end-to-end testing.
-A helper function generates a CSV file with the exact same schema as CRSP,
-allowing all downstream code to be validated without access to the real dataset.
+**Development strategy — two phases:**
 
-**Expected input format (CSV or Parquet, one row per stock-day):**
+1. **Phase A (development):** Use **synthetic CSV data** to validate the entire pipeline
+   end-to-end without requiring any external data subscription. A helper function
+   generates a CSV file with the exact same schema, allowing all downstream code
+   to be tested for correctness, shapes, and invariants.
+2. **Phase B (production):** Once the pipeline is bug-free on synthetic data, switch to
+   **EODHD** (End-Of-Day Historical Data) as the real data source. EODHD provides
+   26,000+ US equities including delisted stocks, with history from ~2000 onward.
+   Subscription: "All-In-One" plan (~100 EUR/month). API or bulk CSV download.
+
+**Backtest period adjustment:** With EODHD data starting ~2000, the backtest period
+becomes **2000–2025** (25 years) instead of 1993–2023 (30 years). Impact:
+- Walk-forward folds: ~21 (vs ~34), still statistically sufficient
+- AU_max_stat ≈ 77 (vs 85), adequate capacity check
+- All pipeline logic, fold scheduling, and metrics remain identical
+
+---
+
+**Data schema — Core columns (required for F=2 baseline):**
+
+The baseline model uses F=2 features per time step: **log-returns** and **21-day rolling
+realized volatility** (DVT Section 4.2). The following columns are always required:
 
 | Column | Type | Description | Example |
 |--------|------|-------------|---------|
-| `permno` | int | Unique stock identifier (CRSP permanent number) | `10001` |
+| `permno` | int | Unique stock identifier | `10001` |
 | `date` | str (YYYY-MM-DD) | Trading date | `2005-03-15` |
 | `adj_price` | float | Split- and dividend-adjusted closing price (> 0) | `42.57` |
-| `volume` | int | Daily trading volume in shares | `1_250_000` |
 | `exchange_code` | int | 1 = NYSE, 2 = AMEX, 3 = NASDAQ | `1` |
-| `share_code` | int | CRSP share code (10/11 = common equity) | `11` |
+| `share_code` | int | Share type code (10/11 = common equity) | `11` |
 | `market_cap` | float | Float-adjusted market cap in USD | `2.5e9` |
-| `delisting_code` | int or NaN | CRSP delisting code (NaN if still active) | `500` |
 | `delisting_return` | float or NaN | Return on delisting day (NaN if unknown) | `-0.30` |
+
+Notes:
+- `exchange_code` is used by the Shumway (1997) delisting return imputation:
+  -30% for NYSE/AMEX (codes 1, 2), -55% for NASDAQ (code 3). No `delisting_code`
+  column is needed — the strategy never uses it.
+- `adj_price` is the sole input for computing log-returns (CONV-01) and
+  21-day rolling realized volatility (DVT Section 4.2).
+- `market_cap` is used for universe construction (top-n ranking).
+
+**Data schema — Extended columns (required for F > 2 iterations):**
+
+When extending the model beyond F=2 (DVT Section 6.5, Iteration 4), additional
+features per time step are introduced. These columns become required:
+
+| Column | Type | Description | Feature derived |
+|--------|------|-------------|-----------------|
+| `volume` | int | Daily trading volume in shares | Z-scored trading volume |
+| `high` | float | Intraday high price | Intraday range (high - low) / close |
+| `low` | float | Intraday low price | Intraday range (high - low) / close |
+| `sector` | str | Sector classification (GICS or SIC) | Sector-relative return deviation |
+
+Additional derived feature (no extra column needed):
+- **Realized skewness**: computed from the existing `adj_price` column
+  (rolling window of raw returns).
+
+The encoder Inception head and decoder output layer adjust automatically for F > 2
+(~0.1% parameter change); all downstream pipeline components are unchanged.
+
+---
+
+**EODHD column mapping (Phase B):**
+
+| EODHD field | Internal column | Notes |
+|-------------|-----------------|-------|
+| `Code` / `Ticker` | `permno` | Map to integer ID via lookup table |
+| `Date` | `date` | Already YYYY-MM-DD |
+| `Adjusted_close` | `adj_price` | Split+dividend adjusted |
+| `Volume` | `volume` | Extended only (F > 2) |
+| `High` | `high` | Extended only (F > 2) |
+| `Low` | `low` | Extended only (F > 2) |
+| `Exchange` | `exchange_code` | Map: NYSE→1, AMEX→2, NASDAQ→3 |
+| — | `share_code` | Filter common equity via security type metadata |
+| — | `market_cap` | Compute from Adjusted_close × shares outstanding (fundamentals API) |
+| — | `delisting_return` | Compute from last available price vs prior close; impute Shumway if missing |
+
+---
 
 **Synthetic data generator** (in `data_loader.py` or called from `tests/fixtures/synthetic_data.py`):
 
 ```python
-def generate_synthetic_crsp_csv(
+def generate_synthetic_csv(
     output_path: str,
     n_stocks: int = 200,
-    start_date: str = "1993-01-04",
-    end_date: str = "2023-12-29",
+    start_date: str = "2000-01-03",
+    end_date: str = "2025-12-31",
     n_delistings: int = 20,
     seed: int = 42,
+    include_extended: bool = False,
 ) -> str:
     """
-    Generate a synthetic CRSP-like CSV file with realistic properties.
+    Generate a synthetic stock data CSV file with realistic properties.
 
     Price dynamics: geometric Brownian motion per stock.
       P_{t+1} = P_t × exp(μ_i + σ_i × ε_t),  ε ~ N(0,1)
@@ -565,11 +627,18 @@ def generate_synthetic_crsp_csv(
       σ_i ~ U(0.005, 0.03)    (daily vol, annualized ~8%-48%)
       P_0,i ~ U(10, 200)
 
+    Core columns (always generated):
+      permno, date, adj_price, exchange_code, share_code, market_cap,
+      delisting_return.
+
+    Extended columns (if include_extended=True):
+      volume, high, low, sector.
+
     Market cap: P × shares_outstanding, shares ~ U(10M, 500M).
-    Volume: proportional to market_cap with noise.
     Exchange codes: random assignment (1/2/3) with realistic proportions
       (60% NYSE, 10% AMEX, 30% NASDAQ).
     Share codes: all 10 or 11 (common equity).
+    Sectors: random assignment from 11 GICS sectors.
 
     Delistings: n_delistings stocks are delisted at random dates
       in the second half of history. Delisting return = NaN for ~50%,
@@ -584,20 +653,20 @@ def generate_synthetic_crsp_csv(
 **Loader functions:**
 
 ```python
-def load_crsp_data(
+def load_stock_data(
     data_path: str,
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame:
     """
-    Load CRSP daily stock data from CSV or Parquet file.
-    Accepts both real CRSP extracts and synthetic data (same schema).
+    Load daily stock data from CSV or Parquet file.
+    Accepts both synthetic data (Phase A) and EODHD data (Phase B) — same schema.
 
     Must include delisted stocks with full pre-delisting history.
 
-    Returns: DataFrame with columns [permno, date, adj_price, volume,
-             exchange_code, share_code, market_cap,
-             delisting_code, delisting_return]
+    Returns: DataFrame with core columns [permno, date, adj_price,
+             exchange_code, share_code, market_cap, delisting_return].
+             Extended columns [volume, high, low, sector] present if available.
     Sorted by (permno, date). date is pd.Timestamp.
     """
 ```
@@ -2302,7 +2371,7 @@ via VAE (1D CNN encoder-decoder). Objective: maximize factor diversification
 (Shannon entropy on principal factor risk contributions).
 
 ## Architecture
-CRSP data → data_pipeline → VAE training → inference → risk_model → portfolio_optimization
+Stock data (synthetic / EODHD) → data_pipeline → VAE training → inference → risk_model → portfolio_optimization
                                                                          ↓
                                                                   walk_forward (34 folds)
                                                                          ↓
