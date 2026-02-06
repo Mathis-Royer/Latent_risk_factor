@@ -132,8 +132,8 @@ class TrainingConfig:
     """
 
     max_epochs: int = 100
-    batch_size: int = 128
-    learning_rate: float = 1e-3
+    batch_size: int = 256
+    learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     adam_betas: tuple[float, float] = (0.9, 0.999)
     adam_eps: float = 1e-8
@@ -224,9 +224,9 @@ class PortfolioConfig:
     w_max: float = 0.05
     w_min: float = 0.001
     w_bar: float = 0.03
-    phi: float = 1.0
-    kappa_1: float = 0.005
-    kappa_2: float = 0.01
+    phi: float = 25.0
+    kappa_1: float = 0.1
+    kappa_2: float = 7.5
     delta_bar: float = 0.01
     tau_max: float = 0.30
     n_starts: int = 5

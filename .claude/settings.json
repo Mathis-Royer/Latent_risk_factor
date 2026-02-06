@@ -3,6 +3,10 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Read(//Users/mathis/Latent_risk_factor/Latent_risk_factor/**)"
+    ],
     "deny": [
       "Bash(rm -rf *)",
       "Bash(git push --force*)",

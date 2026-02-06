@@ -521,11 +521,11 @@ However, synchronous batching increases gradient variance: windows from the same
 
 $$B_{\text{eff}} = \frac{B}{1 + \bar{\rho}(B-1)}$$
 
-**Mitigation: stratified sampling within each temporal block.** Pre-cluster the ~1000 stocks into $S$ strates (10–20 groups via k-means on trailing 63-day returns, or GICS sectors as a zero-cost proxy). For each batch during Phases 1–2:
+**Mitigation: stratified sampling within each temporal block.** Pre-cluster the ~1000 stocks into $S$ strata (10–20 groups via k-means on trailing 63-day returns; no predefined sector categories, consistent with the data-driven philosophy of Section 1.3). For each batch during Phases 1–2:
 
 1. Select a random temporal block (date range of $\delta_{\text{sync}}$ days).
 2. Sample $B/S$ windows from each strate, ensuring cross-sectional diversity while maintaining temporal synchronization.
-3. Recalculate the clustering at each walk-forward fold (the strates themselves are not exposed to the encoder — they affect only batch composition).
+3. Recalculate the clustering at each walk-forward fold (the strata themselves are not exposed to the encoder — they affect only batch composition). Fallback for stocks with < 63 days of history: assign to the nearest cluster based on available data.
 
 This satisfies the synchronization constraint (co-movement loss computable) while maximizing intra-batch diversity (reduced gradient variance). Stratified sampling with Neyman-like allocation accelerates SGD convergence 2–5× vs uniform sampling (Zhao & Zhang, 2014; Zhang et al., 2017 — DPP mini-batch diversification).
 
@@ -533,8 +533,8 @@ During **Phase 3** ($\lambda_{\text{co}} = 0$), synchronous batching provides no
 
 | Phase | $\lambda_{\text{co}}$ | Batching strategy | Rationale |
 |-------|----------------------|-------------------|-----------|
-| 1 (scaffolding) | $\lambda_{\text{co}}^{\max}$ | Synchronous + stratified sectoral | Co-movement loss requires synchronization; stratification mitigates gradient variance |
-| 2 (annealing) | Linear decay → 0 | Synchronous + stratified sectoral | Same constraint, progressive release |
+| 1 (scaffolding) | $\lambda_{\text{co}}^{\max}$ | Synchronous + stratified (k-means 63d) | Co-movement loss requires synchronization; stratification mitigates gradient variance |
+| 2 (annealing) | Linear decay → 0 | Synchronous + stratified (k-means 63d) | Same constraint, progressive release |
 | 3 (free refinement) | 0 | Random shuffling | No inter-sample term → optimal variance via diversity |
 
 **Inference impact: none.** The co-movement loss and synchronous batching affect training only. At inference, the encoder produces $\mu_i$ by individual forward pass — the downstream pipeline (aggregation, $B$, $\Sigma_z$, optimization) is strictly unchanged.
@@ -593,7 +593,7 @@ Baseline: $\lambda_{\text{co}}(t)$ follows the curriculum schedule (Phases 1→2
 
 #### Uniform across all available history
 
-The encoder learns a broad vocabulary of risk patterns across **all** historical regimes, not weighted toward the present. Current relevance is handled at inference (Section 4.6), not training. Batch composition follows the **curriculum batching protocol** defined in Section 4.4: during co-movement scaffolding phases (1–2), synchronous temporal blocks with stratified sectoral sampling; during free refinement (Phase 3), standard random shuffling across all stocks and time periods.
+The encoder learns a broad vocabulary of risk patterns across **all** historical regimes, not weighted toward the present. Current relevance is handled at inference (Section 4.6), not training. Batch composition follows the **curriculum batching protocol** defined in Section 4.4: during co-movement scaffolding phases (1–2), synchronous temporal blocks with stratified sampling (k-means on trailing 63-day returns); during free refinement (Phase 3), standard random shuffling across all stocks and time periods.
 
 **Batch size.** Default **256 windows**. Lower bound ~32 (BatchNorm reliability). Upper bound constrained by GPU memory (~500 MB for 256 samples). Range 64–512 has modest effect; 256 is standard for comparable architectures.
 
@@ -1027,7 +1027,7 @@ This section consolidates all parameters that define a concrete instance of the 
 | **LR scheduler** | Learning rate decay strategy | 4.5 | ReduceLROnPlateau (factor=0.5, patience=5 epochs) | — |
 | **Max epochs** | Computational ceiling for training | 4.5 | 100 | 50 – 200 |
 | **Early stopping** | Convergence criterion (on validation ELBO) | 4.5 | Patience = 10 epochs, restore best weights | Patience 5 – 15 |
-| **Batch composition** | How windows are sampled per training phase | 4.4, 4.5 | Curriculum: synchronous + stratified (Phases 1–2), random (Phase 3) | — (resolved, tied to $\lambda_{\text{co}}$ curriculum) |
+| **Batch composition** | How windows are sampled per training phase | 4.4, 4.5 | Curriculum: synchronous + stratified k-means 63d (Phases 1–2), random (Phase 3) | — (resolved, tied to $\lambda_{\text{co}}$ curriculum) |
 | **Retraining frequency** | How often encoder weights are updated | 4.5 | Quarterly | Monthly – semi-annually |
 
 **Aggregation and portfolio**
@@ -1075,7 +1075,7 @@ This section consolidates all parameters that define a concrete instance of the 
 
 **$s$ vs training volume and redundancy.** Stride $s = 1$ maximizes the number of windows but introduces heavy overlap between consecutive samples ($T-1$ shared days). Larger strides reduce redundancy and training time, at the cost of fewer examples. The effective number of independent training samples is closer to $T_{\text{hist}} / T$ than to $T_{\text{hist}} - T + 1$.
 
-**$n^2$ scaling (if co-movement loss is used).** The co-movement loss evaluates pairwise relationships. For $n = 1000$ in a batch, this is 499,500 pairs. Batch composition strategy (random subsampling, stratified by sector, rotating pairs) directly affects both training cost and the quality of the learned correlation structure.
+**$n^2$ scaling (if co-movement loss is used).** The co-movement loss evaluates pairwise relationships. For $n = 1000$ in a batch, this is 499,500 pairs. Batch composition strategy (random subsampling, stratified by k-means clustering, rotating pairs) directly affects both training cost and the quality of the learned correlation structure.
 
 **$\sigma^2$ / γ trade-off (and $\lambda_{\text{co}}$ if applicable).** The learned observation noise $\sigma^2$ and crisis weight γ operate on orthogonal axes — $\sigma^2$ controls the global reconstruction-KL balance, γ redistributes gradient attention between regimes within the reconstruction term via the continuous weighting $\gamma_{\text{eff}}^{(w)} = 1 + f_c^{(w)}(\gamma - 1)$. However, they interact indirectly: a large γ increases the average reconstruction loss (especially for windows with high $f_c$), which may push $\sigma^2$ upward, partially absorbing the intended crisis emphasis. The effective contribution framework (Section 4.4) monitors this via the empirical $\eta_{\text{eff}}$ and the per-regime MSE ratio ($\overline{\text{MSE}}_{\text{crisis}} / \overline{\text{MSE}}_{\text{normal}}$), which is the primary diagnostic for this interaction. If co-movement loss is used, high $\lambda_{\text{co}}$ relative to the reconstruction term strengthens correlation structure in latent space but may introduce linear bias.
 

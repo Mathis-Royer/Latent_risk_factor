@@ -585,17 +585,20 @@ becomes **2000–2025** (25 years) instead of 1993–2023 (30 years). Impact:
 **Data schema — Core columns (required for F=2 baseline):**
 
 The baseline model uses F=2 features per time step: **log-returns** and **21-day rolling
-realized volatility** (DVT Section 4.2). The following columns are always required:
+realized volatility** (DVT Section 4.2). The following columns are always required,
+including infrastructure columns needed for universe construction (DVT Section 5.1,
+Universe parameters):
 
-| Column | Type | Description | Example |
-|--------|------|-------------|---------|
-| `permno` | int | Unique stock identifier | `10001` |
-| `date` | str (YYYY-MM-DD) | Trading date | `2005-03-15` |
-| `adj_price` | float | Split- and dividend-adjusted closing price (> 0) | `42.57` |
-| `exchange_code` | int | 1 = NYSE, 2 = AMEX, 3 = NASDAQ | `1` |
-| `share_code` | int | Share type code (10/11 = common equity) | `11` |
-| `market_cap` | float | Float-adjusted market cap in USD | `2.5e9` |
-| `delisting_return` | float or NaN | Return on delisting day (NaN if unknown) | `-0.30` |
+| Column | Type | Description | Used by | Example |
+|--------|------|-------------|---------|---------|
+| `permno` | int | Unique stock identifier | All | `10001` |
+| `date` | str (YYYY-MM-DD) | Trading date | All | `2005-03-15` |
+| `adj_price` | float | Split- and dividend-adjusted closing price (> 0) | Returns, vol | `42.57` |
+| `volume` | int | Daily trading volume in shares | Universe (ADV filter) | `1_500_000` |
+| `exchange_code` | int | 1 = NYSE, 2 = AMEX, 3 = NASDAQ | Shumway imputation | `1` |
+| `share_code` | int | Share type code (10/11 = common equity) | Universe (equity filter) | `11` |
+| `market_cap` | float | Float-adjusted market cap in USD | Universe (top-n ranking) | `2.5e9` |
+| `delisting_return` | float or NaN | Return on delisting day (NaN if unknown) | Delisting handling | `-0.30` |
 
 Notes:
 - `exchange_code` is used by the Shumway (1997) delisting return imputation:
@@ -604,15 +607,20 @@ Notes:
 - `adj_price` is the sole input for computing log-returns (CONV-01) and
   21-day rolling realized volatility (DVT Section 4.2).
 - `market_cap` is used for universe construction (top-n ranking).
+- `volume` is an **infrastructure column** for the ADV liquidity filter in universe
+  construction (DVT Section 4.2: ADV ≥ $2M over trailing 3 months). It is NOT used
+  as a VAE input feature in the F=2 baseline — the encoder receives only (T, 2) =
+  [returns, realized_vol]. Dollar volume is computed as `adj_price × volume`.
 
 **Data schema — Extended columns (required for F > 2 iterations):**
 
 When extending the model beyond F=2 (DVT Section 6.5, Iteration 4), additional
-features per time step are introduced. These columns become required:
+features per time step are introduced. These columns become required.
+Note: `volume` is already in the core schema (used for ADV filtering); for F > 2
+it is additionally used as a z-scored VAE input feature.
 
 | Column | Type | Description | Feature derived |
 |--------|------|-------------|-----------------|
-| `volume` | int | Daily trading volume in shares | Z-scored trading volume |
 | `high` | float | Intraday high price | Intraday range (high - low) / close |
 | `low` | float | Intraday low price | Intraday range (high - low) / close |
 | `sector` | str | Sector classification (GICS or SIC) | Sector-relative return deviation |
@@ -633,7 +641,7 @@ The encoder Inception head and decoder output layer adjust automatically for F >
 | `Code` / `Ticker` | `permno` | Map to integer ID via lookup table |
 | `Date` | `date` | Already YYYY-MM-DD |
 | `Adjusted_close` | `adj_price` | Split+dividend adjusted |
-| `Volume` | `volume` | Extended only (F > 2) |
+| `Volume` | `volume` | Always required (core: ADV filter; F>2: also VAE feature) |
 | `High` | `high` | Extended only (F > 2) |
 | `Low` | `low` | Extended only (F > 2) |
 | `Exchange` | `exchange_code` | Map: NYSE→1, AMEX→2, NASDAQ→3 |
@@ -665,13 +673,16 @@ def generate_synthetic_csv(
       P_0,i ~ U(10, 200)
 
     Core columns (always generated):
-      permno, date, adj_price, exchange_code, share_code, market_cap,
-      delisting_return.
+      permno, date, adj_price, volume, exchange_code, share_code,
+      market_cap, delisting_return.
 
     Extended columns (if include_extended=True):
-      volume, high, low, sector.
+      high, low, sector.
 
     Market cap: P × shares_outstanding, shares ~ U(10M, 500M).
+    Volume: shares_traded ~ LogNormal(μ_vol_i, 1.0), with
+      μ_vol_i = log(shares_outstanding_i × 0.005) (≈0.5% daily turnover).
+      Correlated with market cap (larger stocks → higher volume).
     Exchange codes: random assignment (1/2/3) with realistic proportions
       (60% NYSE, 10% AMEX, 30% NASDAQ).
     Share codes: all 10 or 11 (common equity).
@@ -702,8 +713,9 @@ def load_stock_data(
     Must include delisted stocks with full pre-delisting history.
 
     Returns: DataFrame with core columns [permno, date, adj_price,
-             exchange_code, share_code, market_cap, delisting_return].
-             Extended columns [volume, high, low, sector] present if available.
+             volume, exchange_code, share_code, market_cap,
+             delisting_return].
+             Extended columns [high, low, sector] present if available.
     Sorted by (permno, date). date is pd.Timestamp.
     """
 ```
@@ -747,7 +759,9 @@ def construct_universe(
 
     Eligibility criteria:
     1. Float-adjusted market cap ≥ cap_entry (entry) / cap_exit (exit buffer)
-    2. ADV ≥ adv_min over trailing 3 months (filter, not ranking)
+    2. ADV ≥ adv_min over trailing 3 months (filter, not ranking).
+       ADV = mean(adj_price × volume) over trailing 63 trading days.
+       Requires `volume` column in stock_data (core schema).
     3. Continuous listing ≥ min_listing_days (= T = 504)
     4. Common equities only (exclude ETFs, ADRs, REITs, preferred, warrants, SPACs)
     5. NYSE + NASDAQ + AMEX
@@ -1459,7 +1473,7 @@ class CurriculumBatchSampler:
     Phases 1-2 (λ_co > 0): SYNCHRONOUS + STRATIFIED batching
       - Select a random time block (δ_sync = 21 days)
       - Pre-cluster stocks into S strata (10-20 groups, k-means on
-        trailing 63d returns, or GICS sectors as zero-cost proxy)
+        trailing 63d returns). Recalculated per fold.
       - Sample B/S windows per stratum
       - Guarantee temporal synchronization for co-movement loss
 
@@ -1878,6 +1892,10 @@ Select m* = argmax_m f(w_final_m)
 - Default (μ=0): $f = -\lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
 - Directional: $f = w^T \mu - \lambda w^T \Sigma w + \alpha H(w) - \phi P_{\text{conc}}(w) - P_{\text{turn}}(w, w^{\text{old}})$
 
+**Current implementation: μ=0 only** (DVT Section 4.7: "Setting μ=0 is not an omission
+but a design choice"). The solver accepts μ as a parameter for future extensibility
+(DVT Iteration 3, Section 6.4), but all walk-forward and benchmark evaluations use μ=0.
+
 #### Sub-task 3: Cardinality enforcement (cardinality.py)
 
 ```python
@@ -2268,7 +2286,11 @@ def run_phase_b(
     Re-train the encoder on ALL data [start, train_end]
     for E* epochs (no validation set, no early stopping).
 
-    E* = median of E*_config across folds (robustness).
+    E* determination (DVT Section 4.8):
+    - Per-fold: E* = E*_config of the selected config in Phase A.
+    - Robust alternative: E* = median of E*_config across all
+      PREVIOUS folds (expanding, CONV-10 point-in-time).
+    - Holdout: E* = median of E*_config across ALL walk-forward folds.
 
     Sanity check: if training loss at E* in Phase B is > 20% lower
     than Phase A, flag the fold.

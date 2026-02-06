@@ -93,6 +93,35 @@ Before transitioning to the next phase:
 
 ---
 
+#### [MOD-001] Volume column promoted to core schema for ADV filtering
+
+**Date:** 2026-02-06
+**Agent/Author:** human + lead session
+**Spec Reference:** ISD MOD-001 Sub-task 1 (data_loader.py) data schema, DVT Section 5.1 (Universe table), DVT Section 4.2
+
+**Context:** The universe construction requires an ADV (Average Daily Dollar Volume) filter: ADV ≥ $2M over trailing 63 trading days, where ADV = mean(adj_price × volume). This was defined in the DVT Section 5.1 Universe parameter table and ISD `construct_universe` function.
+
+**Gap:** The ISD data schema classified `volume` as an extended-only column (F > 2), available only when volume is used as a VAE input feature. However, the F=2 baseline pipeline still needs `volume` to compute ADV for the universe filter — creating an impossible dependency: the universe filter needs data that the schema doesn't provide.
+
+**Decision:** Promote `volume` to a **core column** (always loaded), with a clear distinction:
+- **F=2 baseline:** `volume` is an **infrastructure column** for the ADV liquidity filter in universe construction. It is NOT fed to the VAE encoder.
+- **F > 2 extended:** `volume` is additionally z-scored and used as a VAE input feature.
+
+Updated ISD sections: core columns table, extended columns table, EODHD column mapping, synthetic data generator spec, loader function signature, `construct_universe` docstring.
+
+**Rationale:** The DVT Section 5.1 Universe table lists ADV as a fundamental filter parameter alongside market cap and listing history. Universe construction is upstream of feature selection — the pipeline must know which stocks are in the universe before deciding what features to feed the VAE. Separating "infrastructure columns" (needed for pipeline logic) from "feature columns" (fed to the model) resolves the dependency cleanly.
+
+**Alternatives Considered:**
+- Hardcode a fixed universe without ADV filter (rejected — violates DVT Section 4.2 liquidity requirement)
+- Load volume via a separate data path outside the main schema (rejected — unnecessary complexity, duplicates I/O)
+- Defer ADV filter to F > 2 only (rejected — the DVT mandates ADV filtering for all configurations)
+
+**Impact:** `docs/ISD_vae_latent_risk_factors.md` (6 sections updated), `src/data_pipeline/data_loader.py` (must always load volume), `tests/fixtures/synthetic_data.py` (must always generate volume). EODHD provides Volume — no data gap. No changes needed to DVT.
+
+**Status:** `validated`
+
+---
+
 #### [MOD-001] EODHD production data — deferred
 
 **Date:** 2026-02-06
@@ -249,6 +278,79 @@ This is a strictly convex problem (sum of convex quadratic + convex barrier), so
 
 **Status:** `provisional`
 
+#### [MOD-005] Stratification strategy — k-means only, no GICS sectors
+
+**Date:** 2026-02-06
+**Agent/Author:** human + lead session
+**Spec Reference:** ISD MOD-005 Sub-task 1 (batching.py), DVT Section 4.4
+
+**Context:** Curriculum batching during Phases 1-2 requires stratified sampling across stocks within synchronized temporal blocks. The DVT originally offered two options: k-means on trailing 63-day returns, or GICS sectors as a zero-cost proxy.
+
+**Gap:** Using predefined sector categories contradicts the strategy's core principle (DVT Section 1.3): "Let the data reveal the underlying risk structures themselves, without imposing prior categorization."
+
+**Decision:** Use **k-means on trailing 63-day returns only**. GICS sectors removed as an option. DVT and ISD updated accordingly. Fallback for stocks with < 63 days of history: assign to nearest cluster based on available data.
+
+**Rationale:** K-means produces data-driven strata reflecting recent co-movement patterns. Computational cost is negligible (~1s for n=1000, S=15). Injecting sector labels — even for batching only — introduces an a priori bias inconsistent with the strategy's philosophy.
+
+**Alternatives Considered:**
+- GICS sectors (rejected — philosophical inconsistency)
+- No stratification (rejected — excessive gradient variance in synchronous batching)
+
+**Impact:** `src/training/batching.py`. DVT Sections 4.4 and 4.5 updated. ISD MOD-005 updated.
+
+**Status:** `validated`
+
+---
+
+#### [MOD-009] Phase B E* — expanding median, point-in-time
+
+**Date:** 2026-02-06
+**Agent/Author:** lead session
+**Spec Reference:** ISD MOD-009 Sub-task 3 (phase_b.py), DVT Section 4.8
+
+**Context:** Phase B trains on all data without validation set, for a fixed E* epochs. The DVT says E* "can be taken as the median of E*_config across folds rather than the single fold's value" but does not specify whether this median is global or expanding.
+
+**Gap:** A global median across all folds would require future fold information, violating CONV-10 (point-in-time).
+
+**Decision:** Three cases:
+1. **Per-fold default:** E* = E*_config of the selected config in that fold's Phase A.
+2. **Robust alternative:** E* = median of E*_config across all previous folds (expanding).
+3. **Holdout:** E* = median of E*_config across all walk-forward folds (global, since holdout runs after all folds).
+
+**Rationale:** Only the expanding median is compatible with CONV-10. The holdout is the single exception since it executes after the entire walk-forward.
+
+**Alternatives Considered:**
+- Global median for all folds (rejected — look-ahead violation)
+- Per-fold only (rejected — DVT explicitly recommends median for robustness)
+
+**Impact:** `src/walk_forward/phase_b.py`, `src/walk_forward/folds.py`. ISD MOD-009 updated.
+
+**Status:** `validated`
+
+---
+
+#### [MOD-008] μ=0 default mode — directional deferred to Iteration 3
+
+**Date:** 2026-02-06
+**Agent/Author:** lead session
+**Spec Reference:** ISD MOD-008 Sub-task 2 (sca_solver.py), DVT Sections 4.7 and 6.4
+
+**Context:** The SCA solver accepts μ (expected returns) as a parameter. The DVT defines two modes: default (μ=0) and directional (μ≠0).
+
+**Gap:** The ISD sub-problem formulation includes w^T μ but does not specify which mode to use for the walk-forward evaluation.
+
+**Decision:** All walk-forward and benchmark evaluations use **μ=0**. The solver accepts μ as a parameter for future extensibility, but defaults to zero. Directional mode is deferred to DVT Iteration 3 (Section 6.4), triggered only if the default mode underperforms on Sharpe/Calmar.
+
+**Rationale:** DVT Section 4.7: "Setting μ=0 is not an omission but a design choice: the strategy produces risk structure, not return forecasts." Section 6.4 explicitly positions directional mode as a future iteration.
+
+**Alternatives Considered:** None — this is the documented strategy.
+
+**Impact:** `src/portfolio/sca_solver.py` (μ parameter with default=None → treated as 0). ISD MOD-008 updated.
+
+**Status:** `validated`
+
+---
+
 ### Phase 2 — Core Pipeline
 
 <!-- MOD-004 to MOD-008 entries -->
@@ -267,9 +369,9 @@ This is a strictly convex problem (sum of convex quadratic + convex barrier), so
 
 | Metric | Count |
 |--------|-------|
-| Total decisions | 5 |
+| Total decisions | 9 |
 | Provisional | 5 |
-| Validated | 0 |
+| Validated | 4 |
 | Superseded | 0 |
 
 *Last updated: 2026-02-06 (pre-Phase 1)*
