@@ -7,7 +7,8 @@
 
 | # | Date | Modification |
 |---|------|--------------|
-| 7 | 2026-02-06 | **Phase 1 implementation complete**: Implemented all 12 source files for MOD-001 (data_pipeline: data_loader, returns, features, universe, windowing, crisis), MOD-002 (vae_architecture: build_vae, encoder, decoder, model), MOD-003 (test_infrastructure: synthetic_data, known_solutions). All pyright clean (0 errors). Smoke tests pass: VAE forward/encode shapes correct, sizing rules match DVT table, data pipeline end-to-end (synthetic CSV → returns → vol → windows → crisis labels), z-scoring CONV-02 verified, log-returns CONV-01 verified. |
+| 8 | 2026-02-06 | **Phase 2 implementation complete**: Implemented 16 source files for MOD-004 (loss.py: 3 modes P/F/A, crisis weighting, co-movement loss, curriculum scheduling, validation ELBO), MOD-005 (trainer.py, batching.py, early_stopping.py, scheduler.py: training loop, curriculum batching, early stopping, LR scheduling), MOD-006 (composite.py, active_units.py: stride-1 inference, AU measurement, truncation), MOD-007 (rescaling.py, factor_regression.py, covariance.py, conditioning.py: dual rescaling, OLS, Ledoit-Wolf Σ_z, D_ε, conditioning guard), MOD-008 (entropy.py, sca_solver.py, constraints.py, cardinality.py, frontier.py: entropy+gradient, SCA+Armijo, multi-start, cardinality enforcement, variance-entropy frontier). All pyright clean (0 errors). Smoke tests pass: crisis weighting 3.0x, curriculum phases correct, gradient matches numerical (5.8e-10 error), training loop trains+stops, inference deterministic, dual rescaling differs, rotation preserves Σ_assets, SCA converges. |
+| 7 | 2026-02-06 | **Phase 1 implementation complete**: Implemented all 12 source files for MOD-001 (data_pipeline), MOD-002 (vae_architecture), MOD-003 (test_infrastructure). All pyright clean. Smoke tests pass. |
 | 6 | 2026-02-06 | **Volume promoted to core schema**: Moved `volume` from extended-only (F>2) to core columns in ISD for ADV filter; updated 6 ISD sections; fixed config.py defaults to match DVT baselines |
 | 5 | 2026-02-06 | **Implementation decisions log**: Added `docs/implementation_decisions.md` to track spec gap decisions; added ISD Section 00 guideline for mandatory logging |
 | 4 | 2026-02-06 | **ISD data schema update**: Separated F=2 vs F>2 data requirements; added EODHD as production data source (2000-2025) |
@@ -19,9 +20,9 @@
 
 ## Current State
 
-- **Status**: Development — Phase 1 complete, ready for Phase 2
-- **Main features**: Full data pipeline (synthetic + loader + returns + vol + universe + windows + crisis), 1D-CNN VAE architecture (InceptionHead + ResBlock encoder/decoder, VAEModel with scalar σ²), test infrastructure (synthetic generators + known solutions)
-- **Next**: Phase 2 — MOD-004 (loss_function), MOD-005 (training), MOD-006 (inference), MOD-007 (risk_model), MOD-008 (portfolio_optimization)
+- **Status**: Development — Phase 1 + Phase 2 complete, ready for Phase 3 (benchmarks) and Phase 4 (walk-forward + integration)
+- **Main features**: Full data pipeline, 1D-CNN VAE architecture, 3-mode loss function, training loop with curriculum batching, inference + AU measurement, dual-rescaled factor risk model (Ledoit-Wolf), portfolio optimization (SCA+Armijo+multi-start+cardinality+frontier)
+- **Next**: Phase 3 — MOD-010 to MOD-015 (benchmarks), Phase 4 — MOD-009 (walk_forward), MOD-016 (integration)
 
 ---
 
