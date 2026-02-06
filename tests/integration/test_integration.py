@@ -57,12 +57,28 @@ def _make_fold_metrics(
 class TestIntegration:
     """Tests for MOD-016 E2E integration."""
 
-    @pytest.mark.skip(reason="Long running")
     def test_pipeline_e2e_synthetic(self) -> None:
         """FullPipeline can be instantiated and setup() works."""
-        pipeline = FullPipeline()
+        from dataclasses import replace
+        from src.config import WalkForwardConfig
+
+        config = PipelineConfig()
+        wf = replace(
+            config.walk_forward,
+            total_years=10,
+            min_training_years=3,
+            holdout_years=1,
+        )
+        config = replace(config, walk_forward=wf)
+        pipeline = FullPipeline(config=config)
         pipeline.setup(start_date="2000-01-03")
+
         assert len(pipeline.fold_schedule) > 0
+        wf_folds = pipeline.get_walk_forward_folds()
+        assert len(wf_folds) > 0
+        holdout = pipeline.get_holdout_fold()
+        assert holdout is not None
+        assert holdout["is_holdout"] is True
 
     def test_statistical_tests_known(self) -> None:
         """Wilcoxon detects significant difference between N(1,1) and N(0,1)."""
@@ -187,10 +203,24 @@ class TestIntegration:
         assert isinstance(summary_text, str)
         assert len(summary_text) > 0
 
-    @pytest.mark.skip(reason="Long running CLI test")
-    def test_cli_synthetic_run(self) -> None:
-        """CLI entry point run_walk_forward.py completes on synthetic data."""
-
-    @pytest.mark.skip(reason="Long running CLI test")
-    def test_benchmarks_only_run(self) -> None:
+    def test_cli_benchmarks_run(self) -> None:
         """CLI entry point run_benchmarks.py completes on synthetic data."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_benchmarks.py",
+                "--synthetic",
+                "--n-stocks", "30",
+                "--n-years", "5",
+                "--seed", "42",
+                "--benchmarks", "ew,iv,mv",
+                "--output-dir", "/tmp/test_bench_output",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert result.returncode == 0, (
+            f"run_benchmarks.py failed:\nstdout={result.stdout[-500:]}\n"
+            f"stderr={result.stderr[-500:]}"
+        )
