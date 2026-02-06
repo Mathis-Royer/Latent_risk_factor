@@ -2411,11 +2411,182 @@ def regime_decomposition(fold_metrics, vix_data):
     """
 ```
 
+#### Sub-task 3: E2E Orchestration (pipeline.py — `run()` method)
+
+The `FullPipeline.run()` method is the single entry point for the complete walk-forward validation. It orchestrates all modules in the correct order, respecting point-in-time discipline (CONV-10) and no look-ahead (INV-005).
+
+```python
+class FullPipeline:
+    def run(self, returns: pd.DataFrame, universe_snapshots: dict,
+            trailing_vol: pd.DataFrame, crisis_fractions: pd.Series,
+            hp_grid: list[dict] | None = None,
+            device: str = "cpu") -> dict:
+        """
+        Full walk-forward validation + holdout.
+
+        Steps:
+        1. setup() — generate fold schedule (~34 WF + 1 holdout)
+        2. For each walk-forward fold k:
+           a. Phase A — HP selection:
+              - For each HP config in grid:
+                * Build windows from training period
+                * Train VAE on [train_start, val_start], validate on [val_start, train_end]
+                * Evaluate: AU, EP, MDD on nested validation OOS
+              - Eliminate poor configs, select best via composite_score
+           b. Phase B — Deployment:
+              - Determine E* (from Phase A config or median of previous E*)
+              - Train VAE on FULL [train_start, train_end] for E* epochs (no early stop)
+              - Infer B, measure AU, truncate to B_A
+              - Dual rescaling: estimation (per-date) + portfolio (current-date)
+              - Factor regression → z_hat, residuals
+              - Covariance: Σ_z (Ledoit-Wolf), D_ε, Σ_assets
+              - Portfolio optimization: frontier → α*, SCA → w*, cardinality
+              - Compute OOS metrics (3 layers)
+              - Record results
+           c. Benchmarks — For each of the 6 benchmarks:
+              - fit(returns[:train_end], universe_at_train_end)
+              - optimize(w_old, is_first)
+              - Compute identical OOS metrics
+              - Record results
+        3. Holdout fold:
+           - Same as step 2 but E* = median(all WF E*), training up to holdout_start
+        4. Statistical tests:
+           - Wilcoxon + bootstrap for each (VAE, benchmark) × metric pair
+           - Holm-Bonferroni correction across 6 × 4 = 24 tests
+        5. Regime decomposition (if crisis fractions available)
+        6. Generate report with deployment recommendation (Scenario A/B/C/D/E)
+
+        Return structure:
+        {
+            "fold_schedule": list[dict],           # All folds
+            "vae_results": list[dict[str, float]], # Per-fold VAE metrics
+            "benchmark_results": {                 # Per-benchmark per-fold
+                "equal_weight": list[dict], ...
+            },
+            "e_stars": list[int],                  # E* per fold
+            "report": dict,                        # From generate_report()
+            "holdout": dict | None,                # Holdout-specific results
+        }
+        """
+```
+
+**Default HP grid** (if `hp_grid is None`):
+
+| Parameter | Values | Count |
+|-----------|--------|-------|
+| `mode` | "P", "F", "A" | 3 |
+| `learning_rate` | 5e-4, 1e-3 | 2 |
+| `alpha` | 0.5, 1.0, 2.0 | 3 |
+
+Total: 3 × 2 × 3 = 18 configs. After Phase A elimination, typically 3-6 survive.
+
+**Checkpointing:** After each fold, results are accumulated in `self.vae_results` and `self.benchmark_results`. If the process is interrupted, partial results are available via `get_summary()`.
+
+**Logging:** Each fold logs to stdout:
+```
+[Fold k/N] Phase A: {n_configs} configs → {n_surviving} surviving, best={config_id}
+[Fold k/N] Phase B: E*={e_star}, AU={au}, H_norm={h:.3f}
+[Fold k/N] Benchmarks: EW={sharpe:.3f}, IV={sharpe:.3f}, ...
+```
+
+#### Sub-task 4: CLI Scripts
+
+##### run_walk_forward.py
+
+```python
+"""
+CLI entry point for the complete walk-forward validation.
+
+Usage:
+    python scripts/run_walk_forward.py --data-path <path> [options]
+    python scripts/run_walk_forward.py --synthetic [options]
+
+Arguments:
+    --data-path PATH      Path to returns CSV (dates × stocks)
+    --synthetic           Use synthetic data (50 stocks, 10 years)
+    --n-stocks N          Synthetic: number of stocks (default: 50)
+    --n-years N           Synthetic: history length (default: 10)
+    --device DEVICE       PyTorch device: "cpu" or "cuda" (default: "cpu")
+    --seed SEED           Global random seed (default: 42)
+    --output-dir DIR      Output directory for results (default: "results/")
+    --config PATH         Optional YAML/JSON config override
+
+Output:
+    results/
+    ├── report.json       # Full structured report
+    ├── report.txt        # Human-readable summary
+    ├── fold_metrics.csv  # Per-fold metrics table
+    └── statistical_tests.csv  # Pairwise test results
+"""
+```
+
+Entry point logic:
+1. Parse arguments via `argparse`
+2. Load or generate data
+3. Instantiate `FullPipeline(config)` with optional config overrides
+4. Call `pipeline.run(...)` with all data
+5. Save structured results to `output_dir/`
+6. Print `format_summary_table(report)` to stdout
+7. Exit code 0 on success, 1 on failure
+
+##### run_benchmarks.py
+
+```python
+"""
+CLI entry point for benchmarks only (no VAE training).
+
+Usage:
+    python scripts/run_benchmarks.py --data-path <path> [options]
+    python scripts/run_benchmarks.py --synthetic [options]
+
+Arguments:
+    --data-path PATH      Path to returns CSV
+    --synthetic           Use synthetic data
+    --benchmarks LIST     Comma-separated: "ew,iv,mv,erc,pca_rp,pca_vol" (default: all)
+    --device DEVICE       Not used (benchmarks are CPU-only), reserved for API consistency
+    --seed SEED           Global random seed (default: 42)
+    --output-dir DIR      Output directory (default: "results/benchmarks/")
+
+Output:
+    results/benchmarks/
+    ├── benchmark_metrics.csv   # Per-fold per-benchmark metrics
+    └── benchmark_summary.json  # Summary statistics
+"""
+```
+
+Entry point logic:
+1. Parse arguments
+2. Load or generate data
+3. For each fold in walk-forward schedule:
+   - For each selected benchmark: fit + optimize + compute metrics
+4. Save results
+5. Print summary table
+
+#### Applicable Invariants
+
+- **INV-005:** No look-ahead at any point in the orchestration.
+- **INV-012:** Constraint parameters identical for VAE and all benchmarks.
+- **CONV-10:** Point-in-time universe for each fold's training end date.
+- **CONV-09:** Expanding training window (data_start is fixed, train_end grows).
+
+#### Known Pitfalls
+
+- **DO NOT** share VAE model state between folds — each fold must train from scratch (fresh initialization).
+- **DO NOT** use the holdout fold to select HP — holdout uses median E* from walk-forward folds.
+- **DO NOT** forget to re-fit benchmarks per fold — benchmarks see the same training data as the VAE.
+- **DO NOT** apply Holm-Bonferroni before collecting ALL p-values — correction is global across 24 tests.
+- **DO NOT** include holdout fold in the Wilcoxon test — holdout is reported separately.
+- **DO NOT** pass future trailing_vol to benchmarks — vol at train_end only (point-in-time).
+
 #### Required Tests
 
-1. `test_pipeline_e2e_synthetic`: complete pipeline on synthetic data (50 stocks, 10 years)
-2. `test_statistical_tests_known`: Wilcoxon correct on known distributions
-3. `test_holm_bonferroni`: correction applied correctly
+1. `test_pipeline_e2e_synthetic`: complete pipeline on synthetic data (50 stocks, 10 years), ≥ 3 folds complete, report generated
+2. `test_statistical_tests_known`: Wilcoxon correct on known distributions (N(1,1) vs N(0,1) → p < 0.05)
+3. `test_holm_bonferroni`: correction applied correctly (2 rejections from 6 tests at α=0.05 with known p-values)
+4. `test_regime_decomposition_split`: 50% crisis fractions → correct crisis/calm split
+5. `test_report_structure`: report dict has all required keys
+6. `test_cli_synthetic_run`: `run_walk_forward.py --synthetic --n-stocks 20 --n-years 5` completes without error
+7. `test_benchmarks_only_run`: `run_benchmarks.py --synthetic` produces metrics for all 6 benchmarks
 
 ---
 
