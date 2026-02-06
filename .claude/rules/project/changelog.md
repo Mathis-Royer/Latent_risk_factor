@@ -7,6 +7,7 @@
 
 | # | Date | Modification |
 |---|------|--------------|
+| 5 | 2026-02-06 | **Implementation decisions log**: Added `docs/implementation_decisions.md` to track spec gap decisions; added ISD Section 00 guideline for mandatory logging; updated Workflow for Agents |
 | 4 | 2026-02-06 | **ISD data schema update**: Separated F=2 (returns+vol) vs F>2 (volume, intraday range, sector deviation, skewness) data requirements; removed delisting_code; added EODHD as production data source (2000-2025); added EODHD column mapping |
 | 3 | 2026-02-06 | **ISD completeness**: Added Phase 1 ISD sections for MOD-001 (data_pipeline), MOD-002 (vae_architecture), MOD-003 (test_infrastructure); translated French Appendix A to English in DVT |
 | 2 | 2026-02-06 | **Project scaffolding**: Created full src/ and tests/ directory tree, __init__.py files, centralized config.py with all ISD parameters, filled project documentation |
