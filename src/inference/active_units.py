@@ -1,0 +1,138 @@
+"""
+Active Unit (AU) measurement and statistical truncation.
+
+AU = number of latent dimensions with marginal KL > 0.01 nats.
+If AU > AU_max_stat, truncate to the top AU_max_stat dimensions.
+
+Reference: ISD Section MOD-006 — Sub-task 3.
+"""
+
+import math
+
+import numpy as np
+import torch
+
+from src.vae.model import VAEModel
+
+
+def measure_active_units(
+    model: VAEModel,
+    windows: torch.Tensor,
+    batch_size: int = 512,
+    au_threshold: float = 0.01,
+    device: torch.device | None = None,
+) -> tuple[int, np.ndarray, list[int]]:
+    """
+    Compute marginal KL per dimension and identify active units.
+
+    KL_k = (1/N) Σ_i (1/2)(μ²_ik + exp(log_var_ik) - log_var_ik - 1)
+
+    Active unit k ⟺ KL_k > au_threshold nats.
+
+    :param model (VAEModel): Trained VAE model
+    :param windows (torch.Tensor): All windows (N_windows, T, F)
+    :param batch_size (int): Batch size
+    :param au_threshold (float): KL threshold for AU detection (nats)
+    :param device (torch.device | None): Device
+
+    :return AU (int): Number of active dimensions
+    :return kl_per_dim (np.ndarray): Marginal KL per dimension (K,)
+    :return active_dims (list[int]): Indices of active dimensions, sorted by decreasing KL
+    """
+    if device is None:
+        device = next(model.parameters()).device
+
+    model.eval()
+    N = windows.shape[0]
+    K = model.K
+
+    # Accumulate KL components across batches
+    sum_kl_components = torch.zeros(K, device=device)
+    n_samples = 0
+
+    with torch.no_grad():
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            x = windows[start:end].to(device)
+
+            # Get mu and log_var from encoder
+            x_enc = x.transpose(1, 2)  # (B, F, T)
+            mu, log_var = model.encoder(x_enc)
+
+            # KL per dimension per sample: 0.5 * (μ² + exp(lv) - lv - 1)
+            kl_batch = 0.5 * (mu ** 2 + torch.exp(log_var) - log_var - 1.0)
+            sum_kl_components += kl_batch.sum(dim=0)
+            n_samples += kl_batch.shape[0]
+
+    # Marginal KL per dimension
+    kl_per_dim = (sum_kl_components / max(1, n_samples)).cpu().numpy()
+
+    # Active units: KL_k > threshold
+    active_mask = kl_per_dim > au_threshold
+    active_dims_unsorted = np.where(active_mask)[0]
+
+    # Sort by decreasing KL
+    sorted_order = np.argsort(-kl_per_dim[active_dims_unsorted])
+    active_dims = active_dims_unsorted[sorted_order].tolist()
+
+    AU = len(active_dims)
+
+    return AU, kl_per_dim, active_dims
+
+
+def compute_au_max_stat(
+    n_obs: int,
+    r_min: int = 2,
+) -> int:
+    """
+    Statistical upper bound on AU.
+
+    AU_max_stat = floor(sqrt(2 × N_obs / r_min))
+
+    :param n_obs (int): Number of historical days (observations)
+    :param r_min (int): Minimum observations-per-parameter ratio
+
+    :return au_max (int): Statistical upper bound on AU
+    """
+    return int(math.floor(math.sqrt(2.0 * n_obs / r_min)))
+
+
+def truncate_active_dims(
+    AU: int,
+    kl_per_dim: np.ndarray,
+    active_dims: list[int],
+    au_max_stat: int,
+) -> tuple[int, list[int]]:
+    """
+    If AU > AU_max_stat, keep only the top AU_max_stat dimensions
+    with the highest marginal KL.
+
+    :param AU (int): Original number of active units
+    :param kl_per_dim (np.ndarray): Marginal KL per dimension (K,)
+    :param active_dims (list[int]): Active dimension indices (sorted by decreasing KL)
+    :param au_max_stat (int): Statistical upper bound
+
+    :return AU_truncated (int): Truncated AU
+    :return active_dims_truncated (list[int]): Truncated active dims
+    """
+    if AU <= au_max_stat:
+        return AU, active_dims
+
+    # Keep top au_max_stat dimensions (already sorted by decreasing KL)
+    truncated = active_dims[:au_max_stat]
+    return len(truncated), truncated
+
+
+def filter_exposure_matrix(
+    B: np.ndarray,
+    active_dims: list[int],
+) -> np.ndarray:
+    """
+    Filter exposure matrix to active dimensions only.
+
+    :param B (np.ndarray): Full exposure matrix (n_stocks, K)
+    :param active_dims (list[int]): Active dimension indices
+
+    :return B_A (np.ndarray): Filtered exposures (n_stocks, AU)
+    """
+    return B[:, active_dims]
