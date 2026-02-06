@@ -30,6 +30,7 @@ latent_risk_factor/
 │   ├── ISD_vae_latent_risk_factors.md    # Implementation Specification Document
 │   ├── DVT_strategie_facteurs_risque_latents_v4_1.md  # Technical Vision Document v4.1
 │   ├── Benchmark_latent_risk_factor.md   # Benchmark specifications
+│   ├── implementation_decisions.md   # Log of decisions for spec gaps (see ISD Section 00)
 │   └── assertions/                   # Contract assertion definitions
 │       └── contracts.yaml            # Inter-module interface contracts
 │
@@ -150,4 +151,5 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-06 | docs/ | Added implementation_decisions.md for logging spec gap decisions |
 | 2026-02-06 | Initial | Created full project tree from ISD specification |

@@ -173,6 +173,43 @@ invariants:
     violation: "Invalid comparison — differences reflect constraints, not the model"
 ```
 
+### Implementation Decision Logging — MANDATORY
+
+> **Log file:** `docs/implementation_decisions.md`
+
+During implementation, agents will encounter situations where the ISD or DVT specifications are insufficient, ambiguous, or incomplete. **All implementation decisions made to fill these gaps MUST be logged.**
+
+#### When to Log
+
+- Specification is **ambiguous** or has **multiple valid interpretations**
+- Behavior must be **inferred** because it is not explicitly specified
+- An **edge case** is discovered that is not covered
+- A **conservative assumption** is made to proceed
+
+#### Protocol by Phase
+
+| Phase | Agents | Protocol |
+|-------|--------|----------|
+| **Phase 1** (parallel) | data-engineer, ml-architect, test-lead | Each logs with `[MOD-XXX]` prefix — atomic entries, no coordination |
+| **Phase 2** (sequential) | Lead session / subagent | Sequential logging, no conflict |
+| **Phase 3** (parallel) | bench-simple, bench-covariance, bench-factor | Each logs with `[MOD-0XX]` prefix — atomic entries |
+| **Phase 4** (sequential) | Lead session | Logs + **consolidates all entries**, validates `provisional` → `validated` |
+
+#### Orchestrator Responsibility
+
+At each **phase transition**, the orchestrator (lead session) MUST:
+1. Review all `provisional` entries from the completed phase
+2. Validate correct decisions (`provisional` → `validated`)
+3. Flag decisions requiring human supervisor discussion
+4. Supersede revised decisions (`provisional` → `superseded` + new entry)
+
+#### Why This Matters
+
+- **Traceability**: Future debugging can trace unexpected behavior to documented decisions
+- **Consistency**: Prevents different agents from making conflicting assumptions
+- **Validation**: Human supervisor can review and correct before deployment
+- **Learning**: Identifies gaps in the specification for future projects
+
 ### Symbol Glossary
 
 | Symbol | Definition | Default Value |
@@ -2406,6 +2443,7 @@ Stock data (synthetic / EODHD) → data_pipeline → VAE training → inference 
 3. TDD: test before code for each sub-task
 4. Commit after each sub-task
 5. If ambiguous: comment `# AMBIGUITY: ...` and conservative interpretation
+6. **Log all gap decisions** in `docs/implementation_decisions.md` (see Section 00 — Implementation Decision Logging)
 
 ## Dependencies
 Python 3.11+, PyTorch ≥ 2.1, NumPy, SciPy, CVXPY + MOSEK, pandas, scikit-learn, pytest
