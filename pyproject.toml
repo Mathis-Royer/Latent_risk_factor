@@ -36,6 +36,8 @@ build-backend = "setuptools.build_meta"
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
 
 [tool.pylint.messages_control]
 disable = ["C0114", "C0115", "C0116"]
