@@ -1,0 +1,1 @@
+data/tiingo_us_equities.parquet filter=lfs diff=lfs merge=lfs -text
