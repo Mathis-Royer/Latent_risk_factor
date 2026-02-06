@@ -526,6 +526,63 @@ Implement end-to-end financial data preparation: CRSP data loading with survivor
 
 #### Sub-task 1: Data loading (data_loader.py)
 
+**Development strategy:** Real CRSP data is not available during development.
+The loader must support a **synthetic CSV mode** for end-to-end testing.
+A helper function generates a CSV file with the exact same schema as CRSP,
+allowing all downstream code to be validated without access to the real dataset.
+
+**Expected input format (CSV or Parquet, one row per stock-day):**
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| `permno` | int | Unique stock identifier (CRSP permanent number) | `10001` |
+| `date` | str (YYYY-MM-DD) | Trading date | `2005-03-15` |
+| `adj_price` | float | Split- and dividend-adjusted closing price (> 0) | `42.57` |
+| `volume` | int | Daily trading volume in shares | `1_250_000` |
+| `exchange_code` | int | 1 = NYSE, 2 = AMEX, 3 = NASDAQ | `1` |
+| `share_code` | int | CRSP share code (10/11 = common equity) | `11` |
+| `market_cap` | float | Float-adjusted market cap in USD | `2.5e9` |
+| `delisting_code` | int or NaN | CRSP delisting code (NaN if still active) | `500` |
+| `delisting_return` | float or NaN | Return on delisting day (NaN if unknown) | `-0.30` |
+
+**Synthetic data generator** (in `data_loader.py` or called from `tests/fixtures/synthetic_data.py`):
+
+```python
+def generate_synthetic_crsp_csv(
+    output_path: str,
+    n_stocks: int = 200,
+    start_date: str = "1993-01-04",
+    end_date: str = "2023-12-29",
+    n_delistings: int = 20,
+    seed: int = 42,
+) -> str:
+    """
+    Generate a synthetic CRSP-like CSV file with realistic properties.
+
+    Price dynamics: geometric Brownian motion per stock.
+      P_{t+1} = P_t × exp(μ_i + σ_i × ε_t),  ε ~ N(0,1)
+      μ_i ~ U(0.0001, 0.0005) (daily drift),
+      σ_i ~ U(0.005, 0.03)    (daily vol, annualized ~8%-48%)
+      P_0,i ~ U(10, 200)
+
+    Market cap: P × shares_outstanding, shares ~ U(10M, 500M).
+    Volume: proportional to market_cap with noise.
+    Exchange codes: random assignment (1/2/3) with realistic proportions
+      (60% NYSE, 10% AMEX, 30% NASDAQ).
+    Share codes: all 10 or 11 (common equity).
+
+    Delistings: n_delistings stocks are delisted at random dates
+      in the second half of history. Delisting return = NaN for ~50%,
+      imputed value for the rest.
+
+    Missing data: ~2% of stock-days have NaN adj_price (random gaps).
+
+    Returns: path to the generated CSV file.
+    """
+```
+
+**Loader functions:**
+
 ```python
 def load_crsp_data(
     data_path: str,
@@ -533,13 +590,15 @@ def load_crsp_data(
     end_date: str,
 ) -> pd.DataFrame:
     """
-    Load CRSP daily stock data (adjusted prices, volumes, exchange codes).
+    Load CRSP daily stock data from CSV or Parquet file.
+    Accepts both real CRSP extracts and synthetic data (same schema).
 
     Must include delisted stocks with full pre-delisting history.
-    Data source: CRSP (academic), EODHD, or Norgate Data.
 
     Returns: DataFrame with columns [permno, date, adj_price, volume,
-             exchange_code, share_code, market_cap, ...]
+             exchange_code, share_code, market_cap,
+             delisting_code, delisting_return]
+    Sorted by (permno, date). date is pd.Timestamp.
     """
 ```
 
