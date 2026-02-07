@@ -23,6 +23,7 @@ from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 
+from src.utils import get_optimal_device, get_dataloader_kwargs, get_amp_config
 from src.vae.loss import (
     compute_loss,
     compute_validation_elbo,
@@ -91,7 +92,7 @@ class VAETrainer:
         self.lambda_co_max = lambda_co_max
         self.beta_fixed = beta_fixed
         self.warmup_fraction = warmup_fraction
-        self.device = device or torch.device("cpu")
+        self.device = device or get_optimal_device()
 
         self.model = self.model.to(self.device)
 
@@ -113,6 +114,18 @@ class VAETrainer:
         # log_sigma_sq clamping bounds
         self._log_sigma_sq_min = math.log(1e-4)
         self._log_sigma_sq_max = math.log(10.0)
+
+        # AMP (Automatic Mixed Precision) — auto-adapts to device
+        amp_cfg = get_amp_config(self.device)
+        self.use_amp: bool = bool(amp_cfg["use_amp"])
+        self._amp_device_type: str = str(amp_cfg["device_type"])
+        self._amp_dtype: torch.dtype = amp_cfg["dtype"]  # type: ignore[assignment]
+        if amp_cfg["use_scaler"]:
+            self.scaler: torch.amp.GradScaler | None = torch.amp.GradScaler(  # type: ignore[reportPrivateImportUsage]
+                device=self._amp_device_type,
+            )
+        else:
+            self.scaler = None
 
     def train_epoch(
         self,
@@ -160,30 +173,39 @@ class VAETrainer:
             else:
                 cf = torch.zeros(x.shape[0], device=self.device)
 
-            # Forward pass
-            x_hat, mu, log_var = self.model(x)
+            # Forward pass + loss (under AMP autocast if enabled)
+            with torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
+                device_type=self._amp_device_type,
+                dtype=self._amp_dtype,
+                enabled=self.use_amp,
+            ):
+                x_hat, mu, log_var = self.model(x)
 
-            # Compute loss
-            loss, components = compute_loss(
-                x=x,
-                x_hat=x_hat,
-                mu=mu,
-                log_var=log_var,
-                log_sigma_sq=self.model.log_sigma_sq,
-                crisis_fractions=cf,
-                epoch=epoch,
-                total_epochs=total_epochs,
-                mode=self.loss_mode,
-                gamma=self.gamma,
-                lambda_co_max=self.lambda_co_max,
-                beta_fixed=self.beta_fixed,
-                warmup_fraction=self.warmup_fraction,
-            )
+                loss, components = compute_loss(
+                    x=x,
+                    x_hat=x_hat,
+                    mu=mu,
+                    log_var=log_var,
+                    log_sigma_sq=self.model.log_sigma_sq,
+                    crisis_fractions=cf,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                    mode=self.loss_mode,
+                    gamma=self.gamma,
+                    lambda_co_max=self.lambda_co_max,
+                    beta_fixed=self.beta_fixed,
+                    warmup_fraction=self.warmup_fraction,
+                )
 
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            # Backward pass (with GradScaler if available)
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
 
             # Clamp log_sigma_sq after optimizer step
             with torch.no_grad():
@@ -250,15 +272,20 @@ class VAETrainer:
                 else:
                     x = batch_data.to(self.device)
 
-                x_hat, mu, log_var = self.model(x)
+                with torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
+                    device_type=self._amp_device_type,
+                    dtype=self._amp_dtype,
+                    enabled=self.use_amp,
+                ):
+                    x_hat, mu, log_var = self.model(x)
 
-                elbo = compute_validation_elbo(
-                    x=x,
-                    x_hat=x_hat,
-                    mu=mu,
-                    log_var=log_var,
-                    log_sigma_sq=self.model.log_sigma_sq,
-                )
+                    elbo = compute_validation_elbo(
+                        x=x,
+                        x_hat=x_hat,
+                        mu=mu,
+                        log_var=log_var,
+                        log_sigma_sq=self.model.log_sigma_sq,
+                    )
 
                 total_elbo += elbo.item()
                 n_batches += 1
@@ -284,7 +311,8 @@ class VAETrainer:
 
         :return result (dict): Training results with best_epoch, best_val_elbo, history
         """
-        # Create data loaders
+        # Create data loaders (auto-tuned workers + pin_memory for device)
+        dl_kwargs = get_dataloader_kwargs(self.device)
         train_dataset = TensorDataset(
             train_windows,
             torch.arange(len(train_windows)),
@@ -294,6 +322,7 @@ class VAETrainer:
             batch_size=batch_size,
             shuffle=True,
             drop_last=False,
+            **dl_kwargs,  # type: ignore[arg-type]
         )
 
         val_dataset = TensorDataset(val_windows)
@@ -302,6 +331,7 @@ class VAETrainer:
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,
+            **dl_kwargs,  # type: ignore[arg-type]
         )
 
         # Mode F warmup handling

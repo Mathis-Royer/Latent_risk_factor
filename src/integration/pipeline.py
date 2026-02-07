@@ -55,6 +55,7 @@ from src.walk_forward.metrics import (
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
 )
+from src.utils import get_optimal_device
 from src.walk_forward.phase_a import select_best_config
 from src.walk_forward.phase_b import check_training_sanity, determine_e_star
 from src.walk_forward.selection import aggregate_fold_metrics, summary_statistics
@@ -206,7 +207,7 @@ class FullPipeline:
         vix_data: pd.Series | None = None,
         start_date: str = "2000-01-03",
         hp_grid: list[dict[str, Any]] | None = None,
-        device: str = "cpu",
+        device: str = "auto",
         skip_phase_a: bool = False,
     ) -> dict[str, Any]:
         """
@@ -223,7 +224,7 @@ class FullPipeline:
 
         :return results (dict): Complete walk-forward results + report
         """
-        torch_device = torch.device(device)
+        torch_device = get_optimal_device() if device == "auto" else torch.device(device)
         if hp_grid is None and not skip_phase_a:
             hp_grid = self._default_hp_grid()
 
@@ -687,6 +688,7 @@ class FullPipeline:
             return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks
 
         B_A = filter_exposure_matrix(B, active_dims)
+        logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
 
         # 5. Dual rescaling
         # Build universe snapshots for estimation rescaling
@@ -710,6 +712,8 @@ class FullPipeline:
                 self.config.risk_model.winsorize_hi,
             ),
         )
+
+        logger.info("  [Fold %d] Dual rescaling done", fold_id)
 
         # 6. Factor regression → z_hat
         z_hat, valid_dates = estimate_factor_returns(
@@ -753,6 +757,11 @@ class FullPipeline:
 
         # 8. Portfolio optimization: frontier → α*, SCA → w*
         pc = self.config.portfolio
+        logger.info(
+            "  [Fold %d] Frontier: %d alphas × %d starts...",
+            fold_id, len(pc.alpha_grid), pc.n_starts,
+        )
+        t_port = time.monotonic()
         frontier = compute_variance_entropy_frontier(
             Sigma_assets, B_prime_port, eigenvalues, D_eps_port,
             alpha_grid=pc.alpha_grid,
@@ -764,6 +773,10 @@ class FullPipeline:
             entropy_eps=pc.entropy_eps,
         )
         alpha_opt = select_operating_alpha(frontier)
+        logger.info(
+            "  [Fold %d] Frontier done (%.1fs), alpha*=%.3f. Final SCA (%d starts)...",
+            fold_id, time.monotonic() - t_port, alpha_opt, pc.n_starts,
+        )
 
         w_opt, f_opt, H_opt = multi_start_optimize(
             Sigma_assets=Sigma_assets,
@@ -779,6 +792,8 @@ class FullPipeline:
             w_old=None, is_first=True,
             entropy_eps=pc.entropy_eps,
         )
+
+        logger.info("  [Fold %d] SCA done. Cardinality enforcement...", fold_id)
 
         # Cardinality enforcement
         sca_kwargs = {

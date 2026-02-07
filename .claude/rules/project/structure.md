@@ -37,6 +37,7 @@ latent_risk_factor/
 ├── src/                              # Main source code
 │   ├── __init__.py
 │   ├── config.py                     # Centralized configuration (frozen dataclasses)
+│   ├── utils.py                      # Hardware adaptation (device, DataLoader, AMP)
 │   ├── data_pipeline/                # MOD-001: Data loading and preparation
 │   │   ├── __init__.py
 │   │   ├── data_loader.py            # CRSP / alternative data loading
@@ -108,7 +109,8 @@ latent_risk_factor/
 │   │   ├── test_inference.py
 │   │   ├── test_risk_model.py
 │   │   ├── test_portfolio_optimization.py
-│   │   └── test_benchmarks.py
+│   │   ├── test_benchmarks.py
+│   │   └── test_utils.py             # Hardware adaptation tests
 │   ├── integration/                  # Integration tests
 │   │   ├── __init__.py
 │   │   ├── test_vae_training.py
@@ -151,5 +153,6 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-07 | src/, tests/ | Added `src/utils.py` (hardware adaptation) and `tests/unit/test_utils.py` |
 | 2026-02-06 | docs/ | Added implementation_decisions.md for logging spec gap decisions |
 | 2026-02-06 | Initial | Created full project tree from ISD specification |

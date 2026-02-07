@@ -1,7 +1,7 @@
 {
   "data": {
-    "n_stocks": 1000,
-    "window_length": 63,
+    "n_stocks": 10,
+    "window_length": 504,
     "n_features": 2,
     "vol_window": 252,
     "vix_lookback_percentile": 80.0,
@@ -12,9 +12,9 @@
     "sigma_sq_init": 1.0,
     "sigma_sq_min": 0.0001,
     "sigma_sq_max": 10.0,
-    "window_length": 63,
+    "window_length": 504,
     "n_features": 2,
-    "r_max": Infinity
+    "r_max": 1000000.0
   },
   "loss": {
     "mode": "P",
@@ -26,7 +26,7 @@
     "delta_sync": 21
   },
   "training": {
-    "max_epochs": 2,
+    "max_epochs": 1,
     "batch_size": 256,
     "learning_rate": 0.0001,
     "weight_decay": 1e-05,
@@ -35,10 +35,10 @@
       0.999
     ],
     "adam_eps": 1e-08,
-    "patience": 2,
+    "patience": 1,
     "lr_patience": 5,
     "lr_factor": 0.5,
-    "n_strata": 3,
+    "n_strata": 15,
     "curriculum_phase1_frac": 0.3,
     "curriculum_phase2_frac": 0.3
   },
@@ -65,7 +65,7 @@
     "kappa_2": 7.5,
     "delta_bar": 0.01,
     "tau_max": 0.3,
-    "n_starts": 5,
+    "n_starts": 2,
     "sca_max_iter": 100,
     "sca_tol": 1e-08,
     "armijo_c": 0.0001,
@@ -84,7 +84,7 @@
     ]
   },
   "walk_forward": {
-    "total_years": 5,
+    "total_years": 6,
     "min_training_years": 3,
     "oos_months": 6,
     "embargo_days": 21,

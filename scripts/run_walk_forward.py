@@ -79,9 +79,9 @@ def parse_args() -> argparse.Namespace:
         help="History length in years for synthetic data (default: 10)",
     )
     parser.add_argument(
-        "--device", type=str, default="cpu",
-        choices=["cpu", "cuda"],
-        help="PyTorch device (default: cpu)",
+        "--device", type=str, default="auto",
+        choices=["auto", "cpu", "cuda", "mps"],
+        help="PyTorch device (default: auto-detect best available)",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
