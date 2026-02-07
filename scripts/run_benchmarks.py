@@ -103,9 +103,9 @@ def parse_args() -> argparse.Namespace:
         help="Output directory (default: results/benchmarks/)",
     )
     parser.add_argument(
-        "--device", type=str, default="cpu",
-        choices=["cpu", "cuda"],
-        help="Reserved for API consistency (benchmarks are CPU-only)",
+        "--device", type=str, default="auto",
+        choices=["auto", "cpu", "cuda", "mps"],
+        help="PyTorch device (default: auto-detect best available)",
     )
     return parser.parse_args()
 

@@ -5,39 +5,39 @@ VAE LATENT RISK FACTOR — RESULTS REPORT
 Scenario: C
 Recommendation: Adopt PCA (cost /100)
 
-E* epochs: mean=0.3, std=0.5, range=[0, 1]
+E* epochs: mean=1.0, std=0.0, range=[1, 1]
 
 Statistical Tests (0 comparisons, alpha=0.05):
 --------------------------------------------------
 
   vs equal_weight:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
   vs inverse_vol:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
   vs min_variance:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
   vs erc:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
   vs pca_factor_rp:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
   vs pca_vol:
-    ann_vol_oos: skipped (Too few paired observations (3))
-    max_drawdown_oos: skipped (Too few paired observations (3))
-    sharpe: skipped (Too few paired observations (3))
+    ann_vol_oos: skipped (Too few paired observations (4))
+    max_drawdown_oos: skipped (Too few paired observations (4))
+    sharpe: skipped (Too few paired observations (4))
 
 ======================================================================

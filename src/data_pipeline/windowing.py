@@ -10,6 +10,34 @@ Reference: ISD Section MOD-001 — Sub-task 4.
 import numpy as np
 import pandas as pd
 import torch
+from numpy.lib.stride_tricks import sliding_window_view
+
+
+def _vectorized_ffill_bfill(arr_2d: np.ndarray) -> np.ndarray:
+    """
+    Per-row forward-fill then backward-fill of NaN values.
+
+    Equivalent to ``pd.Series(row).ffill().bfill()`` applied independently
+    to each row, but vectorized across all rows simultaneously.
+
+    :param arr_2d (np.ndarray): Shape (n_windows, T), may contain NaN
+
+    :return filled (np.ndarray): Same shape, NaN replaced where possible
+    """
+    out = arr_2d.copy()
+    _, T = out.shape
+
+    # Forward fill: propagate last valid value rightward
+    for t in range(1, T):
+        mask = np.isnan(out[:, t])
+        out[mask, t] = out[mask, t - 1]
+
+    # Backward fill: propagate first valid value leftward
+    for t in range(T - 2, -1, -1):
+        mask = np.isnan(out[:, t])
+        out[mask, t] = out[mask, t + 1]
+
+    return out
 
 
 def create_windows(
@@ -42,8 +70,8 @@ def create_windows(
     :return windows (torch.Tensor): Shape (N, T, F), z-scored windows
     :return metadata (pd.DataFrame): Columns: stock_id, start_date, end_date
     """
-    all_windows = []
-    metadata_records = []
+    all_windows: list[np.ndarray] = []
+    metadata_records: list[dict[str, object]] = []
 
     dates = returns_df.index
 
@@ -51,68 +79,87 @@ def create_windows(
         if permno not in returns_df.columns or permno not in vol_df.columns:
             continue
 
-        ret_series = returns_df[permno].values
-        vol_series = vol_df[permno].values
+        ret_series = np.asarray(returns_df[permno].values, dtype=np.float64)
+        vol_series = np.asarray(vol_df[permno].values, dtype=np.float64)
 
         n_dates = len(ret_series)
+        if n_dates < T:
+            continue
 
-        # Slide windows with given stride
-        for end_idx in range(T - 1, n_dates, stride):
-            start_idx = end_idx - T + 1
+        # Create all windows at once via stride tricks (no-copy view)
+        ret_all = sliding_window_view(ret_series, T)[::stride]  # (n_win, T)
+        vol_all = sliding_window_view(vol_series, T)[::stride]  # (n_win, T)
+        n_windows = ret_all.shape[0]
 
-            ret_window = ret_series[start_idx: end_idx + 1]
-            vol_window = vol_series[start_idx: end_idx + 1]
+        if n_windows == 0:
+            continue
 
-            # Skip if too many NaN values
-            ret_nan_frac = np.isnan(ret_window).sum() / T
-            vol_nan_frac = np.isnan(vol_window).sum() / T
-            if ret_nan_frac > 0.05 or vol_nan_frac > 0.05:
-                continue
+        # Window start/end indices for metadata
+        start_indices = np.arange(0, n_dates - T + 1, stride)[:n_windows]
+        end_indices = start_indices + T - 1
 
-            # Fill remaining NaN with 0 (for returns) and forward-fill for vol
-            ret_arr = np.asarray(ret_window, dtype=np.float64)
-            ret_clean = np.nan_to_num(ret_arr, nan=0.0)
-            vol_arr = pd.Series(vol_window).ffill().bfill().to_numpy(dtype=np.float64)
-            vol_clean = np.nan_to_num(vol_arr, nan=0.0)
+        # --- Filter 1: NaN fraction (>5% NaN in ret OR vol → skip) ---
+        ret_nan_frac = np.isnan(ret_all).sum(axis=1) / T
+        vol_nan_frac = np.isnan(vol_all).sum(axis=1) / T
+        nan_ok = (ret_nan_frac <= 0.05) & (vol_nan_frac <= 0.05)
 
-            # Exclude windows with too many zero returns (suspension)
-            zero_frac = (np.abs(ret_clean) < 1e-12).sum() / T
-            if zero_frac > max_zero_frac:
-                continue
+        if not nan_ok.any():
+            continue
 
-            # Z-score per feature (CONV-02)
-            ret_mu = ret_clean.mean()
-            ret_sigma = ret_clean.std()
-            ret_sigma = max(ret_sigma, sigma_min)
-            ret_zscore = (ret_clean - ret_mu) / ret_sigma
+        ret_wins = ret_all[nan_ok].copy()
+        vol_wins = vol_all[nan_ok].copy()
+        win_starts = start_indices[nan_ok]
+        win_ends = end_indices[nan_ok]
 
-            vol_mu = vol_clean.mean()
-            vol_sigma = vol_clean.std()
-            vol_sigma = max(vol_sigma, sigma_min)
-            vol_zscore = (vol_clean - vol_mu) / vol_sigma
+        # --- NaN handling: returns → 0, vol → per-window ffill/bfill then 0 ---
+        ret_clean = np.nan_to_num(ret_wins, nan=0.0)
+        vol_clean = _vectorized_ffill_bfill(vol_wins)
+        vol_clean = np.nan_to_num(vol_clean, nan=0.0)
 
-            # Stack: (T, F=2)
-            window = np.stack([ret_zscore, vol_zscore], axis=-1).astype(
-                np.float32
-            )
-            all_windows.append(window)
+        # --- Filter 2: zero-return fraction (>max_zero_frac → skip) ---
+        zero_frac = (np.abs(ret_clean) < 1e-12).sum(axis=1) / T
+        zero_ok = zero_frac <= max_zero_frac
 
+        if not zero_ok.any():
+            continue
+
+        ret_clean = ret_clean[zero_ok]
+        vol_clean = vol_clean[zero_ok]
+        win_starts = win_starts[zero_ok]
+        win_ends = win_ends[zero_ok]
+
+        # --- Z-score per feature per window (CONV-02) ---
+        ret_mu = ret_clean.mean(axis=1, keepdims=True)
+        ret_sigma = ret_clean.std(axis=1, keepdims=True)
+        ret_sigma = np.maximum(ret_sigma, sigma_min)
+        ret_zscore = (ret_clean - ret_mu) / ret_sigma
+
+        vol_mu = vol_clean.mean(axis=1, keepdims=True)
+        vol_sigma = vol_clean.std(axis=1, keepdims=True)
+        vol_sigma = np.maximum(vol_sigma, sigma_min)
+        vol_zscore = (vol_clean - vol_mu) / vol_sigma
+
+        # Stack features: (n_valid, T, F=2)
+        stacked = np.stack([ret_zscore, vol_zscore], axis=-1).astype(np.float32)
+        all_windows.append(stacked)
+
+        # Build metadata for surviving windows
+        for i in range(len(win_starts)):
             metadata_records.append({
                 "stock_id": permno,
-                "start_date": dates[start_idx],
-                "end_date": dates[end_idx],
+                "start_date": dates[win_starts[i]],
+                "end_date": dates[win_ends[i]],
             })
 
     if not all_windows:
-        # Return empty tensors with correct shape
         windows = torch.zeros(0, T, 2, dtype=torch.float32)
         metadata = pd.DataFrame(
             columns=["stock_id", "start_date", "end_date"]
         )
         return windows, metadata
 
-    # Stack all windows: (N, T, F)
-    windows = torch.from_numpy(np.stack(all_windows, axis=0))
+    # Concatenate all stocks: (N_total, T, F)
+    windows = torch.from_numpy(np.concatenate(all_windows, axis=0))
     metadata = pd.DataFrame(metadata_records)
 
     return windows, metadata

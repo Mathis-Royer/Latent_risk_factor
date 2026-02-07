@@ -34,85 +34,85 @@
       "equal_weight": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       },
       "inverse_vol": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       },
       "min_variance": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       },
       "erc": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       },
       "pca_factor_rp": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       },
       "pca_vol": {
         "ann_vol_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "max_drawdown_oos": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         },
         "sharpe": {
           "skipped": true,
-          "reason": "Too few paired observations (3)"
+          "reason": "Too few paired observations (4)"
         }
       }
     },
@@ -125,16 +125,18 @@
   },
   "e_star_summary": {
     "values": [
-      0,
       1,
-      0
+      1,
+      1,
+      1,
+      1
     ],
-    "mean": 0.3333333333333333,
-    "std": 0.4714045207910317,
-    "min": 0,
+    "mean": 1.0,
+    "std": 0.0,
+    "min": 1,
     "max": 1
   },
-  "n_folds": 3,
+  "n_folds": 5,
   "n_benchmarks": 6,
   "benchmark_names": [
     "equal_weight",

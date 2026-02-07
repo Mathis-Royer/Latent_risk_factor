@@ -8,11 +8,15 @@ determines the operating point.
 Reference: ISD Section MOD-008 — Sub-task 5.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.sca_solver import multi_start_optimize
+
+logger = logging.getLogger(__name__)
 
 
 def compute_variance_entropy_frontier(
@@ -65,8 +69,10 @@ def compute_variance_entropy_frontier(
         alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
 
     results: list[dict[str, float]] = []
+    n_alphas = len(alpha_grid)
 
-    for alpha in alpha_grid:
+    for idx, alpha in enumerate(alpha_grid):
+        logger.info("    Frontier alpha %d/%d (alpha=%.3f)...", idx + 1, n_alphas, alpha)
         w_opt, f_opt, H_opt = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
