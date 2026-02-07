@@ -13,6 +13,7 @@ Reference: ISD Section MOD-016 — Sub-tasks 1, 3.
 """
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -46,7 +47,17 @@ from src.risk_model.covariance import assemble_risk_model, estimate_d_eps, estim
 from src.risk_model.factor_regression import compute_residuals, estimate_factor_returns
 from src.risk_model.rescaling import rescale_estimation, rescale_portfolio
 from src.training.trainer import VAETrainer
-from src.vae.build_vae import build_vae
+from src.vae.build_vae import (
+    C_MIN_DEFAULT,
+    C_MIN_SMALL,
+    build_vae,
+    compute_channel_progression,
+    compute_depth,
+    compute_final_width,
+    compute_temporal_sizes,
+    count_decoder_params,
+    count_encoder_params,
+)
 from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.metrics import (
     crisis_period_return,
@@ -86,15 +97,138 @@ class FullPipeline:
         results: dict — accumulated results per fold
     """
 
-    def __init__(self, config: PipelineConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: PipelineConfig | None = None,
+        tensorboard_dir: str | None = None,
+    ) -> None:
         """
         :param config (PipelineConfig | None): Pipeline configuration
+        :param tensorboard_dir (str | None): TensorBoard log directory. If set,
+            training metrics are logged to TensorBoard and the dashboard is
+            auto-launched in a background process.
         """
         self.config = config or PipelineConfig()
         self.fold_schedule: list[dict[str, object]] = []
         self.vae_results: list[dict[str, float]] = []
         self.benchmark_results: dict[str, list[dict[str, float]]] = {}
         self.e_stars: list[int] = []
+        self.tensorboard_dir = tensorboard_dir
+
+    def _adapt_vae_params(
+        self,
+        n_stocks: int,
+        T_annee: int,
+    ) -> dict[str, Any]:
+        """
+        Auto-adapt K, c_min, r_max, and dropout for the actual universe size.
+
+        Three levers applied in order:
+        1. Cap K at min(K_config, max(2 * AU_max_stat, 10))
+        2. If r > r_max with C_MIN_DEFAULT, try C_MIN_SMALL (= C_HEAD = 144)
+        3. If r still > r_max, relax r_max to r * 1.1 + set dropout=0.2
+
+        :param n_stocks (int): Number of stocks in the universe
+        :param T_annee (int): Training history length in years
+
+        :return adapted (dict): Keys: K, r_max, c_min, dropout
+        """
+        T = self.config.data.window_length
+        F = self.config.data.n_features
+        K_config = self.config.vae.K
+        r_max_config = self.config.vae.r_max
+
+        # Step 1: Cap K based on AU_max_stat (binding downstream constraint)
+        n_obs = T_annee * 252
+        au_max = compute_au_max_stat(n_obs=n_obs, r_min=self.config.inference.r_min)
+        K_adapted = min(K_config, max(2 * au_max, 10))
+
+        # Step 2: Compute capacity ratio
+        L = compute_depth(T)
+        T_hist = T_annee * 252
+        N_capacity = max(n_stocks * (T_hist - T + 1), 1)
+
+        def _compute_r(K: int, c_min: int) -> float:
+            C_L = compute_final_width(K, c_min=c_min)
+            channels = compute_channel_progression(L, C_L)
+            temporal_sizes = compute_temporal_sizes(T, L)
+            T_comp = temporal_sizes[-1]
+            P_enc = count_encoder_params(F, K, channels)
+            P_dec = count_decoder_params(F, K, channels, T_comp)
+            return (P_enc + P_dec) / N_capacity
+
+        c_min = C_MIN_DEFAULT
+        r = _compute_r(K_adapted, c_min)
+
+        # Step 3: If r > r_max, try reducing c_min
+        if r > r_max_config:
+            c_min = C_MIN_SMALL
+            r = _compute_r(K_adapted, c_min)
+
+        # Step 4: If still > r_max, relax r_max with 10% headroom
+        r_max_adapted = r_max_config
+        dropout = 0.1
+
+        if r > r_max_config:
+            r_max_adapted = r * 1.1
+            dropout = 0.2
+            logger.warning(
+                "Small universe adaptation: n=%d, T_annee=%d, K=%d->%d, "
+                "c_min=%d->%d, r=%.2f > r_max=%.1f. "
+                "Relaxing r_max to %.2f with reinforced regularization "
+                "(dropout=%.1f).",
+                n_stocks, T_annee, K_config, K_adapted,
+                C_MIN_DEFAULT, c_min, r, r_max_config,
+                r_max_adapted, dropout,
+            )
+        elif c_min < C_MIN_DEFAULT:
+            if r > 5.0:
+                dropout = 0.2
+            logger.info(
+                "Small universe adaptation: n=%d, K=%d->%d, c_min=%d->%d, "
+                "r=%.2f (within r_max=%.1f)%s.",
+                n_stocks, K_config, K_adapted, C_MIN_DEFAULT, c_min, r,
+                r_max_config,
+                " [reinforced reg]" if dropout > 0.1 else "",
+            )
+        elif K_adapted < K_config:
+            logger.info(
+                "K adapted: %d -> %d (AU_max_stat=%d), r=%.2f.",
+                K_config, K_adapted, au_max, r,
+            )
+
+        return {
+            "K": K_adapted,
+            "r_max": r_max_adapted,
+            "c_min": c_min,
+            "dropout": dropout,
+        }
+
+    def _tb_log_dir(self, fold_id: int, phase: str, hp_idx: int = 0,
+                     hp: dict[str, Any] | None = None) -> str | None:
+        """
+        Build TensorBoard log directory path for a training run.
+
+        :param fold_id (int): Fold identifier
+        :param phase (str): "phase_a" or "phase_b"
+        :param hp_idx (int): HP config index (Phase A only)
+        :param hp (dict | None): HP config dict for naming (Phase A only)
+
+        :return log_dir (str | None): Log directory path, or None if TB disabled
+        """
+        if self.tensorboard_dir is None:
+            return None
+        if phase == "phase_a" and hp is not None:
+            mode = hp.get("mode", "X")
+            lr = hp.get("learning_rate", 0)
+            run_name = f"config_{hp_idx:02d}_mode_{mode}_lr_{lr}"
+            return os.path.join(
+                self.tensorboard_dir, f"fold_{fold_id:02d}", "phase_a", run_name,
+            )
+        return os.path.join(
+            self.tensorboard_dir, f"fold_{fold_id:02d}", phase,
+        )
+
 
     def setup(self, start_date: str) -> None:
         """
@@ -227,6 +361,10 @@ class FullPipeline:
         torch_device = get_optimal_device() if device == "auto" else torch.device(device)
         if hp_grid is None and not skip_phase_a:
             hp_grid = self._default_hp_grid()
+
+        # Ensure TensorBoard log directory exists
+        if self.tensorboard_dir is not None:
+            os.makedirs(self.tensorboard_dir, exist_ok=True)
 
         # Step 1: Setup fold schedule
         self.setup(start_date)
@@ -398,6 +536,7 @@ class FullPipeline:
         :return best_config (dict | None): Best HP config or None
         """
         train_end = str(fold["train_end"])
+        train_start = str(fold["train_start"])
         val_start = str(fold["val_start"])
 
         # Get universe at train_end for window creation
@@ -429,6 +568,12 @@ class FullPipeline:
         if train_windows.shape[0] == 0 or val_windows.shape[0] == 0:
             return None
 
+        # Adapt VAE params for this fold's universe size
+        n_stocks = len(stock_ids)
+        train_days = len(train_returns)
+        T_annee = max(1, train_days // 252)
+        adapted = self._adapt_vae_params(n_stocks, T_annee)
+
         # Evaluate each HP config
         config_results: list[dict[str, Any]] = []
 
@@ -439,9 +584,13 @@ class FullPipeline:
                 hp.get("mode", "?"), hp.get("learning_rate", "?"),
             )
             try:
+                fold_id = int(fold.get("fold_id", 0))  # type: ignore[arg-type]
+                tb_dir = self._tb_log_dir(fold_id, "phase_a", hp_idx=hp_idx, hp=hp)
                 result = self._evaluate_hp_config(
                     hp, train_windows, val_windows, metadata,
                     returns, trailing_vol, stock_data, fold, device,
+                    adapted_params=adapted, T_annee=T_annee,
+                    log_dir=tb_dir,
                 )
                 config_results.append(result)
             except Exception as e:
@@ -450,11 +599,11 @@ class FullPipeline:
         if not config_results:
             return None
 
-        # Select best config
-        n_stocks = len(stock_ids)
+        # Select best config (use adapted K)
+        K_adapted = adapted["K"]
         best = select_best_config(
             config_results,
-            K=self.config.vae.K,
+            K=K_adapted,
             mdd_threshold=self.config.walk_forward.score_mdd_threshold,
             lambda_pen=self.config.walk_forward.score_lambda_pen,
             lambda_est=self.config.walk_forward.score_lambda_est,
@@ -463,7 +612,7 @@ class FullPipeline:
 
         if best is not None:
             best["n_surviving"] = len([r for r in config_results
-                                       if r.get("AU", 0) >= int(0.15 * self.config.vae.K)])
+                                       if r.get("AU", 0) >= int(0.15 * K_adapted)])
 
         return best
 
@@ -478,6 +627,9 @@ class FullPipeline:
         stock_data: pd.DataFrame,
         fold: dict[str, object],
         device: torch.device,
+        adapted_params: dict[str, Any] | None = None,
+        T_annee: int = 10,
+        log_dir: str | None = None,
     ) -> dict[str, Any]:
         """
         Evaluate a single HP config on nested validation.
@@ -491,6 +643,9 @@ class FullPipeline:
         :param stock_data (pd.DataFrame): Raw stock data
         :param fold (dict): Fold specification
         :param device (torch.device): Compute device
+        :param adapted_params (dict | None): Pre-computed adapted K/r_max/c_min/dropout
+        :param T_annee (int): Training history in years (computed by caller)
+        :param log_dir (str | None): TensorBoard log directory for this run
 
         :return result (dict): Evaluation results
         """
@@ -498,15 +653,21 @@ class FullPipeline:
         lr = hp.get("learning_rate", self.config.training.learning_rate)
         alpha = hp.get("alpha", 1.0)
 
-        # Build VAE
+        # Build VAE with adapted params
         n_stocks = len([c for c in returns.columns if str(c).isdigit()])
         T = self.config.data.window_length
         F = self.config.data.n_features
-        K = self.config.vae.K
+
+        if adapted_params is None:
+            adapted_params = self._adapt_vae_params(n_stocks, T_annee)
+
+        K = adapted_params["K"]
 
         model, info = build_vae(
-            n=n_stocks, T=T, T_annee=10, F=F, K=K,
-            r_max=self.config.vae.r_max,
+            n=n_stocks, T=T, T_annee=T_annee, F=F, K=K,
+            r_max=adapted_params["r_max"],
+            c_min=adapted_params["c_min"],
+            dropout=adapted_params["dropout"],
             learn_obs_var=(mode != "F"),
         )
 
@@ -521,6 +682,7 @@ class FullPipeline:
             lr_patience=self.config.training.lr_patience,
             lr_factor=self.config.training.lr_factor,
             device=device,
+            log_dir=log_dir,
         )
 
         fit_result = trainer.fit(
@@ -617,15 +779,18 @@ class FullPipeline:
         n_stocks = len(stock_ids)
         T = self.config.data.window_length
         F = self.config.data.n_features
-        K = self.config.vae.K
 
-        # Compute T_annee from training period
+        # Compute T_annee from training period and adapt VAE params
         train_days = len(train_returns)
         T_annee = max(1, train_days // 252)
+        adapted = self._adapt_vae_params(n_stocks, T_annee)
+        K = adapted["K"]
 
         model, info = build_vae(
             n=n_stocks, T=T, T_annee=T_annee, F=F, K=K,
-            r_max=self.config.vae.r_max,
+            r_max=adapted["r_max"],
+            c_min=adapted["c_min"],
+            dropout=adapted["dropout"],
             learn_obs_var=(mode != "F"),
         )
 
@@ -634,6 +799,7 @@ class FullPipeline:
             self.config.training.patience if use_early_stopping
             else e_star + 1  # Disable early stopping when E* comes from Phase A
         )
+        tb_dir = self._tb_log_dir(fold_id, "phase_b")
         trainer = VAETrainer(
             model, loss_mode=mode, learning_rate=lr,
             gamma=self.config.loss.gamma,
@@ -644,6 +810,7 @@ class FullPipeline:
             lr_patience=self.config.training.lr_patience,
             lr_factor=self.config.training.lr_factor,
             device=device,
+            log_dir=tb_dir,
         )
 
         # Use 90% for train, 10% for validation monitor (but don't stop early)
@@ -860,12 +1027,12 @@ class FullPipeline:
             )
             metrics["crisis_return_oos"] = crisis_ret
 
-        # Factor explanatory power
+        # Factor explanatory power (align returns to valid_dates from regression)
+        returns_aligned = returns.loc[valid_dates].reindex(
+            columns=inferred_stock_ids[:n_port],
+        ).fillna(0.0).values
         ep = factor_explanatory_power(
-            returns.loc[train_start:train_end].reindex(
-                columns=inferred_stock_ids[:n_port]
-            ).fillna(0.0).values,
-            B_A_port, z_hat[:min(z_hat.shape[0], train_days)],
+            returns_aligned, B_A_port, z_hat,
         )
         metrics["explanatory_power"] = ep
 
@@ -908,6 +1075,16 @@ class FullPipeline:
         train_returns = returns.loc[:train_end].copy()
         train_returns.columns = pd.Index(stock_ids_str)
 
+        # Clean NaN: drop stocks with >50% NaN, then drop remaining NaN rows
+        # DVT 4.2: gaps >5 days remain NaN and must be excluded before estimation
+        nan_frac = train_returns.isna().mean(axis=0)
+        valid_stocks = list(pd.Series(nan_frac[nan_frac < 0.5]).index)
+        if len(valid_stocks) < len(stock_ids_str):
+            n_dropped = len(stock_ids_str) - len(valid_stocks)
+            logger.debug("Benchmark %s: dropped %d stocks with >50%% NaN", bench_name, n_dropped)
+        train_returns = train_returns[valid_stocks].dropna()
+        stock_ids_str = valid_stocks
+
         # Shared constraint parameters (INV-012)
         pc = self.config.portfolio
         constraint_params = {
@@ -923,16 +1100,26 @@ class FullPipeline:
 
         benchmark = bench_cls(constraint_params=constraint_params)
 
+        # Prepare trailing vol for benchmarks (INV-012: same inputs as VAE)
+        # Filter to same valid stocks as train_returns (after NaN cleanup)
+        valid_int_ids = [int(s) for s in stock_ids_str]
+        train_vol = trailing_vol.loc[:train_end, valid_int_ids].copy()
+        train_vol.columns = pd.Index(stock_ids_str)
+
         try:
-            benchmark.fit(train_returns, stock_ids_str)
+            benchmark.fit(
+                train_returns, stock_ids_str,
+                trailing_vol=train_vol,
+                current_date=train_end,
+            )
             w = benchmark.optimize(w_old=w_old, is_first=is_first)
         except Exception as e:
             logger.warning("Benchmark %s failed: %s", bench_name, e)
             n = len(stock_ids_str)
             w = np.ones(n) / n
 
-        # OOS metrics
-        returns_oos = returns.loc[oos_start:oos_end].copy()
+        # OOS metrics — restrict to same valid stocks, fillna(0) per DVT convention
+        returns_oos = returns.loc[oos_start:oos_end, [int(s) for s in stock_ids_str]].copy()
         returns_oos.columns = pd.Index(stock_ids_str)
         metrics = benchmark.evaluate(w, returns_oos, stock_ids_str)
 

@@ -2,3 +2,7 @@
 *.egg-info/
 __pycache__/
 .pytest_cache/
+results/
+keys.txt
+.DS_Store
+data/*

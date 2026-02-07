@@ -2,42 +2,42 @@
 VAE LATENT RISK FACTOR — RESULTS REPORT
 ======================================================================
 
-Scenario: C
-Recommendation: Adopt PCA (cost /100)
+Scenario: B
+Recommendation: Review iterations (DVT Section 6)
 
 E* epochs: mean=1.0, std=0.0, range=[1, 1]
 
-Statistical Tests (0 comparisons, alpha=0.05):
+Statistical Tests (18 comparisons, alpha=0.05):
 --------------------------------------------------
 
   vs equal_weight:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=-0.0081 [-0.0179, +0.0005] p=0.0781
+    max_drawdown_oos: Δ=-0.0066 [-0.0353, +0.0003] p=0.1094
+    sharpe: Δ=+0.0489 [-0.1573, +0.3837] p=0.5469
 
   vs inverse_vol:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=+0.0009 [-0.0085, +0.0096] p=0.9453
+    max_drawdown_oos: Δ=-0.0034 [-0.0199, +0.0041] p=0.1953
+    sharpe: Δ=+0.1340 [-0.1626, +0.3309] p=0.3125
 
   vs min_variance:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=+0.0145 [+0.0118, +0.0204] p=0.0078
+    max_drawdown_oos: Δ=+0.0023 [-0.0113, +0.0130] p=0.6406
+    sharpe: Δ=+0.4579 [-0.1904, +0.8432] p=0.0781
 
   vs erc:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=+0.0010 [-0.0064, +0.0085] p=0.7422
+    max_drawdown_oos: Δ=-0.0025 [-0.0138, +0.0030] p=0.1484
+    sharpe: Δ=+0.0716 [-0.1580, +0.2424] p=0.3828
 
   vs pca_factor_rp:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=+0.0043 [-0.0017, +0.0087] p=0.1484
+    max_drawdown_oos: Δ=-0.0091 [-0.0177, -0.0022] p=0.0156
+    sharpe: Δ=+0.3615 [+0.3045, +0.4741] p=0.0078
 
   vs pca_vol:
-    ann_vol_oos: skipped (Too few paired observations (4))
-    max_drawdown_oos: skipped (Too few paired observations (4))
-    sharpe: skipped (Too few paired observations (4))
+    ann_vol_oos: Δ=-0.0157 [-0.0298, -0.0106] p=0.0156
+    max_drawdown_oos: Δ=-0.0067 [-0.0371, +0.0014] p=0.0547
+    sharpe: Δ=-0.0451 [-0.5476, +0.2850] p=0.7422
 
 ======================================================================

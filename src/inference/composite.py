@@ -23,7 +23,7 @@ def infer_latent_trajectories(
     window_metadata: pd.DataFrame,
     batch_size: int = 512,
     device: torch.device | None = None,
-) -> dict[str, np.ndarray]:
+) -> dict[int, np.ndarray]:
     """
     Forward pass (encode only, no sampling) for all windows.
 
@@ -36,7 +36,7 @@ def infer_latent_trajectories(
     :param batch_size (int): Batch size for inference
     :param device (torch.device | None): Device for computation
 
-    :return trajectories (dict): stock_id → ndarray (n_windows_for_stock, K)
+    :return trajectories (dict): stock_id (int) → ndarray (n_windows_for_stock, K)
     """
     if device is None:
         device = next(model.parameters()).device
@@ -64,31 +64,31 @@ def infer_latent_trajectories(
 
     # Group by stock_id
     stock_ids_arr = np.asarray(window_metadata["stock_id"].values)
-    trajectories: dict[str, np.ndarray] = {}
+    trajectories: dict[int, np.ndarray] = {}
 
     unique_stocks = np.unique(stock_ids_arr)
     for sid in unique_stocks:
         mask = stock_ids_arr == sid
-        trajectories[str(sid)] = mu_all[mask]
+        trajectories[int(sid)] = mu_all[mask]
 
     return trajectories
 
 
 def aggregate_profiles(
-    trajectories: dict[str, np.ndarray],
+    trajectories: dict[int, np.ndarray],
     method: str = "mean",
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, list[int]]:
     """
     Aggregate local latent vectors into composite profiles.
 
     Default: mean (all windows contribute equally, preserving memory
     of all historical regimes).
 
-    :param trajectories (dict): stock_id → (n_windows, K)
+    :param trajectories (dict): stock_id (int) → (n_windows, K)
     :param method (str): Aggregation method ('mean')
 
     :return B (np.ndarray): Exposure matrix (n_stocks, K)
-    :return stock_ids (list[str]): Ordered stock identifiers
+    :return stock_ids (list[int]): Ordered stock identifiers (permnos)
     """
     stock_ids = sorted(trajectories.keys())
     profiles: list[np.ndarray] = []

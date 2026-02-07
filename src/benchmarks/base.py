@@ -126,7 +126,8 @@ class BenchmarkModel(ABC):
         :return metrics (dict): OOS portfolio metrics
         """
         available = [s for s in universe if s in returns_oos.columns]
-        R_oos = returns_oos[available].values
+        # Fill NaN with 0 (= forward-filled price, DVT 4.2 convention)
+        R_oos = np.nan_to_num(np.asarray(returns_oos[available].values, dtype=np.float64), nan=0.0)
         w_active = w[:len(available)]
 
         # Portfolio returns

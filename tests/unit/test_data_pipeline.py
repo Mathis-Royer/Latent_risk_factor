@@ -15,7 +15,12 @@ import pandas as pd
 import pytest
 import torch
 
-from src.data_pipeline.data_loader import generate_synthetic_csv, load_stock_data
+from src.data_pipeline.data_loader import (
+    CORE_COLUMNS,
+    generate_synthetic_csv,
+    load_stock_data,
+    load_tiingo_data,
+)
 from src.data_pipeline.returns import (
     SHUMWAY_NASDAQ,
     SHUMWAY_NYSE_AMEX,
@@ -584,3 +589,84 @@ class TestDelistingImputation:
             SHUMWAY_NASDAQ, np.log(1.0 + (-0.55)), decimal=10,
             err_msg="SHUMWAY_NASDAQ constant incorrect",
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests 13-15: Tiingo data loader (data_loader.py)
+# ---------------------------------------------------------------------------
+
+
+class TestTiingoLoader:
+    """Tests for load_tiingo_data and Tiingo Parquet schema."""
+
+    def test_load_tiingo_missing_file(self, tmp_path: str) -> None:
+        """load_tiingo_data raises FileNotFoundError when Parquet is absent."""
+        with pytest.raises(FileNotFoundError, match="Tiingo data not found"):
+            load_tiingo_data(data_dir=str(tmp_path))
+
+    def test_load_tiingo_from_parquet(self, tmp_path: str) -> None:
+        """load_tiingo_data loads Parquet with correct schema and sorts by (permno, date)."""
+        # Create a small Parquet file with the pipeline schema
+        dates = pd.bdate_range("2020-01-01", periods=10, freq="B")
+        records = []
+        for permno in [10001, 10002]:
+            for d in dates:
+                records.append({
+                    "permno": permno,
+                    "date": d,
+                    "adj_price": 100.0 + np.random.rand(),
+                    "volume": 50000,
+                    "exchange_code": 1,
+                    "share_code": 10,
+                    "market_cap": 5e9,
+                    "delisting_return": np.nan,
+                })
+        df = pd.DataFrame(records)
+        parquet_path = os.path.join(str(tmp_path), "tiingo_us_equities.parquet")
+        df.to_parquet(parquet_path, index=False)
+
+        result = load_tiingo_data(
+            data_dir=str(tmp_path), min_price=0, min_history_days=0,
+        )
+
+        # All core columns present
+        for col in CORE_COLUMNS:
+            assert col in result.columns, f"Missing column: {col}"
+
+        # Sorted by (permno, date)
+        permnos = np.asarray(result["permno"])
+        assert bool((permnos[:-1] <= permnos[1:]).all()), "Not sorted by permno"
+
+        # Correct row count
+        assert len(result) == 20
+
+    def test_load_tiingo_date_filter(self, tmp_path: str) -> None:
+        """load_tiingo_data respects start_date and end_date filters."""
+        dates = pd.bdate_range("2020-01-01", periods=20, freq="B")
+        records = []
+        for d in dates:
+            records.append({
+                "permno": 10001,
+                "date": d,
+                "adj_price": 100.0,
+                "volume": 50000,
+                "exchange_code": 1,
+                "share_code": 10,
+                "market_cap": 5e9,
+                "delisting_return": np.nan,
+            })
+        df = pd.DataFrame(records)
+        parquet_path = os.path.join(str(tmp_path), "tiingo_us_equities.parquet")
+        df.to_parquet(parquet_path, index=False)
+
+        result = load_tiingo_data(
+            data_dir=str(tmp_path),
+            start_date="2020-01-10",
+            end_date="2020-01-20",
+            min_price=0,
+            min_history_days=0,
+        )
+
+        assert len(result) > 0
+        assert result["date"].min() >= pd.Timestamp("2020-01-10")
+        assert result["date"].max() <= pd.Timestamp("2020-01-20")

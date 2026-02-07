@@ -69,6 +69,8 @@ class VAETrainer:
         lr_patience: int = 5,
         lr_factor: float = 0.5,
         device: torch.device | None = None,
+        log_dir: str | None = None,
+        logging_steps: int = 50,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -85,6 +87,8 @@ class VAETrainer:
         :param lr_patience (int): ReduceLROnPlateau patience
         :param lr_factor (float): ReduceLROnPlateau factor
         :param device (torch.device | None): Device for training
+        :param log_dir (str | None): TensorBoard log directory (None to disable)
+        :param logging_steps (int): Log to TensorBoard every N training steps (0 to disable step logging)
         """
         self.model = model
         self.loss_mode = loss_mode
@@ -126,6 +130,17 @@ class VAETrainer:
             )
         else:
             self.scaler = None
+
+        # TensorBoard logging (optional)
+        self._tb_writer: Any = None
+        self._logging_steps = logging_steps
+        self._global_step = 0
+        if log_dir is not None:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                self._tb_writer = SummaryWriter(log_dir=log_dir)
+            except ImportError:
+                logger.warning("tensorboard not installed — TensorBoard logging disabled.")
 
     def train_epoch(
         self,
@@ -220,6 +235,29 @@ class VAETrainer:
             epoch_co += components["co_mov"]
             epoch_sigma_sq += components["sigma_sq"]
             n_batches += 1
+            self._global_step += 1
+
+            # Per-step TensorBoard logging
+            if (
+                self._tb_writer is not None
+                and self._logging_steps > 0
+                and self._global_step % self._logging_steps == 0
+            ):
+                self._tb_writer.add_scalar(
+                    "Step/loss", components["total"], self._global_step,
+                )
+                self._tb_writer.add_scalar(
+                    "Step/reconstruction", components["recon"], self._global_step,
+                )
+                self._tb_writer.add_scalar(
+                    "Step/kl_divergence", components["kl"], self._global_step,
+                )
+                self._tb_writer.add_scalar(
+                    "Step/co_movement", components["co_mov"], self._global_step,
+                )
+                self._tb_writer.add_scalar(
+                    "Step/sigma_sq", components["sigma_sq"], self._global_step,
+                )
 
             # Update shared progress bar (HuggingFace-style: one bar for all steps)
             if progress_bar is not None:
@@ -367,6 +405,9 @@ class VAETrainer:
 
             history.append(train_metrics)
 
+            # TensorBoard epoch-level logging (uses global_step for consistent x-axis)
+            self._log_tensorboard(train_metrics, self._global_step)
+
             au = int(train_metrics.get("AU", 0))
             lr_val = train_metrics.get("learning_rate", 0)
 
@@ -401,6 +442,11 @@ class VAETrainer:
         if progress_bar is not None:
             progress_bar.close()
 
+        # Flush and close TensorBoard writer
+        if self._tb_writer is not None:
+            self._tb_writer.flush()
+            self._tb_writer.close()
+
         # If loop completed without early stopping, restore best
         if not self.early_stopping.stopped:
             self.early_stopping.restore_best(self.model)
@@ -418,6 +464,32 @@ class VAETrainer:
             "overfit_flag": overfit_flag,
             "overfit_ratio": overfit_ratio,
         }
+
+    def _log_tensorboard(self, metrics: dict[str, float], step: int) -> None:
+        """
+        Log epoch metrics to TensorBoard (no-op if writer is None).
+
+        :param metrics (dict): Epoch metrics from train_epoch + validate
+        :param step (int): Epoch number (used as global step)
+        """
+        if self._tb_writer is None:
+            return
+
+        tag_map = {
+            "train_loss": "Loss/total",
+            "train_recon": "Loss/reconstruction",
+            "train_kl": "Loss/kl_divergence",
+            "train_co": "Loss/co_movement",
+            "val_elbo": "Validation/ELBO",
+            "sigma_sq": "Training/sigma_sq",
+            "AU": "Training/active_units",
+            "learning_rate": "Training/learning_rate",
+            "lambda_co": "Training/lambda_co",
+            "beta_t": "Training/beta_t",
+        }
+        for key, tag in tag_map.items():
+            if key in metrics:
+                self._tb_writer.add_scalar(tag, metrics[key], step)
 
     def _compute_batch_au(
         self,

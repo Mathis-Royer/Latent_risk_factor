@@ -133,6 +133,8 @@ class DataPipelineConfig:
     vol_window: int = 252
     vix_lookback_percentile: float = 80.0
     min_valid_fraction: float = 0.80
+    data_source: str = "synthetic"
+    data_dir: str = "data/"
 
     def __post_init__(self) -> None:
         _validate_range("n_stocks", self.n_stocks, default=1000, lo=1)
@@ -143,6 +145,8 @@ class DataPipelineConfig:
                         default=80.0, lo=0, hi=100, lo_exclusive=True)
         _validate_range("min_valid_fraction", self.min_valid_fraction,
                         default=0.80, lo=0, hi=1, lo_exclusive=True)
+        _validate_in("data_source", self.data_source,
+                     {"synthetic", "tiingo", "csv"}, default="synthetic")
 
     @property
     def D(self) -> int:

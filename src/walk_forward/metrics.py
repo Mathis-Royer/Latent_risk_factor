@@ -152,7 +152,7 @@ def factor_explanatory_power(
 def portfolio_metrics(
     w: np.ndarray,
     returns_oos: pd.DataFrame,
-    universe: list[str],
+    universe: list[int],
     H_oos: float = 0.0,
     AU: int = 0,
     Sigma_hat: np.ndarray | None = None,
@@ -162,7 +162,7 @@ def portfolio_metrics(
 
     :param w (np.ndarray): Portfolio weights (n,)
     :param returns_oos (pd.DataFrame): OOS returns (dates × stocks)
-    :param universe (list[str]): Stock identifiers
+    :param universe (list[int]): Stock identifiers (permnos)
     :param H_oos (float): OOS factor entropy
     :param AU (int): Active units
     :param Sigma_hat (np.ndarray | None): Predicted covariance
@@ -239,7 +239,7 @@ def portfolio_metrics(
 def crisis_period_return(
     w: np.ndarray,
     returns_oos: pd.DataFrame,
-    universe: list[str],
+    universe: list[int],
     crisis_mask: np.ndarray,
 ) -> float:
     """
@@ -249,7 +249,7 @@ def crisis_period_return(
 
     :param w (np.ndarray): Portfolio weights (n,)
     :param returns_oos (pd.DataFrame): OOS returns (dates × stocks)
-    :param universe (list[str]): Stock identifiers
+    :param universe (list[int]): Stock identifiers (permnos)
     :param crisis_mask (np.ndarray): Boolean mask, True for crisis dates (T_oos,)
 
     :return ann_return_crisis (float): Annualized return during crisis, or 0.0 if no crisis dates

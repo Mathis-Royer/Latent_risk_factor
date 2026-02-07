@@ -43,7 +43,7 @@ class PCAFactorRiskParity(BenchmarkModel):
         k_max = int(kwargs.get("k_max", 30))  # type: ignore[arg-type]
 
         available = [s for s in universe if s in returns.columns]
-        R = returns[available].dropna(how="all")
+        R = returns[available].dropna()
         R_mat = R.values.astype(np.float64)
 
         # Demean

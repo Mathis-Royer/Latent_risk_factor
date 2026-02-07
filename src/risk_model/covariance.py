@@ -33,8 +33,8 @@ def estimate_sigma_z(
 
 
 def estimate_d_eps(
-    residuals_by_stock: dict[str, list[float]],
-    stock_ids: list[str],
+    residuals_by_stock: dict[int, list[float]],
+    stock_ids: list[int],
     d_eps_floor: float = 1e-6,
 ) -> np.ndarray:
     """
@@ -44,7 +44,7 @@ def estimate_d_eps(
     Floor: D_{ε,i} ≥ d_eps_floor.
 
     :param residuals_by_stock (dict): stock_id → list of residuals
-    :param stock_ids (list[str]): Ordered stock IDs
+    :param stock_ids (list[int]): Ordered stock IDs (permnos)
     :param d_eps_floor (float): Minimum idiosyncratic variance
 
     :return D_eps (np.ndarray): Idiosyncratic variances (n,)

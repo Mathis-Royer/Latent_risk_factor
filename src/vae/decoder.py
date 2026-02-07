@@ -31,10 +31,11 @@ class TransposeResBlock(nn.Module):
     Doubles temporal dimension at each block.
     """
 
-    def __init__(self, c_in: int, c_out: int) -> None:
+    def __init__(self, c_in: int, c_out: int, dropout: float = DROPOUT) -> None:
         """
         :param c_in (int): Input channels
         :param c_out (int): Output channels
+        :param dropout (float): Dropout rate
         """
         super().__init__()
 
@@ -52,7 +53,7 @@ class TransposeResBlock(nn.Module):
         self.bn2 = nn.BatchNorm1d(c_out)
 
         self.act = nn.GELU()
-        self.dropout = nn.Dropout(DROPOUT)
+        self.dropout = nn.Dropout(dropout)
 
         # Skip connection: upsample with 1×1 transposed conv
         self.skip = nn.Sequential(
@@ -106,6 +107,7 @@ class Decoder(nn.Module):
         channels: list[int],
         T: int,
         T_compressed: int,
+        dropout: float = DROPOUT,
     ) -> None:
         """
         :param F (int): Number of output features
@@ -114,6 +116,7 @@ class Decoder(nn.Module):
             (same as encoder — will be reversed internally)
         :param T (int): Target output temporal dimension
         :param T_compressed (int): Encoder's last temporal size
+        :param dropout (float): Dropout rate for residual blocks
         """
         super().__init__()
         self.T = T
@@ -130,7 +133,9 @@ class Decoder(nn.Module):
         blocks = []
         for i in range(1, len(reversed_channels)):
             blocks.append(
-                TransposeResBlock(reversed_channels[i - 1], reversed_channels[i])
+                TransposeResBlock(
+                    reversed_channels[i - 1], reversed_channels[i], dropout=dropout,
+                )
             )
         self.body = nn.Sequential(*blocks)
 

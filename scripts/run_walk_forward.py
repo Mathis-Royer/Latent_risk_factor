@@ -39,7 +39,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import PipelineConfig
-from src.data_pipeline.data_loader import generate_synthetic_csv, load_stock_data
+from src.data_pipeline.data_loader import generate_synthetic_csv, load_stock_data, load_tiingo_data
 from src.data_pipeline.returns import compute_log_returns
 from src.data_pipeline.features import compute_trailing_volatility
 from src.integration.pipeline import FullPipeline
@@ -63,8 +63,17 @@ def parse_args() -> argparse.Namespace:
         description="Run full walk-forward validation for VAE latent risk factor pipeline.",
     )
     parser.add_argument(
+        "--data-source", type=str, default=None,
+        choices=["synthetic", "tiingo", "csv"],
+        help="Data source type (default: auto-detect from --data-path or --synthetic)",
+    )
+    parser.add_argument(
         "--data-path", type=str, default=None,
-        help="Path to stock data CSV (long format with core columns)",
+        help="Path to stock data CSV/Parquet (for csv source)",
+    )
+    parser.add_argument(
+        "--data-dir", type=str, default="data/",
+        help="Directory for Tiingo data (default: data/)",
     )
     parser.add_argument(
         "--synthetic", action="store_true",
@@ -95,6 +104,14 @@ def parse_args() -> argparse.Namespace:
         "--config", type=str, default=None,
         help="Optional YAML/JSON config override file",
     )
+    parser.add_argument(
+        "--tensorboard-dir", type=str, default="runs/",
+        help="TensorBoard log directory (default: runs/). Use --no-tensorboard to disable.",
+    )
+    parser.add_argument(
+        "--no-tensorboard", action="store_true", default=False,
+        help="Disable TensorBoard logging and auto-launch.",
+    )
     return parser.parse_args()
 
 
@@ -109,8 +126,19 @@ def main() -> int:
     try:
         np.random.seed(args.seed)
 
-        # Load or generate data
-        if args.synthetic:
+        # Resolve data source
+        source = args.data_source
+        if source is None:
+            if args.synthetic:
+                source = "synthetic"
+            elif args.data_path:
+                source = "csv"
+            else:
+                logger.error("Must specify --data-source, --data-path, or --synthetic")
+                return 1
+
+        # Load data
+        if source == "synthetic":
             logger.info("Generating synthetic data: %d stocks, %d years", args.n_stocks, args.n_years)
             with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
                 csv_path = f.name
@@ -127,12 +155,19 @@ def main() -> int:
             stock_data = load_stock_data(csv_path)
             start_date = f"{start_year}-01-03"
             os.unlink(csv_path)
-        elif args.data_path:
+        elif source == "tiingo":
+            logger.info("Loading Tiingo data from %s", args.data_dir)
+            stock_data = load_tiingo_data(data_dir=args.data_dir)
+            start_date = str(stock_data["date"].min().date())
+        elif source == "csv":
+            if not args.data_path:
+                logger.error("--data-path required when --data-source=csv")
+                return 1
             logger.info("Loading data from %s", args.data_path)
             stock_data = load_stock_data(args.data_path)
             start_date = str(stock_data["date"].min().date())
         else:
-            logger.error("Must specify --data-path or --synthetic")
+            logger.error("Unknown data source: %s", source)
             return 1
 
         # Compute returns and trailing vol
@@ -148,7 +183,7 @@ def main() -> int:
             config = _apply_config_overrides(config, args.config)
 
         # For synthetic data, reduce walk-forward params to fit
-        if args.synthetic:
+        if source == "synthetic":
             from dataclasses import replace
             from src.config import WalkForwardConfig
             wf = replace(
@@ -160,7 +195,8 @@ def main() -> int:
             config = replace(config, walk_forward=wf)
 
         # Run pipeline
-        pipeline = FullPipeline(config)
+        tb_dir = None if args.no_tensorboard else args.tensorboard_dir
+        pipeline = FullPipeline(config, tensorboard_dir=tb_dir)
         results = pipeline.run(
             stock_data=stock_data,
             returns=returns,

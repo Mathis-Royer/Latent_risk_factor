@@ -7,7 +7,9 @@
       "Bash(*)",
       "Read(//Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
       "Read(//Users/mathis/.claude/projects/**)",
-      "Read(//Users/mathis/.claude/**)"
+      "Read(//Users/mathis/.claude/**)",
+      "WebFetch(*)",
+      "WebSearch(*)"
     ],
     "deny": [
       "Bash(rm -rf *)",

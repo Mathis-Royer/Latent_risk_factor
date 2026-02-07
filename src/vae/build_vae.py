@@ -26,7 +26,8 @@ C_HEAD = 3 * C_BRANCH        # = 144, total Inception output channels
 K_BODY = 7                   # Residual body kernel size
 STRIDE = 2                   # Per-block downsampling
 ALPHA_PROJ = 1.3             # Projection ratio
-C_MIN = 384                  # Minimum final layer width
+C_MIN_DEFAULT = 384          # Minimum final layer width (standard)
+C_MIN_SMALL = C_HEAD         # = 144, reduced C_min for small universes
 DROPOUT = 0.1                # Dropout rate
 
 
@@ -55,18 +56,19 @@ def compute_depth(T: int) -> int:
     return max(3, math.ceil(math.log2(T / k_max)) + 2)
 
 
-def compute_final_width(K: int) -> int:
+def compute_final_width(K: int, c_min: int = C_MIN_DEFAULT) -> int:
     """
     Sizing rule 2 — Final layer width from latent capacity.
 
-    C_L(K) = round_16(max(C_min, ceil(alpha_proj * 2K))).
+    C_L(K) = round_16(max(c_min, ceil(alpha_proj * 2K))).
 
     :param K (int): Latent capacity ceiling
+    :param c_min (int): Minimum final layer width (default 384, use 144 for small universes)
 
     :return C_L (int): Final layer width (channels)
     """
     raw = math.ceil(ALPHA_PROJ * 2 * K)
-    return round_16(max(C_MIN, raw))
+    return round_16(max(c_min, raw))
 
 
 def compute_channel_progression(L: int, C_L: int) -> list[int]:
@@ -233,6 +235,7 @@ def _find_max_K(
     N_capacity: int,
     r_max: float,
     K_upper: int,
+    c_min: int = C_MIN_DEFAULT,
 ) -> int:
     """
     Binary search for the largest K in [1, K_upper] such that
@@ -244,6 +247,7 @@ def _find_max_K(
     :param N_capacity (int): Total window count
     :param r_max (float): Maximum parameter/data ratio
     :param K_upper (int): Upper bound for search
+    :param c_min (int): Minimum final layer width
 
     :return K_max (int): Maximum feasible K, or 0 if none
     """
@@ -254,7 +258,7 @@ def _find_max_K(
     K_max = 0
     while lo <= hi:
         mid = (lo + hi) // 2
-        C_L_mid = compute_final_width(mid)
+        C_L_mid = compute_final_width(mid, c_min=c_min)
         ch_mid = compute_channel_progression(L, C_L_mid)
         P_mid = (count_encoder_params(F, mid, ch_mid)
                  + count_decoder_params(F, mid, ch_mid, T_comp))
@@ -276,6 +280,8 @@ def build_vae(
     r_max: float = 5.0,
     beta: float = 1.0,
     learn_obs_var: bool = True,
+    c_min: int = C_MIN_DEFAULT,
+    dropout: float = DROPOUT,
 ) -> tuple[VAEModel, dict]:
     """
     Factory function: derive and instantiate the full VAE architecture.
@@ -294,6 +300,8 @@ def build_vae(
     :param r_max (float): Maximum parameter/data ratio
     :param beta (float): KL weight (1.0 for Mode P)
     :param learn_obs_var (bool): Whether σ² is learned (True for P/A, False for F)
+    :param c_min (int): Minimum final layer width (384 standard, 144 for small universes)
+    :param dropout (float): Dropout rate for residual blocks (0.2 for reinforced reg)
 
     :return model (VAEModel): Instantiated VAE model
     :return info (dict): Architecture info dictionary
@@ -305,7 +313,7 @@ def build_vae(
 
     # Sizing rules
     L = compute_depth(T)
-    C_L = compute_final_width(K)
+    C_L = compute_final_width(K, c_min=c_min)
     channels = compute_channel_progression(L, C_L)
     temporal_sizes = compute_temporal_sizes(T, L)
     T_compressed = temporal_sizes[-1]
@@ -321,7 +329,7 @@ def build_vae(
         windows_per_stock = T_hist - T + 1
         n_min = math.ceil(P_total / (r_max * max(windows_per_stock, 1)))
         T_annee_min = math.ceil((P_total / (n * r_max) + T - 1) / 252)
-        K_max = _find_max_K(T, F, L, N_capacity, r_max, K)
+        K_max = _find_max_K(T, F, L, N_capacity, r_max, K, c_min=c_min)
         K_max_str = str(K_max) if K_max > 0 else "0 (no feasible K)"
         raise ValueError(
             f"Capacity-data constraint violated: "
@@ -343,6 +351,7 @@ def build_vae(
         T=T,
         T_compressed=T_compressed,
         learn_obs_var=learn_obs_var,
+        dropout=dropout,
     )
 
     info = {
@@ -360,6 +369,8 @@ def build_vae(
         "r": r,
         "r_max": r_max,
         "T_hist": T_hist,
+        "c_min": c_min,
+        "dropout": dropout,
     }
 
     return model, info

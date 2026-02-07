@@ -21,7 +21,7 @@ from src.vae.build_vae import (
     count_decoder_params,
     count_encoder_params,
     round_16,
-    C_MIN,
+    C_MIN_DEFAULT as C_MIN,
     ALPHA_PROJ,
 )
 from src.vae.model import VAEModel

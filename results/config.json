@@ -1,11 +1,13 @@
 {
   "data": {
-    "n_stocks": 10,
+    "n_stocks": 20,
     "window_length": 504,
     "n_features": 2,
     "vol_window": 252,
     "vix_lookback_percentile": 80.0,
-    "min_valid_fraction": 0.8
+    "min_valid_fraction": 0.8,
+    "data_source": "synthetic",
+    "data_dir": "data/"
   },
   "vae": {
     "K": 10,
@@ -84,7 +86,7 @@
     ]
   },
   "walk_forward": {
-    "total_years": 6,
+    "total_years": 8,
     "min_training_years": 3,
     "oos_months": 6,
     "embargo_days": 21,
