@@ -63,12 +63,13 @@ def eliminate_configs(
     K: int,
     AU_PCA: int = 0,
     EP_PCA: float = 0.0,
+    n_stocks: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     Eliminate poor configs before scoring.
 
     Criteria:
-      - AU < max(0.15K, AU_PCA) → eliminated
+      - AU < au_min → eliminated  (au_min = max(0.15K, AU_PCA), capped at n_stocks/2)
       - EP < max(0.40, EP_PCA + 0.10) → eliminated
       - OOS/train MSE > 3.0 → eliminated
 
@@ -76,10 +77,14 @@ def eliminate_configs(
     :param K (int): Latent capacity
     :param AU_PCA (int): PCA benchmark AU
     :param EP_PCA (float): PCA explanatory power
+    :param n_stocks (int | None): Universe size, used to cap AU threshold
 
     :return surviving (list[dict]): Non-eliminated configs
     """
     au_min = max(int(0.15 * K), AU_PCA)
+    # Cap AU threshold for small universes: can't expect more AU than n/2
+    if n_stocks is not None and n_stocks > 0:
+        au_min = min(au_min, max(n_stocks // 2, 2))
     ep_min = max(0.40, EP_PCA + 0.10)
 
     surviving: list[dict[str, Any]] = []
@@ -108,6 +113,7 @@ def select_best_config(
     mdd_threshold: float = 0.20,
     lambda_pen: float = 5.0,
     lambda_est: float = 2.0,
+    n_stocks: int | None = None,
 ) -> dict[str, Any] | None:
     """
     Select best HP config via elimination + composite scoring.
@@ -119,10 +125,11 @@ def select_best_config(
     :param mdd_threshold (float): MDD threshold
     :param lambda_pen (float): MDD penalty
     :param lambda_est (float): Estimation penalty
+    :param n_stocks (int | None): Universe size for threshold scaling
 
     :return best (dict | None): Best config, or None if all eliminated
     """
-    surviving = eliminate_configs(config_results, K, AU_PCA, EP_PCA)
+    surviving = eliminate_configs(config_results, K, AU_PCA, EP_PCA, n_stocks=n_stocks)
 
     if not surviving:
         return None

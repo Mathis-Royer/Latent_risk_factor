@@ -12,6 +12,105 @@ from dataclasses import dataclass, field
 
 
 # ---------------------------------------------------------------------------
+# Validation helpers (private)
+# ---------------------------------------------------------------------------
+
+
+def _validate_range(
+    name: str,
+    value: float | int,
+    default: float | int,
+    lo: float | int | None = None,
+    hi: float | int | None = None,
+    lo_exclusive: bool = False,
+    hi_exclusive: bool = False,
+) -> None:
+    """
+    Validate that value is within bounds. Raises ValueError with remediation.
+
+    :param name (str): Parameter name for error message
+    :param value (float | int): Current value to check
+    :param default (float | int): Suggested default value
+    :param lo (float | int | None): Lower bound (None = no lower bound)
+    :param hi (float | int | None): Upper bound (None = no upper bound)
+    :param lo_exclusive (bool): If True, use strict > for lower bound
+    :param hi_exclusive (bool): If True, use strict < for upper bound
+    """
+    violated = False
+    if lo is not None:
+        if lo_exclusive and value <= lo:
+            violated = True
+        elif not lo_exclusive and value < lo:
+            violated = True
+    if hi is not None:
+        if hi_exclusive and value >= hi:
+            violated = True
+        elif not hi_exclusive and value > hi:
+            violated = True
+
+    if violated:
+        lo_bracket = "(" if lo_exclusive else "["
+        hi_bracket = ")" if hi_exclusive else "]"
+        lo_str = str(lo) if lo is not None else "-inf"
+        hi_str = str(hi) if hi is not None else "inf"
+        raise ValueError(
+            f"Invalid parameter '{name}':\n"
+            f"  Current value : {value}\n"
+            f"  Valid range    : {lo_bracket}{lo_str}, {hi_str}{hi_bracket}\n"
+            f"  Suggested      : {default}"
+        )
+
+
+def _validate_in(
+    name: str,
+    value: str,
+    allowed: set[str],
+    default: str,
+) -> None:
+    """
+    Validate that value is in the allowed set.
+
+    :param name (str): Parameter name
+    :param value (str): Current value
+    :param allowed (set[str]): Set of valid values
+    :param default (str): Suggested default
+    """
+    if value not in allowed:
+        raise ValueError(
+            f"Invalid parameter '{name}':\n"
+            f"  Current value : {value!r}\n"
+            f"  Allowed        : {sorted(allowed)}\n"
+            f"  Suggested      : {default!r}"
+        )
+
+
+def _validate_pair(
+    name_lo: str,
+    value_lo: float,
+    name_hi: str,
+    value_hi: float,
+    strict: bool = True,
+) -> None:
+    """
+    Validate that value_lo < value_hi (or <=).
+
+    :param name_lo (str): Name of the lower-bound parameter
+    :param value_lo (float): Value that should be smaller
+    :param name_hi (str): Name of the upper-bound parameter
+    :param value_hi (float): Value that should be larger
+    :param strict (bool): If True, require strict inequality
+    """
+    op = "<" if strict else "<="
+    violated = (value_lo >= value_hi) if strict else (value_lo > value_hi)
+    if violated:
+        raise ValueError(
+            f"Invalid parameter pair:\n"
+            f"  {name_lo} = {value_lo} must be {op} {name_hi} = {value_hi}\n"
+            f"  Adjust either {name_lo} (lower) or {name_hi} (higher)."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Data Pipeline (MOD-001)
 # ---------------------------------------------------------------------------
 
@@ -35,6 +134,16 @@ class DataPipelineConfig:
     vix_lookback_percentile: float = 80.0
     min_valid_fraction: float = 0.80
 
+    def __post_init__(self) -> None:
+        _validate_range("n_stocks", self.n_stocks, default=1000, lo=1)
+        _validate_range("window_length", self.window_length, default=504, lo=1)
+        _validate_range("n_features", self.n_features, default=2, lo=1)
+        _validate_range("vol_window", self.vol_window, default=252, lo=2)
+        _validate_range("vix_lookback_percentile", self.vix_lookback_percentile,
+                        default=80.0, lo=0, hi=100, lo_exclusive=True)
+        _validate_range("min_valid_fraction", self.min_valid_fraction,
+                        default=0.80, lo=0, hi=1, lo_exclusive=True)
+
     @property
     def D(self) -> int:
         """Number of elements per window: T x F."""
@@ -56,6 +165,7 @@ class VAEArchitectureConfig:
     :param sigma_sq_max (float): Upper clamp for sigma squared
     :param window_length (int): Window length T (must match DataPipelineConfig)
     :param n_features (int): Number of features F (must match DataPipelineConfig)
+    :param r_max (float): Maximum parameter/data ratio for capacity guard
     """
 
     K: int = 200
@@ -64,6 +174,19 @@ class VAEArchitectureConfig:
     sigma_sq_max: float = 10.0
     window_length: int = 504
     n_features: int = 2
+    r_max: float = 5.0
+
+    def __post_init__(self) -> None:
+        _validate_range("K", self.K, default=200, lo=1)
+        _validate_range("window_length", self.window_length, default=504, lo=63)
+        _validate_range("n_features", self.n_features, default=2, lo=1)
+        _validate_range("sigma_sq_min", self.sigma_sq_min, default=1e-4,
+                        lo=0, lo_exclusive=True)
+        _validate_range("sigma_sq_max", self.sigma_sq_max, default=10.0,
+                        lo=0, lo_exclusive=True)
+        _validate_range("r_max", self.r_max, default=5.0, lo=0, lo_exclusive=True)
+        _validate_pair("sigma_sq_min", self.sigma_sq_min,
+                       "sigma_sq_max", self.sigma_sq_max, strict=True)
 
     @property
     def D(self) -> int:
@@ -107,6 +230,18 @@ class LossConfig:
     max_pairs: int = 2048
     delta_sync: int = 21
 
+    def __post_init__(self) -> None:
+        _validate_in("mode", self.mode, {"P", "F", "A"}, default="P")
+        _validate_range("gamma", self.gamma, default=3.0, lo=1.0)
+        _validate_range("lambda_co_max", self.lambda_co_max, default=0.5,
+                        lo=0, hi=1.0)
+        _validate_range("beta_fixed", self.beta_fixed, default=1.0,
+                        lo=0, lo_exclusive=True)
+        _validate_range("warmup_fraction", self.warmup_fraction, default=0.20,
+                        lo=0, hi=1.0, hi_exclusive=True)
+        _validate_range("max_pairs", self.max_pairs, default=2048, lo=1)
+        _validate_range("delta_sync", self.delta_sync, default=21, lo=1)
+
 
 # ---------------------------------------------------------------------------
 # Training (MOD-005)
@@ -144,6 +279,31 @@ class TrainingConfig:
     curriculum_phase1_frac: float = 0.30
     curriculum_phase2_frac: float = 0.30
 
+    def __post_init__(self) -> None:
+        _validate_range("max_epochs", self.max_epochs, default=100, lo=1)
+        _validate_range("batch_size", self.batch_size, default=256, lo=1)
+        _validate_range("learning_rate", self.learning_rate, default=1e-4,
+                        lo=0, lo_exclusive=True)
+        _validate_range("patience", self.patience, default=10, lo=1)
+        _validate_range("lr_patience", self.lr_patience, default=5, lo=1)
+        _validate_range("lr_factor", self.lr_factor, default=0.5,
+                        lo=0, hi=1, lo_exclusive=True, hi_exclusive=True)
+        _validate_range("n_strata", self.n_strata, default=15, lo=1)
+        _validate_range("curriculum_phase1_frac", self.curriculum_phase1_frac,
+                        default=0.30, lo=0)
+        _validate_range("curriculum_phase2_frac", self.curriculum_phase2_frac,
+                        default=0.30, lo=0)
+        total_curriculum = self.curriculum_phase1_frac + self.curriculum_phase2_frac
+        if total_curriculum > 1.0:
+            raise ValueError(
+                "Invalid parameter combination:\n"
+                f"  curriculum_phase1_frac ({self.curriculum_phase1_frac}) + "
+                f"curriculum_phase2_frac ({self.curriculum_phase2_frac}) = "
+                f"{total_curriculum:.4f} > 1.0\n"
+                f"  Their sum must be <= 1.0. "
+                f"Suggested: phase1=0.30, phase2=0.30 (sum=0.60)."
+            )
+
 
 # ---------------------------------------------------------------------------
 # Inference (MOD-006)
@@ -164,6 +324,14 @@ class InferenceConfig:
     au_threshold: float = 0.01
     r_min: int = 2
     aggregation_method: str = "mean"
+
+    def __post_init__(self) -> None:
+        _validate_range("batch_size", self.batch_size, default=512, lo=1)
+        _validate_range("au_threshold", self.au_threshold, default=0.01,
+                        lo=0, lo_exclusive=True)
+        _validate_range("r_min", self.r_min, default=2, lo=1)
+        _validate_in("aggregation_method", self.aggregation_method,
+                     {"mean"}, default="mean")
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +355,20 @@ class RiskModelConfig:
     d_eps_floor: float = 1e-6
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
+
+    def __post_init__(self) -> None:
+        _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
+                        lo=0, hi=100)
+        _validate_range("winsorize_hi", self.winsorize_hi, default=95.0,
+                        lo=0, hi=100)
+        _validate_range("d_eps_floor", self.d_eps_floor, default=1e-6,
+                        lo=0, lo_exclusive=True)
+        _validate_range("conditioning_threshold", self.conditioning_threshold,
+                        default=1e6, lo=0, lo_exclusive=True)
+        _validate_range("ridge_scale", self.ridge_scale, default=1e-6,
+                        lo=0, lo_exclusive=True)
+        _validate_pair("winsorize_lo", self.winsorize_lo,
+                       "winsorize_hi", self.winsorize_hi, strict=True)
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +423,31 @@ class PortfolioConfig:
         default_factory=lambda: [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
     )
 
+    def __post_init__(self) -> None:
+        _validate_range("w_min", self.w_min, default=0.001,
+                        lo=0, lo_exclusive=True)
+        _validate_range("w_max", self.w_max, default=0.05,
+                        lo=0, hi=1, lo_exclusive=True)
+        _validate_range("tau_max", self.tau_max, default=0.30,
+                        lo=0, hi=1, lo_exclusive=True)
+        _validate_range("lambda_risk", self.lambda_risk, default=1.0,
+                        lo=0, lo_exclusive=True)
+        _validate_range("phi", self.phi, default=25.0, lo=0)
+        _validate_range("kappa_1", self.kappa_1, default=0.1, lo=0)
+        _validate_range("kappa_2", self.kappa_2, default=7.5, lo=0)
+        _validate_range("n_starts", self.n_starts, default=5, lo=1)
+        _validate_range("sca_max_iter", self.sca_max_iter, default=100, lo=1)
+        _validate_range("sca_tol", self.sca_tol, default=1e-8,
+                        lo=0, lo_exclusive=True)
+        if not self.alpha_grid:
+            raise ValueError(
+                "Invalid parameter 'alpha_grid':\n"
+                "  Current value : [] (empty)\n"
+                "  Requirement   : must contain at least 1 element\n"
+                "  Suggested     : [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]"
+            )
+        _validate_pair("w_min", self.w_min, "w_max", self.w_max, strict=True)
+
 
 # ---------------------------------------------------------------------------
 # Walk-Forward (MOD-009)
@@ -272,6 +479,26 @@ class WalkForwardConfig:
     score_lambda_est: float = 2.0
     score_mdd_threshold: float = 0.20
 
+    def __post_init__(self) -> None:
+        _validate_range("total_years", self.total_years, default=30, lo=1)
+        _validate_range("min_training_years", self.min_training_years,
+                        default=10, lo=1)
+        _validate_range("oos_months", self.oos_months, default=6, lo=1)
+        _validate_range("embargo_days", self.embargo_days, default=21, lo=0)
+        _validate_range("holdout_years", self.holdout_years, default=3, lo=0)
+        _validate_range("val_years", self.val_years, default=2, lo=1)
+        required_min = self.min_training_years + self.holdout_years
+        if self.total_years <= required_min:
+            raise ValueError(
+                "Invalid parameter combination:\n"
+                f"  total_years ({self.total_years}) must be > "
+                f"min_training_years ({self.min_training_years}) + "
+                f"holdout_years ({self.holdout_years}) = {required_min}\n"
+                f"  Current total_years leaves no room for OOS folds.\n"
+                f"  Suggested: total_years={required_min + 10} "
+                f"(default=30)."
+            )
+
 
 # ---------------------------------------------------------------------------
 # Full Pipeline Config
@@ -302,3 +529,19 @@ class PipelineConfig:
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     walk_forward: WalkForwardConfig = field(default_factory=WalkForwardConfig)
     seed: int = 42
+
+    def __post_init__(self) -> None:
+        if self.data.window_length != self.vae.window_length:
+            raise ValueError(
+                "Cross-config mismatch:\n"
+                f"  data.window_length = {self.data.window_length}\n"
+                f"  vae.window_length  = {self.vae.window_length}\n"
+                "  These must match. Update one to equal the other."
+            )
+        if self.data.n_features != self.vae.n_features:
+            raise ValueError(
+                "Cross-config mismatch:\n"
+                f"  data.n_features = {self.data.n_features}\n"
+                f"  vae.n_features  = {self.vae.n_features}\n"
+                "  These must match. Update one to equal the other."
+            )

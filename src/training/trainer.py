@@ -12,12 +12,16 @@ Handles:
 Reference: ISD Section MOD-005 — Sub-task 2.
 """
 
+import logging
 import math
 from typing import Any
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
+
+logger = logging.getLogger(__name__)
 
 from src.vae.loss import (
     compute_loss,
@@ -116,6 +120,7 @@ class VAETrainer:
         epoch: int,
         total_epochs: int,
         crisis_fractions: torch.Tensor | None = None,
+        progress_bar: tqdm | None = None,
     ) -> dict[str, float]:
         """
         Run one training epoch.
@@ -124,6 +129,7 @@ class VAETrainer:
         :param epoch (int): Current epoch (0-indexed)
         :param total_epochs (int): Total number of epochs
         :param crisis_fractions (torch.Tensor | None): f_c per window (N,)
+        :param progress_bar (tqdm | None): Shared progress bar (updated per step)
 
         :return metrics (dict): Epoch-level training metrics
         """
@@ -192,6 +198,14 @@ class VAETrainer:
             epoch_co += components["co_mov"]
             epoch_sigma_sq += components["sigma_sq"]
             n_batches += 1
+
+            # Update shared progress bar (HuggingFace-style: one bar for all steps)
+            if progress_bar is not None:
+                progress_bar.update(1)
+                progress_bar.set_postfix(
+                    loss=f"{epoch_loss / n_batches:.4f}",
+                    epoch=f"{epoch + 1}/{total_epochs}",
+                )
 
         n_batches = max(1, n_batches)
 
@@ -297,6 +311,14 @@ class VAETrainer:
 
         history: list[dict[str, float]] = []
 
+        # Single progress bar over total steps (like HuggingFace Trainer)
+        steps_per_epoch = len(train_loader)
+        total_steps = max_epochs * steps_per_epoch
+        progress_bar: tqdm | None = (
+            tqdm(total=total_steps, desc="    Training", unit="step")
+            if total_steps > 1 else None
+        )
+
         for epoch in range(max_epochs):
             # Mode F: disable scheduler/early_stopping during warmup
             if self.loss_mode == "F" and epoch >= warmup_epochs:
@@ -305,6 +327,7 @@ class VAETrainer:
             # Train one epoch
             train_metrics = self.train_epoch(
                 train_loader, epoch, max_epochs, crisis_fractions,
+                progress_bar=progress_bar,
             )
 
             # Validate
@@ -313,6 +336,23 @@ class VAETrainer:
             train_metrics["epoch"] = epoch
 
             history.append(train_metrics)
+
+            au = int(train_metrics.get("AU", 0))
+            lr_val = train_metrics.get("learning_rate", 0)
+
+            if progress_bar is not None:
+                progress_bar.set_postfix(
+                    loss=f"{train_metrics['train_loss']:.4f}",
+                    val=f"{val_elbo:.4f}",
+                    AU=au, lr=f"{lr_val:.1e}",
+                    epoch=f"{epoch + 1}/{max_epochs}",
+                )
+            else:
+                logger.info(
+                    "      Epoch %d/%d — loss=%.3f val=%.3f AU=%d lr=%.1e",
+                    epoch + 1, max_epochs,
+                    train_metrics["train_loss"], val_elbo, au, lr_val,
+                )
 
             # Scheduler step (protected during Mode F warmup)
             self.scheduler.step(val_elbo)
@@ -327,6 +367,9 @@ class VAETrainer:
                 if should_stop:
                     self.early_stopping.restore_best(self.model)
                     break
+
+        if progress_bar is not None:
+            progress_bar.close()
 
         # If loop completed without early stopping, restore best
         if not self.early_stopping.stopped:

@@ -93,6 +93,32 @@ def realized_vs_predicted_variance(
     return realized_var / max(predicted_var, 1e-10)
 
 
+def realized_vs_predicted_correlation(
+    Sigma_hat: np.ndarray,
+    returns_oos: np.ndarray,
+) -> float:
+    """
+    Spearman rank correlation between predicted and realized per-stock volatilities.
+
+    Target: high positive correlation indicates risk model ranks stocks correctly.
+
+    :param Sigma_hat (np.ndarray): Predicted covariance matrix (n, n)
+    :param returns_oos (np.ndarray): OOS returns matrix (T_oos, n)
+
+    :return rho (float): Spearman rank correlation
+    """
+    n = min(Sigma_hat.shape[0], returns_oos.shape[1])
+    predicted_vol = np.sqrt(np.diag(Sigma_hat[:n, :n]))
+    realized_vol = np.std(returns_oos[:, :n], axis=0, ddof=1)
+
+    if n < 3 or np.all(predicted_vol == predicted_vol[0]):
+        return 0.0
+
+    result = stats.spearmanr(predicted_vol, realized_vol)
+    rho = float(result.statistic)  # type: ignore[union-attr]
+    return rho if not np.isnan(rho) else 0.0
+
+
 def factor_explanatory_power(
     returns: np.ndarray,
     B_A: np.ndarray,
@@ -208,3 +234,35 @@ def portfolio_metrics(
         "n_active_positions": float(n_active_positions),
         "n_days_oos": float(n_days),
     }
+
+
+def crisis_period_return(
+    w: np.ndarray,
+    returns_oos: pd.DataFrame,
+    universe: list[str],
+    crisis_mask: np.ndarray,
+) -> float:
+    """
+    Annualized return during crisis periods only (VIX > P80).
+
+    Primary Layer 3 metric: measures diversification failure during stress.
+
+    :param w (np.ndarray): Portfolio weights (n,)
+    :param returns_oos (pd.DataFrame): OOS returns (dates × stocks)
+    :param universe (list[str]): Stock identifiers
+    :param crisis_mask (np.ndarray): Boolean mask, True for crisis dates (T_oos,)
+
+    :return ann_return_crisis (float): Annualized return during crisis, or 0.0 if no crisis dates
+    """
+    available = [s for s in universe if s in returns_oos.columns]
+    R_oos = returns_oos[available].values
+    w_active = w[:len(available)]
+
+    port_returns = R_oos @ w_active
+    mask = crisis_mask[:len(port_returns)]
+    crisis_returns = port_returns[mask]
+
+    if len(crisis_returns) == 0:
+        return 0.0
+
+    return float(np.mean(crisis_returns) * 252)

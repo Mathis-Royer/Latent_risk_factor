@@ -365,6 +365,27 @@ This is a strictly convex problem (sum of convex quadratic + convex barrier), so
 
 ---
 
+## Corrections
+
+> Implementations missing from the code but clearly specified in ISD/DVT. Fixed and logged here.
+
+| # | Date | Module | Description |
+|---|------|--------|-------------|
+| 1 | 2026-02-07 | MOD-009 | Added `crisis_period_return()` to `metrics.py` — ISD Layer 3 primary metric |
+| 2 | 2026-02-07 | MOD-009 | Added `realized_vs_predicted_correlation()` to `metrics.py` — ISD Layer 2 metric |
+| 3 | 2026-02-07 | MOD-016 | Added `--config PATH` arg to `run_walk_forward.py` — ISD MOD-016 Sub-task 4 |
+| 4 | 2026-02-07 | MOD-016 | Added `--device` arg to `run_benchmarks.py` — ISD MOD-016 Sub-task 4 (API consistency) |
+
+---
+
+## Divergences
+
+> Code diverges from clear ISD/DVT specifications. Documented here for future resolution.
+
+*(none identified)*
+
+---
+
 ## Summary Statistics
 
 | Metric | Count |
@@ -373,5 +394,6 @@ This is a strictly convex problem (sum of convex quadratic + convex barrier), so
 | Provisional | 5 |
 | Validated | 4 |
 | Superseded | 0 |
+| Corrections | 4 |
 
-*Last updated: 2026-02-06 (pre-Phase 1)*
+*Last updated: 2026-02-07 (post-audit)*

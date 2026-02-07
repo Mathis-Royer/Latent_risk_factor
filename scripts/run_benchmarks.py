@@ -11,6 +11,7 @@ Arguments:
     --benchmarks LIST     Comma-separated: "ew,iv,mv,erc,pca_rp,pca_vol" (default: all)
     --seed SEED           Global random seed (default: 42)
     --output-dir DIR      Output directory (default: "results/benchmarks/")
+    --device DEVICE       Reserved for API consistency (benchmarks are CPU-only)
 
 Output:
     results/benchmarks/
@@ -100,6 +101,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir", type=str, default="results/benchmarks/",
         help="Output directory (default: results/benchmarks/)",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cpu",
+        choices=["cpu", "cuda"],
+        help="Reserved for API consistency (benchmarks are CPU-only)",
     )
     return parser.parse_args()
 

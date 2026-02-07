@@ -1,0 +1,4 @@
+ann_return,ann_vol_oos,sharpe,max_drawdown_oos,calmar,eff_n_positions,n_days_oos,fold_id
+0.0,0.0,0.0,-0.0,0.0,0.0,130,0.0
+0.0,0.0,0.0,-0.0,0.0,0.0,110,1.0
+0.0,0.0,0.0,-0.0,0.0,0.0,240,2.0

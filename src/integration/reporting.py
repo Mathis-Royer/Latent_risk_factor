@@ -217,6 +217,31 @@ def generate_report(
     }
 
 
+def serialize_for_json(obj: object) -> object:
+    """
+    Make an object JSON-serializable (handles numpy, pandas types).
+
+    :param obj (object): Object to serialize
+
+    :return serialized (object): JSON-safe object
+    """
+    if isinstance(obj, dict):
+        return {k: serialize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [serialize_for_json(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, pd.DataFrame):
+        return obj.to_dict("records")
+    if isinstance(obj, pd.Series):
+        return obj.tolist()
+    return obj
+
+
 def format_summary_table(report: dict[str, Any]) -> str:
     """
     Format the report as a human-readable text summary.
