@@ -41,7 +41,7 @@ class PCAVolRiskParity(PCAFactorRiskParity):
         available = [s for s in universe if s in returns.columns]
 
         # Returns matrix
-        R = returns[available].dropna(how="all")
+        R = returns[available].dropna()
         R_mat = R.values.astype(np.float64)
 
         # Z-score returns

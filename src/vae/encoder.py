@@ -76,10 +76,11 @@ class ResBlock(nn.Module):
     Dropout(0.1) after activation.
     """
 
-    def __init__(self, c_in: int, c_out: int) -> None:
+    def __init__(self, c_in: int, c_out: int, dropout: float = DROPOUT) -> None:
         """
         :param c_in (int): Input channels
         :param c_out (int): Output channels
+        :param dropout (float): Dropout rate
         """
         super().__init__()
 
@@ -97,7 +98,7 @@ class ResBlock(nn.Module):
         self.bn2 = nn.BatchNorm1d(c_out)
 
         self.act = nn.GELU()
-        self.dropout = nn.Dropout(DROPOUT)
+        self.dropout = nn.Dropout(dropout)
 
         # Skip connection (always active: stride=2 changes dimensions)
         self.skip = nn.Sequential(
@@ -143,11 +144,13 @@ class Encoder(nn.Module):
         F: int,
         K: int,
         channels: list[int],
+        dropout: float = DROPOUT,
     ) -> None:
         """
         :param F (int): Number of input features
         :param K (int): Latent dimension
         :param channels (list[int]): Channel progression [C_HEAD, C_1, ..., C_L]
+        :param dropout (float): Dropout rate for residual blocks
         """
         super().__init__()
         self.K = K
@@ -158,7 +161,7 @@ class Encoder(nn.Module):
         # Residual body: L blocks
         blocks = []
         for i in range(1, len(channels)):
-            blocks.append(ResBlock(channels[i - 1], channels[i]))
+            blocks.append(ResBlock(channels[i - 1], channels[i], dropout=dropout))
         self.body = nn.Sequential(*blocks)
 
         # Global average pooling

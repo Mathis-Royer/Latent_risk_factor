@@ -37,6 +37,7 @@ class VAEModel(nn.Module):
         T: int,
         T_compressed: int,
         learn_obs_var: bool = True,
+        dropout: float = 0.1,
     ) -> None:
         """
         :param F (int): Number of input features
@@ -45,6 +46,7 @@ class VAEModel(nn.Module):
         :param T (int): Window length
         :param T_compressed (int): Encoder's last temporal size
         :param learn_obs_var (bool): Whether σ² is learned (Mode P/A)
+        :param dropout (float): Dropout rate for residual blocks
         """
         super().__init__()
 
@@ -54,9 +56,10 @@ class VAEModel(nn.Module):
         self.learn_obs_var = learn_obs_var
 
         # Encoder and decoder
-        self.encoder = Encoder(F=F, K=K, channels=channels)
+        self.encoder = Encoder(F=F, K=K, channels=channels, dropout=dropout)
         self.decoder = Decoder(
             F=F, K=K, channels=channels, T=T, T_compressed=T_compressed,
+            dropout=dropout,
         )
 
         # Observation noise: scalar σ² = exp(log_sigma_sq), init at 1.0

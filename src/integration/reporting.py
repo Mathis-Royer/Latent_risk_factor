@@ -7,6 +7,8 @@ and regime decomposition into a structured report.
 Reference: ISD Section MOD-016 — Sub-task 1 (step 6).
 """
 
+import json
+import os
 from typing import Any
 
 import numpy as np
@@ -18,7 +20,7 @@ from src.integration.statistical_tests import (
     regime_decomposition,
     wilcoxon_paired_test,
 )
-from src.walk_forward.selection import check_deployment_criteria
+from src.walk_forward.selection import aggregate_fold_metrics, check_deployment_criteria
 
 
 def compile_pairwise_tests(
@@ -298,3 +300,58 @@ def format_summary_table(report: dict[str, Any]) -> str:
     lines.append("\n" + "=" * 70)
 
     return "\n".join(lines)
+
+
+def export_results(
+    results: dict[str, Any],
+    config_dict: dict[str, Any],
+    output_dir: str = "results/",
+) -> list[str]:
+    """
+    Export pipeline results to disk.
+
+    Saves per-fold metric CSVs (VAE + each benchmark), a text report,
+    a JSON report, and a config snapshot.
+
+    :param results (dict): Pipeline results with keys vae_results,
+        benchmark_results, report, e_stars
+    :param config_dict (dict): Config as a dict (from dataclasses.asdict)
+    :param output_dir (str): Output directory path
+
+    :return files (list[str]): List of written file paths
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    written: list[str] = []
+
+    # VAE fold metrics
+    vae_df = aggregate_fold_metrics(results["vae_results"])
+    vae_path = os.path.join(output_dir, "vae_fold_metrics.csv")
+    vae_df.to_csv(vae_path, index=False)
+    written.append(vae_path)
+
+    # Benchmark fold metrics
+    for bench_name, bench_metrics in results["benchmark_results"].items():
+        bench_df = aggregate_fold_metrics(bench_metrics)
+        bench_path = os.path.join(output_dir, f"{bench_name}_fold_metrics.csv")
+        bench_df.to_csv(bench_path, index=False)
+        written.append(bench_path)
+
+    # Text report
+    report_txt_path = os.path.join(output_dir, "report.txt")
+    with open(report_txt_path, "w") as f:
+        f.write(format_summary_table(results["report"]))
+    written.append(report_txt_path)
+
+    # JSON report
+    report_json_path = os.path.join(output_dir, "report.json")
+    with open(report_json_path, "w") as f:
+        json.dump(serialize_for_json(results["report"]), f, indent=2)
+    written.append(report_json_path)
+
+    # Config snapshot
+    config_path = os.path.join(output_dir, "config.json")
+    with open(config_path, "w") as f:
+        json.dump(serialize_for_json(config_dict), f, indent=2)
+    written.append(config_path)
+
+    return written

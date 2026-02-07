@@ -60,7 +60,7 @@ def _make_risk_model_data(
     """
     rng = np.random.RandomState(seed)
 
-    stock_ids = [f"S{i:03d}" for i in range(n)]
+    stock_ids = list(range(n))
     dates = pd.bdate_range(start="2020-01-02", periods=n_dates, freq="B")
     date_strs = [d.strftime("%Y-%m-%d") for d in dates]
 
@@ -72,7 +72,7 @@ def _make_risk_model_data(
     trailing_vol = pd.DataFrame(vol_values, index=date_strs, columns=stock_ids)
 
     # Universe snapshots: all stocks active at every date
-    universe_snapshots: dict[str, list[str]] = {
+    universe_snapshots: dict[str, list[int]] = {
         d: stock_ids[:] for d in date_strs
     }
 
@@ -180,7 +180,7 @@ class TestFactorRegression:
         n_dates = 50
         rng = np.random.RandomState(SEED)
 
-        stock_ids = [f"S{i:03d}" for i in range(n)]
+        stock_ids = list(range(n))
         dates = pd.bdate_range(start="2020-01-02", periods=n_dates, freq="B")
         date_strs = [d.strftime("%Y-%m-%d") for d in dates]
 
@@ -192,7 +192,7 @@ class TestFactorRegression:
         z_true = rng.randn(n_dates, n).astype(np.float64) * 0.01
         returns = pd.DataFrame(z_true, index=date_strs, columns=stock_ids)
 
-        universe_snapshots: dict[str, list[str]] = {
+        universe_snapshots: dict[str, list[int]] = {
             d: stock_ids[:] for d in date_strs
         }
 
@@ -231,10 +231,10 @@ class TestCovariance:
     def test_D_eps_floor(self) -> None:
         """min(D_eps) must be >= 1e-6 even when residuals have near-zero variance."""
         np.random.seed(SEED)
-        stock_ids = [f"S{i:03d}" for i in range(N_STOCKS)]
+        stock_ids = list(range(N_STOCKS))
 
         # Create residuals where some stocks have near-zero variance
-        residuals_by_stock: dict[str, list[float]] = {}
+        residuals_by_stock: dict[int, list[float]] = {}
         for i, sid in enumerate(stock_ids):
             if i < 5:
                 # Near-zero variance: all residuals the same

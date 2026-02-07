@@ -57,10 +57,11 @@ def trained_model_and_data() -> tuple[VAEModel, torch.Tensor, pd.DataFrame]:
     windows = torch.randn(N_WINDOWS, T_VAL, F_VAL)
 
     # Create metadata: each stock has WINDOWS_PER_STOCK windows
-    stock_ids: list[str] = []
+    # Use integer permnos (matching production create_windows output)
+    stock_id_list: list[int] = []
     for i in range(N_STOCKS):
-        stock_ids.extend([f"STOCK_{i:03d}"] * WINDOWS_PER_STOCK)
-    metadata = pd.DataFrame({"stock_id": stock_ids})
+        stock_id_list.extend([i] * WINDOWS_PER_STOCK)
+    metadata = pd.DataFrame({"stock_id": stock_id_list})
 
     # Train briefly to produce non-trivial latent representations
     trainer = VAETrainer(

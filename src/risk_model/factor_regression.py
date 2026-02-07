@@ -18,7 +18,7 @@ from src.risk_model.conditioning import safe_solve
 def estimate_factor_returns(
     B_A_by_date: dict[str, np.ndarray],
     returns: pd.DataFrame,
-    universe_snapshots: dict[str, list[str]],
+    universe_snapshots: dict[str, list[int]],
     conditioning_threshold: float = 1e6,
     ridge_scale: float = 1e-6,
 ) -> tuple[np.ndarray, list[str]]:
@@ -29,7 +29,7 @@ def estimate_factor_returns(
 
     :param B_A_by_date (dict): date_str → B̃_{A,t} (n_active_t, AU)
     :param returns (pd.DataFrame): Log-returns (dates × stocks)
-    :param universe_snapshots (dict): date_str → list of active stock_ids
+    :param universe_snapshots (dict): date_str → list of active stock_ids (permnos)
     :param conditioning_threshold (float): κ threshold for ridge fallback
     :param ridge_scale (float): Ridge scale factor
 
@@ -89,10 +89,10 @@ def compute_residuals(
     B_A_by_date: dict[str, np.ndarray],
     z_hat: np.ndarray,
     returns: pd.DataFrame,
-    universe_snapshots: dict[str, list[str]],
+    universe_snapshots: dict[str, list[int]],
     dates: list[str],
-    stock_ids: list[str],
-) -> dict[str, list[float]]:
+    stock_ids: list[int],
+) -> dict[int, list[float]]:
     """
     Compute idiosyncratic residuals: ε_{i,t} = r_{i,t} - B̃_{A,i,t} ẑ_t
 
@@ -101,13 +101,13 @@ def compute_residuals(
     :param B_A_by_date (dict): date_str → B̃_{A,t} (n_active_t, AU)
     :param z_hat (np.ndarray): Factor returns (n_dates, AU)
     :param returns (pd.DataFrame): Log-returns (dates × stocks)
-    :param universe_snapshots (dict): date_str → active stock_ids
+    :param universe_snapshots (dict): date_str → active stock_ids (permnos)
     :param dates (list[str]): Dates corresponding to z_hat rows
-    :param stock_ids (list[str]): All stock IDs (for residual aggregation)
+    :param stock_ids (list[int]): All stock IDs (for residual aggregation)
 
     :return residuals_by_stock (dict): stock_id → list of residuals
     """
-    residuals_by_stock: dict[str, list[float]] = {sid: [] for sid in stock_ids}
+    residuals_by_stock: dict[int, list[float]] = {sid: [] for sid in stock_ids}
 
     for t_idx, date_str in enumerate(dates):
         if date_str not in B_A_by_date:

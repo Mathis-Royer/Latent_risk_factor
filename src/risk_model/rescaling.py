@@ -49,8 +49,8 @@ def _compute_winsorized_ratios(
 def rescale_estimation(
     B_A: np.ndarray,
     trailing_vol: pd.DataFrame,
-    universe_snapshots: dict[str, list[str]],
-    stock_ids: list[str],
+    universe_snapshots: dict[str, list[int]],
+    stock_ids: list[int],
     percentile_bounds: tuple[float, float] = (5.0, 95.0),
 ) -> dict[str, np.ndarray]:
     """
@@ -60,8 +60,8 @@ def rescale_estimation(
 
     :param B_A (np.ndarray): Exposure matrix (n_stocks, AU)
     :param trailing_vol (pd.DataFrame): Trailing 252d annualized vol (dates × stocks)
-    :param universe_snapshots (dict): date_str → list of active stock_ids
-    :param stock_ids (list[str]): Ordered stock IDs matching B_A rows
+    :param universe_snapshots (dict): date_str → list of active stock_ids (permnos)
+    :param stock_ids (list[int]): Ordered stock IDs matching B_A rows
     :param percentile_bounds (tuple): (lo, hi) percentiles for winsorization
 
     :return B_A_by_date (dict): date_str → B_A_t (n_active_t, AU)
@@ -85,25 +85,27 @@ def rescale_estimation(
 
         vols = np.array([
             trailing_vol.loc[date_str, sid]
+            if sid in trailing_vol.columns else np.nan
             for sid in active_sids
-            if sid in trailing_vol.columns
         ], dtype=np.float64)
 
-        # Filter to stocks with valid vols
+        # Impute NaN/zero vols with cross-sectional median (consistent
+        # with rescale_portfolio — keeps all stocks, avoids dimension
+        # mismatch with downstream factor regression)
         valid_mask = ~np.isnan(vols) & (vols > 0)
         if valid_mask.sum() < 2:
             continue
 
-        valid_indices = np.array(active_indices)[valid_mask]
-        valid_vols = vols[valid_mask]
+        median_valid = float(np.median(vols[valid_mask]))
+        vols[~valid_mask] = median_valid
 
         # Winsorized ratios
         ratios = _compute_winsorized_ratios(
-            valid_vols, percentile_bounds[0], percentile_bounds[1],
+            vols, percentile_bounds[0], percentile_bounds[1],
         )
 
         # Rescale: B̃_{A,i,t} = R_{i,t} · μ̄_{A,i}
-        B_A_active = B_A[valid_indices]  # (n_valid, AU)
+        B_A_active = B_A[active_indices]  # (n_active, AU)
         B_A_t = B_A_active * ratios[:, np.newaxis]
 
         B_A_by_date[date_str] = B_A_t
@@ -115,8 +117,8 @@ def rescale_portfolio(
     B_A: np.ndarray,
     trailing_vol: pd.DataFrame,
     current_date: str,
-    universe: list[str],
-    stock_ids: list[str],
+    universe: list[int],
+    stock_ids: list[int],
     percentile_bounds: tuple[float, float] = (5.0, 95.0),
 ) -> np.ndarray:
     """
@@ -127,8 +129,8 @@ def rescale_portfolio(
     :param B_A (np.ndarray): Exposure matrix (n_stocks, AU)
     :param trailing_vol (pd.DataFrame): Trailing vols (dates × stocks)
     :param current_date (str): Rebalancing date
-    :param universe (list[str]): Active stocks at rebalancing
-    :param stock_ids (list[str]): Ordered stock IDs matching B_A rows
+    :param universe (list[int]): Active stocks at rebalancing (permnos)
+    :param stock_ids (list[int]): Ordered stock IDs matching B_A rows
     :param percentile_bounds (tuple): (lo, hi) percentiles
 
     :return B_A_port (np.ndarray): Rescaled exposures (n_active, AU)
@@ -139,9 +141,16 @@ def rescale_portfolio(
     active_indices = [sid_to_idx[s] for s in universe if s in sid_to_idx]
     active_sids = [stock_ids[i] for i in active_indices]
 
+    # Snap current_date to the most recent valid trading day in the index
+    # (fold schedule dates may fall on weekends/holidays)
+    lookup_date = trailing_vol.index.asof(pd.Timestamp(current_date))
+    if isinstance(lookup_date, float) and np.isnan(lookup_date):
+        # No valid date found — return unscaled exposures
+        return B_A[[sid_to_idx[s] for s in universe if s in sid_to_idx]]
+
     # Get current-date trailing vols
     vols = np.array([
-        trailing_vol.loc[current_date, sid]
+        trailing_vol.loc[lookup_date, sid]
         if sid in trailing_vol.columns else np.nan
         for sid in active_sids
     ], dtype=np.float64)

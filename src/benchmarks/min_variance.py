@@ -36,7 +36,7 @@ class MinimumVariance(BenchmarkModel):
         self.universe = universe
 
         available = [s for s in universe if s in returns.columns]
-        R = returns[available].dropna(how="all").values
+        R = returns[available].dropna().values
 
         lw = LedoitWolf()
         lw.fit(R)

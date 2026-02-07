@@ -7,24 +7,23 @@
 
 | # | Date | Modification |
 |---|------|--------------|
-| 10 | 2026-02-07 | **Performance optimizations (auto-adaptive)**: Created `src/utils.py` with 3 hardware adaptation helpers (`get_optimal_device`, `get_dataloader_kwargs`, `get_amp_config`). Auto-detect MPS/CUDA/CPU everywhere (pipeline, CLI scripts, notebook). Added AMP mixed precision + DataLoader workers to trainer. Vectorized windowing via `sliding_window_view` (no-copy). 13 new tests in `test_utils.py`. |
-| 9 | 2026-02-07 | **Code-vs-spec audit + 4 corrections**: Full audit of 44 source files against ISD/DVT. 0 divergences. 4 missing implementations fixed: `crisis_period_return()` (ISD L3 primary), `realized_vs_predicted_correlation()` (ISD L2), `--config PATH` CLI arg, `--device` arg in benchmarks CLI. Updated `implementation_decisions.md` with Corrections + Divergences sections. |
-| 8 | 2026-02-07 | **Actionable constraint validation**: Added `__post_init__` validation to all 9 config dataclasses (3 shared helpers: `_validate_range`, `_validate_in`, `_validate_pair`). Restored `r_max` capacity check as hard `ValueError` with 4 computed remediation values (n_min, T_annee_min, K_max via binary search, r_max_needed). Added `_find_max_K()` to `build_vae.py`. 37 new tests in `test_config_validation.py`. Total: 144 tests (144 pass). |
-| 7 | 2026-02-07 | **Dashboard notebook (verified)**: Created `notebooks/dashboard.ipynb` — all 26 code cells execute end-to-end on synthetic data. Fixed benchmark column type mismatch (str vs int permno). Auto-overrides for synthetic mode (max_epochs=2, HP_GRID=1 config). Created `src/integration/visualization.py` (5 display helpers). Externalized `serialize_for_json()` to reporting.py. |
-| 6 | 2026-02-06 | **Phase 3+4 implementation complete**: 15 source files — MOD-010 to MOD-015 (6 benchmarks), MOD-009 (5 walk-forward files), MOD-016 (pipeline.py + statistical_tests.py + reporting.py). All pyright clean. |
-| 5 | 2026-02-06 | **Phase 2 implementation complete**: 16 source files for MOD-004 through MOD-008. All pyright clean. |
-| 4 | 2026-02-06 | **Phase 1 implementation complete**: 12 source files for MOD-001 (data_pipeline), MOD-002 (vae_architecture), MOD-003 (test_infrastructure). All pyright clean. |
-| 3 | 2026-02-06 | **Volume promoted to core schema**: Moved `volume` from extended-only (F>2) to core columns in ISD for ADV filter; updated 6 ISD sections; fixed config.py defaults to match DVT baselines |
-| 2 | 2026-02-06 | **Implementation decisions log**: Added `docs/implementation_decisions.md` to track spec gap decisions; added ISD Section 00 guideline for mandatory logging |
-| 1 | 2026-02-06 | **Initial setup**: Created `.claude/` configuration, translated ISD and DVT documents |
+| 10 | 2026-02-07 | **Fix 4 cascading pipeline runtime bugs**: (1) `composite.py` `str(sid)` → `int(sid)` — int/str permno mismatch caused AU=0 downstream. (2) `rescale_estimation` now imputes NaN/zero vols with median instead of dropping stocks — fixed IndexError dimension mismatch in factor regression. (3) `pipeline.py` aligns returns to `valid_dates` from factor regression — fixed shape mismatch in `factor_explanatory_power`. (4) `rescale_portfolio` + `inverse_vol.py` snap `current_date` to nearest trading day via `index.asof()` — fixed KeyError when fold `train_end` falls on weekend/holiday. Type hints updated in 8 files. Pyright clean. |
+| 9 | 2026-02-07 | **TensorBoard training dashboard**: Added optional TensorBoard logging to `VAETrainer` (9 scalar tags: 4 losses, ELBO, sigma_sq, AU, LR, lambda_co, beta_t). Wired from `FullPipeline` with per-fold/phase/config log dirs. Auto-launches TensorBoard in background process. CLI flags `--tensorboard-dir` (default `runs/`) and `--no-tensorboard`. 3 files modified (`trainer.py`, `pipeline.py`, `run_walk_forward.py`), pyright clean. |
+| 8 | 2026-02-07 | **VAE auto-adaptation for small universes**: Added `_adapt_vae_params()` to FullPipeline — 3-lever adaptation (K scaling via AU_max_stat, C_MIN reduction 384→144, r_max relaxation with reinforced reg). Fixed Phase A hardcoded `T_annee=10` bug. Made dropout configurable throughout encoder/decoder/model/build_vae chain. 5 files modified, all 216 unit tests pass, pyright clean. |
+| 7 | 2026-02-07 | **SP500 priority + data quality filters**: Added `--sp500-first` to `download_tiingo.py` (fetches SP500 constituents from Wikipedia, downloads them first, then remaining tickers). Added penny stock filter (`--min-price`, default $1.00) and minimum history filter (`--min-history-days`, default 504) to both `phase_merge()` and `load_tiingo_data()`. Also added `--sp500-file` for offline use with local CSV. |
+| 6 | 2026-02-07 | **Performance optimizations (auto-adaptive)**: Created `src/utils.py` with 3 hardware adaptation helpers. Auto-detect MPS/CUDA/CPU. AMP mixed precision + DataLoader workers. Vectorized windowing via `sliding_window_view`. 13 new tests in `test_utils.py`. |
+| 5 | 2026-02-07 | **Actionable constraint validation**: Added `__post_init__` validation to all 9 config dataclasses (3 shared helpers: `_validate_range`, `_validate_in`, `_validate_pair`). Restored `r_max` capacity check as hard `ValueError` with 4 computed remediation values. Added `_find_max_K()` to `build_vae.py`. 37 new tests in `test_config_validation.py`. |
+| 4 | 2026-02-07 | **Dashboard notebook (verified)**: Created `notebooks/dashboard.ipynb` — all 26 code cells execute end-to-end on synthetic data. Fixed benchmark column type mismatch (str vs int permno). Auto-overrides for synthetic mode. Created `src/integration/visualization.py` (5 display helpers). |
+| 3 | 2026-02-06 | **Phase 3+4 implementation complete**: 15 source files — MOD-010 to MOD-015 (6 benchmarks), MOD-009 (5 walk-forward files), MOD-016 (pipeline.py + statistical_tests.py + reporting.py). All pyright clean. |
+| 2 | 2026-02-06 | **Phase 2 implementation complete**: 16 source files for MOD-004 through MOD-008. All pyright clean. |
 
 ---
 
 ## Current State
 
-- **Status**: Development — All 4 phases + tests + dashboard + performance optimizations complete. 45 source files + 12 test files + 1 notebook. Auto-adaptive hardware detection (MPS/CUDA/CPU), AMP mixed precision, DataLoader workers, vectorized windowing.
-- **Main features**: Full data pipeline, 1D-CNN VAE, 3-mode loss, training loop with AMP, inference + AU, dual-rescaled factor risk model, portfolio optimization (SCA+Armijo), 6 benchmarks, walk-forward (34 folds), statistical tests, reporting, 2 CLI entry points, dashboard notebook
-- **Next**: End-to-end run on real data (CRSP/EODHD)
+- **Status**: Development — All 4 phases + tests + dashboard + performance optimizations + TensorBoard complete. 45 source files + 13 test files + 1 notebook. SP500 priority download + penny stock/min history filters active.
+- **Main features**: Full data pipeline, 1D-CNN VAE, 3-mode loss, training loop with AMP + TensorBoard, inference + AU, dual-rescaled factor risk model, portfolio optimization (SCA+Armijo), 6 benchmarks, walk-forward (34 folds), statistical tests, reporting, 2 CLI entry points, dashboard notebook, SP500-first download with data quality filters
+- **Next**: End-to-end run on Tiingo SP500 data (VAE auto-adaptation now handles small universes)
 
 ---
 
