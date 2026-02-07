@@ -13,12 +13,12 @@ Reference: ISD Section MOD-016 — Sub-tasks 1, 3.
 """
 
 import logging
+import time
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-
 from src.benchmarks.equal_weight import EqualWeight
 from src.benchmarks.erc import EqualRiskContribution
 from src.benchmarks.inverse_vol import InverseVolatility
@@ -49,8 +49,10 @@ from src.training.trainer import VAETrainer
 from src.vae.build_vae import build_vae
 from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.metrics import (
+    crisis_period_return,
     factor_explanatory_power,
     portfolio_metrics,
+    realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
 )
 from src.walk_forward.phase_a import select_best_config
@@ -205,6 +207,7 @@ class FullPipeline:
         start_date: str = "2000-01-03",
         hp_grid: list[dict[str, Any]] | None = None,
         device: str = "cpu",
+        skip_phase_a: bool = False,
     ) -> dict[str, Any]:
         """
         Full walk-forward validation + holdout.
@@ -216,11 +219,12 @@ class FullPipeline:
         :param start_date (str): Data start date
         :param hp_grid (list[dict] | None): HP grid for Phase A
         :param device (str): PyTorch device
+        :param skip_phase_a (bool): Skip Phase A HP selection, use default config
 
         :return results (dict): Complete walk-forward results + report
         """
         torch_device = torch.device(device)
-        if hp_grid is None:
+        if hp_grid is None and not skip_phase_a:
             hp_grid = self._default_hp_grid()
 
         # Step 1: Setup fold schedule
@@ -239,24 +243,34 @@ class FullPipeline:
 
         logger.info("Starting walk-forward: %d folds + holdout", n_folds)
 
+        # Default config (used when Phase A is skipped or fails)
+        default_config: dict[str, Any] = {
+            "e_star": self.config.training.max_epochs, "mode": "P",
+            "learning_rate": self.config.training.learning_rate,
+            "alpha": 1.0,
+        }
+
         # Step 2: Walk-forward folds
         for fold_idx, fold in enumerate(wf_folds):
             fold_id = int(fold["fold_id"])  # type: ignore[arg-type]
-            logger.info("[Fold %d/%d] Starting", fold_id, n_folds)
 
-            # Phase A: HP selection
-            best_config = self._run_phase_a(
-                fold, returns, trailing_vol, rolling_vol,
-                stock_data, vix_data, hp_grid, torch_device,
-            )
+            # Phase A: HP selection (or skip)
+            if skip_phase_a:
+                logger.info("[Fold %d/%d] Phase A skipped, using default config", fold_id, n_folds)
+                best_config = default_config
+            else:
+                logger.info("[Fold %d/%d] Phase A: HP selection", fold_id, n_folds)
+                best_config = self._run_phase_a(
+                    fold, returns, trailing_vol, rolling_vol,
+                    stock_data, vix_data, hp_grid or [], torch_device,
+                )
 
-            if best_config is None:
-                logger.warning("[Fold %d] Phase A: all configs eliminated, using defaults", fold_id)
-                best_config = {"e_star": self.config.training.max_epochs, "mode": "P",
-                               "learning_rate": self.config.training.learning_rate,
-                               "alpha": 1.0}
+                if best_config is None:
+                    logger.warning("[Fold %d] Phase A: all configs eliminated, using defaults", fold_id)
+                    best_config = default_config
 
             # Phase B: Deployment
+            logger.info("[Fold %d/%d] Phase B: deployment training", fold_id, n_folds)
             e_star_config = int(best_config.get("e_star", self.config.training.max_epochs))
             e_star = determine_e_star(
                 fold_id, e_star_config, self.e_stars,
@@ -266,23 +280,11 @@ class FullPipeline:
             vae_metrics, w_vae = self._run_single_fold(
                 fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, best_config, e_star, torch_device,
+                use_early_stopping=skip_phase_a,
             )
             self.record_vae_result(fold_id, vae_metrics, e_star)
 
-            n_surviving = best_config.get("n_surviving", "?")
-            logger.info(
-                "[Fold %d/%d] Phase A: %d configs → %s surviving",
-                fold_id, n_folds, len(hp_grid), n_surviving,
-            )
-            logger.info(
-                "[Fold %d/%d] Phase B: E*=%d, AU=%s, H_norm=%.3f",
-                fold_id, n_folds, e_star,
-                vae_metrics.get("AU", "?"),
-                vae_metrics.get("H_norm_oos", 0.0),
-            )
-
             # Benchmarks
-            bench_sharpes: list[str] = []
             for bench_name, bench_cls in BENCHMARK_CLASSES.items():
                 bench_metrics = self._run_benchmark_fold(
                     bench_name, bench_cls, fold, returns, trailing_vol,
@@ -294,9 +296,13 @@ class FullPipeline:
                 if "w" in bench_metrics:
                     bench_w_old[bench_name] = np.array(bench_metrics.pop("w"))
 
-                bench_sharpes.append(f"{bench_name[:2].upper()}={bench_metrics.get('sharpe', 0.0):.3f}")
-
-            logger.info("[Fold %d/%d] Benchmarks: %s", fold_id, n_folds, ", ".join(bench_sharpes))
+            logger.info(
+                "[Fold %d/%d] E*=%d, AU=%s, H=%.3f, Sharpe=%.3f",
+                fold_id, n_folds, e_star,
+                vae_metrics.get("AU", "?"),
+                vae_metrics.get("H_norm_oos", 0.0),
+                vae_metrics.get("sharpe", 0.0),
+            )
 
         # Step 3: Holdout fold
         holdout_result: dict[str, Any] | None = None
@@ -318,6 +324,7 @@ class FullPipeline:
             holdout_metrics, _ = self._run_single_fold(
                 holdout_fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, holdout_config, e_star_holdout, torch_device,
+                use_early_stopping=skip_phase_a,
             )
             self.record_vae_result(holdout_id, holdout_metrics, e_star_holdout)
 
@@ -336,6 +343,7 @@ class FullPipeline:
             }
 
         # Steps 4-6: Statistical tests + Report
+        logger.info("Computing statistical tests and generating report")
         vae_df = aggregate_fold_metrics(self.vae_results)
         bench_dfs: dict[str, pd.DataFrame] = {
             name: aggregate_fold_metrics(results)
@@ -414,8 +422,8 @@ class FullPipeline:
         val_mask = metadata["end_date"] >= pd.Timestamp(val_start)
         train_mask = ~val_mask
 
-        train_windows = windows[train_mask.values]
-        val_windows = windows[val_mask.values]
+        train_windows = windows[train_mask.values.copy()].clone()
+        val_windows = windows[val_mask.values.copy()].clone()
 
         if train_windows.shape[0] == 0 or val_windows.shape[0] == 0:
             return None
@@ -423,7 +431,12 @@ class FullPipeline:
         # Evaluate each HP config
         config_results: list[dict[str, Any]] = []
 
-        for hp in hp_grid:
+        for hp_idx, hp in enumerate(hp_grid):
+            logger.info(
+                "  [Phase A] Config %d/%d: mode=%s lr=%s",
+                hp_idx + 1, len(hp_grid),
+                hp.get("mode", "?"), hp.get("learning_rate", "?"),
+            )
             try:
                 result = self._evaluate_hp_config(
                     hp, train_windows, val_windows, metadata,
@@ -437,12 +450,14 @@ class FullPipeline:
             return None
 
         # Select best config
+        n_stocks = len(stock_ids)
         best = select_best_config(
             config_results,
             K=self.config.vae.K,
             mdd_threshold=self.config.walk_forward.score_mdd_threshold,
             lambda_pen=self.config.walk_forward.score_lambda_pen,
             lambda_est=self.config.walk_forward.score_lambda_est,
+            n_stocks=n_stocks,
         )
 
         if best is not None:
@@ -490,6 +505,7 @@ class FullPipeline:
 
         model, info = build_vae(
             n=n_stocks, T=T, T_annee=10, F=F, K=K,
+            r_max=self.config.vae.r_max,
             learn_obs_var=(mode != "F"),
         )
 
@@ -544,6 +560,7 @@ class FullPipeline:
         config: dict[str, Any],
         e_star: int,
         device: torch.device,
+        use_early_stopping: bool = False,
     ) -> tuple[dict[str, float], np.ndarray]:
         """
         Run Phase B for a single fold: train → infer → risk model → portfolio → metrics.
@@ -557,6 +574,7 @@ class FullPipeline:
         :param config (dict): HP config from Phase A
         :param e_star (int): Number of training epochs
         :param device (torch.device): Compute device
+        :param use_early_stopping (bool): Enable early stopping (when Phase A is skipped)
 
         :return metrics (dict): Fold metrics
         :return w (np.ndarray): Portfolio weights
@@ -576,6 +594,7 @@ class FullPipeline:
         stock_ids_str = [str(c) for c in stock_ids]
 
         # 1. Create windows from FULL training period
+        t0 = time.monotonic()
         train_returns = returns.loc[train_start:train_end]
         train_rolling_vol = rolling_vol.loc[train_start:train_end]
 
@@ -587,6 +606,11 @@ class FullPipeline:
 
         if windows.shape[0] < 10:
             return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids)
+
+        logger.info(
+            "  [Fold %d] Windowing: %d windows from %d stocks, %d train days",
+            fold_id, windows.shape[0], len(stock_ids), len(train_returns),
+        )
 
         # 2. Build and train VAE for E* epochs (no early stopping for Phase B)
         n_stocks = len(stock_ids)
@@ -600,18 +624,22 @@ class FullPipeline:
 
         model, info = build_vae(
             n=n_stocks, T=T, T_annee=T_annee, F=F, K=K,
+            r_max=self.config.vae.r_max,
             learn_obs_var=(mode != "F"),
         )
 
         # Phase B: train on full data for E* epochs
-        # Use all windows for training (no validation split)
+        patience = (
+            self.config.training.patience if use_early_stopping
+            else e_star + 1  # Disable early stopping when E* comes from Phase A
+        )
         trainer = VAETrainer(
             model, loss_mode=mode, learning_rate=lr,
             gamma=self.config.loss.gamma,
             lambda_co_max=self.config.loss.lambda_co_max,
             beta_fixed=self.config.loss.beta_fixed,
             warmup_fraction=self.config.loss.warmup_fraction,
-            patience=e_star + 1,  # Disable early stopping
+            patience=patience,
             lr_patience=self.config.training.lr_patience,
             lr_factor=self.config.training.lr_factor,
             device=device,
@@ -629,8 +657,14 @@ class FullPipeline:
             max_epochs=e_star,
             batch_size=self.config.training.batch_size,
         )
+        t_train = time.monotonic() - t0
+        logger.info(
+            "  [Fold %d] Training: %d epochs in %.1fs (best_epoch=%d)",
+            fold_id, e_star, t_train, fit_result["best_epoch"],
+        )
 
         # 3. Infer latent trajectories → B
+        logger.info("  [Fold %d] Inference: extracting latent profiles...", fold_id)
         trajectories = infer_latent_trajectories(
             model, windows, metadata,
             batch_size=self.config.inference.batch_size,
@@ -711,6 +745,12 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
+        logger.info(
+            "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d)",
+            fold_id, AU, B_A_port.shape[0], B_A_port.shape[1],
+            Sigma_assets.shape[0], Sigma_assets.shape[1],
+        )
+
         # 8. Portfolio optimization: frontier → α*, SCA → w*
         pc = self.config.portfolio
         frontier = compute_variance_entropy_frontier(
@@ -761,6 +801,12 @@ class FullPipeline:
             entropy_eps=pc.entropy_eps,
         )
 
+        t_fold = time.monotonic() - t0
+        logger.info(
+            "  [Fold %d] Portfolio: alpha=%.2f, n_active=%d | total %.1fs",
+            fold_id, alpha_opt, int(np.sum(w_final > 1e-6)), t_fold,
+        )
+
         # 9. OOS metrics
         returns_oos = returns.loc[oos_start:oos_end]
 
@@ -774,11 +820,30 @@ class FullPipeline:
         metrics["e_star"] = float(e_star)
         metrics["alpha_opt"] = alpha_opt
 
-        # Layer 2: realized vs predicted variance
+        # Layer 2: realized vs predicted variance + correlation
         if returns_oos.shape[0] > 0:
             oos_values = returns_oos.reindex(columns=inferred_stock_ids[:n_port]).fillna(0.0).values
             var_ratio = realized_vs_predicted_variance(w_final, Sigma_assets, oos_values)
             metrics["var_ratio_oos"] = var_ratio
+            corr_rank = realized_vs_predicted_correlation(Sigma_assets, oos_values)
+            metrics["corr_rank_oos"] = corr_rank
+
+        # Layer 3: crisis-period return
+        if vix_data is not None and returns_oos.shape[0] > 0:
+            from src.data_pipeline.crisis import compute_crisis_threshold
+            train_end_ts: pd.Timestamp = pd.Timestamp(train_end)  # type: ignore[assignment]
+            threshold = compute_crisis_threshold(
+                vix_data, train_end_ts,
+                percentile=self.config.data.vix_lookback_percentile,
+            )
+            oos_dates = returns_oos.index
+            oos_vix = vix_data.reindex(oos_dates)
+            crisis_mask = np.asarray(oos_vix > threshold, dtype=bool)
+            crisis_mask = np.where(np.isnan(oos_vix), False, crisis_mask)
+            crisis_ret = crisis_period_return(
+                w_final, returns_oos, inferred_stock_ids, crisis_mask,
+            )
+            metrics["crisis_return_oos"] = crisis_ret
 
         # Factor explanatory power
         ep = factor_explanatory_power(
@@ -823,7 +888,10 @@ class FullPipeline:
         oos_end = str(fold["oos_end"])
 
         stock_ids_str = [str(c) for c in returns.columns]
-        train_returns = returns.loc[:train_end]
+
+        # Ensure returns have string columns for consistent benchmark indexing
+        train_returns = returns.loc[:train_end].copy()
+        train_returns.columns = pd.Index(stock_ids_str)
 
         # Shared constraint parameters (INV-012)
         pc = self.config.portfolio
@@ -849,7 +917,8 @@ class FullPipeline:
             w = np.ones(n) / n
 
         # OOS metrics
-        returns_oos = returns.loc[oos_start:oos_end]
+        returns_oos = returns.loc[oos_start:oos_end].copy()
+        returns_oos.columns = pd.Index(stock_ids_str)
         metrics = benchmark.evaluate(w, returns_oos, stock_ids_str)
 
         # Rename to distinguish from VAE metrics

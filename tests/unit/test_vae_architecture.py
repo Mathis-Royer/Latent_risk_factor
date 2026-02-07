@@ -124,20 +124,31 @@ class TestChannelProgression:
 class TestCapacityConstraint:
     """Tests for capacity-data ratio constraint."""
 
-    def test_capacity_constraint(self) -> None:
+    def test_capacity_constraint_raises(self) -> None:
         """
-        ValueError raised when r > r_max.
-        Use very large K with small n and short T_annee to force violation.
+        ValueError raised when r > r_max, with remediation guidance.
         """
-        with pytest.raises(ValueError, match="Capacity constraint violated"):
+        with pytest.raises(ValueError, match="Capacity-data constraint violated"):
             build_vae(
                 n=10,
                 T=504,
                 T_annee=3,
                 F=2,
                 K=200,
-                r_max=0.001,  # Very restrictive
+                r_max=0.001,
             )
+
+    def test_capacity_constraint_remediation(self) -> None:
+        """
+        Error message contains all 4 remediation lines.
+        """
+        with pytest.raises(ValueError) as exc_info:
+            build_vae(n=10, T=504, T_annee=3, F=2, K=200, r_max=0.001)
+        msg = str(exc_info.value)
+        assert "n (stocks)" in msg
+        assert "T_annee" in msg
+        assert "K (latent dim)" in msg
+        assert "r_max" in msg
 
     def test_capacity_constraint_table(self) -> None:
         """

@@ -13,6 +13,7 @@ Arguments:
     --device DEVICE       PyTorch device: "cpu" or "cuda" (default: "cpu")
     --seed SEED           Global random seed (default: 42)
     --output-dir DIR      Output directory for results (default: "results/")
+    --config PATH         Optional YAML/JSON config override
 
 Output:
     results/
@@ -42,7 +43,7 @@ from src.data_pipeline.data_loader import generate_synthetic_csv, load_stock_dat
 from src.data_pipeline.returns import compute_log_returns
 from src.data_pipeline.features import compute_trailing_volatility
 from src.integration.pipeline import FullPipeline
-from src.integration.reporting import format_summary_table
+from src.integration.reporting import format_summary_table, serialize_for_json
 
 
 logging.basicConfig(
@@ -89,6 +90,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir", type=str, default="results/",
         help="Output directory for results (default: results/)",
+    )
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Optional YAML/JSON config override file",
     )
     return parser.parse_args()
 
@@ -138,6 +143,10 @@ def main() -> int:
         # Configure pipeline
         config = PipelineConfig(seed=args.seed)
 
+        # Apply config overrides from file
+        if args.config:
+            config = _apply_config_overrides(config, args.config)
+
         # For synthetic data, reduce walk-forward params to fit
         if args.synthetic:
             from dataclasses import replace
@@ -167,7 +176,7 @@ def main() -> int:
         # report.json
         report_path = os.path.join(args.output_dir, "report.json")
         with open(report_path, "w") as f:
-            json.dump(_serialize(results["report"]), f, indent=2)
+            json.dump(serialize_for_json(results["report"]), f, indent=2)
         logger.info("Report saved to %s", report_path)
 
         # report.txt
@@ -191,29 +200,43 @@ def main() -> int:
         return 1
 
 
-def _serialize(obj: object) -> object:
+def _apply_config_overrides(config: PipelineConfig, config_path: str) -> PipelineConfig:
     """
-    Make an object JSON-serializable.
+    Apply overrides from a YAML or JSON config file.
 
-    :param obj (object): Object to serialize
+    The file should contain a flat or nested dict of parameter names
+    matching the PipelineConfig dataclass fields.
 
-    :return serialized (object): JSON-safe object
+    :param config (PipelineConfig): Base config
+    :param config_path (str): Path to YAML/JSON override file
+
+    :return config (PipelineConfig): Updated config
     """
-    if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_serialize(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating, np.float64)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, pd.DataFrame):
-        return obj.to_dict("records")
-    if isinstance(obj, pd.Series):
-        return obj.tolist()
-    return obj
+    from dataclasses import fields, replace
+
+    if config_path.endswith((".yaml", ".yml")):
+        try:
+            import yaml
+        except ImportError as e:
+            raise ImportError("PyYAML required for YAML config files: pip install pyyaml") from e
+        with open(config_path) as f:
+            overrides = yaml.safe_load(f) or {}
+    else:
+        with open(config_path) as f:
+            overrides = json.load(f)
+
+    # Apply nested overrides: e.g. {"training": {"max_epochs": 50}}
+    sub_configs: dict[str, object] = {}
+    for field_info in fields(config):
+        name = field_info.name
+        if name in overrides and isinstance(overrides[name], dict):
+            sub_obj = getattr(config, name)
+            sub_configs[name] = replace(sub_obj, **overrides[name])
+
+    # Apply top-level overrides (e.g. seed)
+    top_overrides = {k: v for k, v in overrides.items() if not isinstance(v, dict)}
+
+    return replace(config, **top_overrides, **sub_configs)
 
 
 if __name__ == "__main__":

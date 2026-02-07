@@ -12,6 +12,7 @@ Reference: ISD Section MOD-006 — Sub-tasks 1-2.
 import numpy as np
 import pandas as pd
 import torch
+from tqdm.auto import tqdm
 
 from src.vae.model import VAEModel
 
@@ -43,9 +44,17 @@ def infer_latent_trajectories(
     model.eval()
     N = windows.shape[0]
     all_mu: list[np.ndarray] = []
+    n_batches = (N + batch_size - 1) // batch_size
 
     with torch.no_grad():
-        for start in range(0, N, batch_size):
+        batch_iter = tqdm(
+            range(0, N, batch_size),
+            total=n_batches,
+            desc="    Inference",
+            unit="batch",
+        ) if n_batches > 1 else range(0, N, batch_size)
+
+        for start in batch_iter:
             end = min(start + batch_size, N)
             x = windows[start:end].to(device)
             mu = model.encode(x)  # (batch, K), deterministic

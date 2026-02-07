@@ -226,6 +226,46 @@ def count_decoder_params(
     return p_proj + p_body + p_out
 
 
+def _find_max_K(
+    T: int,
+    F: int,
+    L: int,
+    N_capacity: int,
+    r_max: float,
+    K_upper: int,
+) -> int:
+    """
+    Binary search for the largest K in [1, K_upper] such that
+    P_total(K) / N_capacity <= r_max.
+
+    :param T (int): Window length
+    :param F (int): Number of features
+    :param L (int): Encoder depth (depends only on T)
+    :param N_capacity (int): Total window count
+    :param r_max (float): Maximum parameter/data ratio
+    :param K_upper (int): Upper bound for search
+
+    :return K_max (int): Maximum feasible K, or 0 if none
+    """
+    temporal_sizes = compute_temporal_sizes(T, L)
+    T_comp = temporal_sizes[-1]
+
+    lo, hi = 1, K_upper
+    K_max = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        C_L_mid = compute_final_width(mid)
+        ch_mid = compute_channel_progression(L, C_L_mid)
+        P_mid = (count_encoder_params(F, mid, ch_mid)
+                 + count_decoder_params(F, mid, ch_mid, T_comp))
+        if P_mid / N_capacity <= r_max:
+            K_max = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return K_max
+
+
 def build_vae(
     n: int,
     T: int,
@@ -275,13 +315,24 @@ def build_vae(
     P_dec = count_decoder_params(F, K, channels, T_compressed)
     P_total = P_enc + P_dec
 
-    # Capacity-data constraint
+    # Capacity-data constraint (hard — with actionable remediation)
     r = P_total / N_capacity
     if r > r_max:
+        windows_per_stock = T_hist - T + 1
+        n_min = math.ceil(P_total / (r_max * max(windows_per_stock, 1)))
+        T_annee_min = math.ceil((P_total / (n * r_max) + T - 1) / 252)
+        K_max = _find_max_K(T, F, L, N_capacity, r_max, K)
+        K_max_str = str(K_max) if K_max > 0 else "0 (no feasible K)"
         raise ValueError(
-            f"Capacity constraint violated: r = {r:.4f} > r_max = {r_max}. "
-            f"P_total = {P_total:,}, N = {N_capacity:,}. "
-            f"Levers: increase n, increase T_annee, cap C_L at 384, or raise r_max."
+            f"Capacity-data constraint violated: "
+            f"r = P_total / N = {P_total:,} / {N_capacity:,} = {r:.4f} "
+            f"> r_max = {r_max}\n\n"
+            f"Remediation — adjust any ONE of these:\n"
+            f"  n (stocks)     : increase to >= {n_min:,}  (currently {n:,})\n"
+            f"  T_annee (years): increase to >= {T_annee_min}  "
+            f"(currently {T_annee})\n"
+            f"  K (latent dim) : decrease to <= {K_max_str}  (currently {K})\n"
+            f"  r_max          : increase to >= {r:.4f}  (currently {r_max})"
         )
 
     # Instantiate model
