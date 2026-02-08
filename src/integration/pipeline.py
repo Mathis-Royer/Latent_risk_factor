@@ -46,6 +46,7 @@ from src.portfolio.sca_solver import multi_start_optimize, sca_optimize
 from src.risk_model.covariance import assemble_risk_model, estimate_d_eps, estimate_sigma_z
 from src.risk_model.factor_regression import compute_residuals, estimate_factor_returns
 from src.risk_model.rescaling import rescale_estimation, rescale_portfolio
+from src.training.batching import compute_strata
 from src.training.trainer import VAETrainer
 from src.vae.build_vae import (
     C_MIN_DEFAULT,
@@ -229,6 +230,34 @@ class FullPipeline:
             self.tensorboard_dir, f"fold_{fold_id:02d}", phase,
         )
 
+
+    def _compute_window_strata(
+        self,
+        returns: pd.DataFrame,
+        stock_ids: list[int],
+        metadata: pd.DataFrame,
+    ) -> np.ndarray:
+        """
+        Compute per-window stratum assignments via k-means on trailing returns.
+
+        :param returns (pd.DataFrame): Log-returns (dates x stocks, int columns)
+        :param stock_ids (list[int]): Stock permno IDs
+        :param metadata (pd.DataFrame): Window metadata with stock_id column
+
+        :return window_strata (np.ndarray): Stratum per window (N,)
+        """
+        # compute_strata expects string columns and string stock_ids
+        ret_str = returns.copy()
+        ret_str.columns = pd.Index([str(c) for c in returns.columns])
+        ids_str = [str(s) for s in stock_ids]
+        stock_strata = compute_strata(
+            ret_str, ids_str, seed=self.config.seed,
+        )
+        # Map per-stock strata → per-window strata via metadata["stock_id"]
+        strata_map = {sid: int(stock_strata[i]) for i, sid in enumerate(stock_ids)}
+        mapped = metadata["stock_id"].map(strata_map).fillna(0).astype(int)  # type: ignore[arg-type]
+        window_strata: np.ndarray = np.asarray(mapped.values, dtype=int)
+        return window_strata
 
     def setup(self, start_date: str) -> None:
         """
@@ -549,7 +578,7 @@ class FullPipeline:
         if train_returns.empty:
             return None
 
-        windows, metadata = create_windows(
+        windows, metadata, raw_ret = create_windows(
             train_returns, train_rolling_vol, stock_ids,
             T=self.config.data.window_length,
             stride=1,
@@ -567,6 +596,14 @@ class FullPipeline:
 
         if train_windows.shape[0] == 0 or val_windows.shape[0] == 0:
             return None
+
+        # Co-movement data: raw returns + strata (split to training portion)
+        train_raw = raw_ret[train_mask.values.copy()].clone()
+        window_strata = self._compute_window_strata(
+            train_returns, stock_ids, metadata,
+        )
+        train_strata = window_strata[train_mask.values.copy()]
+        train_metadata: pd.DataFrame = metadata[train_mask.values.copy()].reset_index(drop=True)  # type: ignore[assignment]
 
         # Adapt VAE params for this fold's universe size
         n_stocks = len(stock_ids)
@@ -591,6 +628,9 @@ class FullPipeline:
                     returns, trailing_vol, stock_data, fold, device,
                     adapted_params=adapted, T_annee=T_annee,
                     log_dir=tb_dir,
+                    raw_returns_train=train_raw,
+                    window_metadata_train=train_metadata,
+                    strata_train=train_strata,
                 )
                 config_results.append(result)
             except Exception as e:
@@ -630,6 +670,9 @@ class FullPipeline:
         adapted_params: dict[str, Any] | None = None,
         T_annee: int = 10,
         log_dir: str | None = None,
+        raw_returns_train: torch.Tensor | None = None,
+        window_metadata_train: pd.DataFrame | None = None,
+        strata_train: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """
         Evaluate a single HP config on nested validation.
@@ -646,6 +689,9 @@ class FullPipeline:
         :param adapted_params (dict | None): Pre-computed adapted K/r_max/c_min/dropout
         :param T_annee (int): Training history in years (computed by caller)
         :param log_dir (str | None): TensorBoard log directory for this run
+        :param raw_returns_train (torch.Tensor | None): Raw returns for training windows
+        :param window_metadata_train (pd.DataFrame | None): Metadata for training windows
+        :param strata_train (np.ndarray | None): Strata for training windows
 
         :return result (dict): Evaluation results
         """
@@ -683,13 +729,19 @@ class FullPipeline:
             lr_factor=self.config.training.lr_factor,
             device=device,
             log_dir=log_dir,
+            max_pairs=self.config.loss.max_pairs,
+            delta_sync=self.config.loss.delta_sync,
         )
 
         fit_result = trainer.fit(
             train_windows, val_windows,
             max_epochs=self.config.training.max_epochs,
             batch_size=self.config.training.batch_size,
+            raw_returns=raw_returns_train,
+            window_metadata=window_metadata_train,
+            strata=strata_train,
         )
+        trainer.close()
 
         # Measure AU
         AU, kl_per_dim, active_dims = measure_active_units(
@@ -761,7 +813,7 @@ class FullPipeline:
         train_returns = returns.loc[train_start:train_end]
         train_rolling_vol = rolling_vol.loc[train_start:train_end]
 
-        windows, metadata = create_windows(
+        windows, metadata, raw_ret = create_windows(
             train_returns, train_rolling_vol, stock_ids,
             T=self.config.data.window_length,
             stride=1,
@@ -811,6 +863,13 @@ class FullPipeline:
             lr_factor=self.config.training.lr_factor,
             device=device,
             log_dir=tb_dir,
+            max_pairs=self.config.loss.max_pairs,
+            delta_sync=self.config.loss.delta_sync,
+        )
+
+        # Co-movement data: strata from k-means on trailing returns
+        window_strata = self._compute_window_strata(
+            train_returns, stock_ids, metadata,
         )
 
         # Use 90% for train, 10% for validation monitor (but don't stop early)
@@ -820,10 +879,18 @@ class FullPipeline:
         if val_w.shape[0] == 0:
             val_w = train_w[-10:]
 
+        # Split co-movement data to training portion
+        train_raw = raw_ret[:n_train]
+        train_metadata = metadata.iloc[:n_train].reset_index(drop=True)
+        train_strata = window_strata[:n_train]
+
         fit_result = trainer.fit(
             train_w, val_w,
             max_epochs=e_star,
             batch_size=self.config.training.batch_size,
+            raw_returns=train_raw,
+            window_metadata=train_metadata,
+            strata=train_strata,
         )
         t_train = time.monotonic() - t0
         logger.info(
@@ -1001,6 +1068,13 @@ class FullPipeline:
         metrics["AU"] = float(AU)
         metrics["e_star"] = float(e_star)
         metrics["alpha_opt"] = alpha_opt
+
+        # Log post-training metrics to TensorBoard
+        if trainer._tb_writer is not None:
+            trainer._tb_writer.add_scalar(
+                "Training/sharpe", metrics.get("sharpe", 0.0), e_star,
+            )
+        trainer.close()
 
         # Layer 2: realized vs predicted variance + correlation
         if returns_oos.shape[0] > 0:
