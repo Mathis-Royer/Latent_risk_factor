@@ -117,7 +117,7 @@ def test_B_shape(
     """Exposure matrix B should have shape (n_stocks, K)."""
     model, windows, metadata = trained_model_and_data
 
-    trajectories = infer_latent_trajectories(
+    trajectories, _ = infer_latent_trajectories(
         model=model,
         windows=windows,
         window_metadata=metadata,
