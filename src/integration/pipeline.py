@@ -536,6 +536,184 @@ class FullPipeline:
         }
 
     # -------------------------------------------------------------------
+    # Direct training (no walk-forward)
+    # -------------------------------------------------------------------
+
+    def run_direct(
+        self,
+        stock_data: pd.DataFrame,
+        returns: pd.DataFrame,
+        trailing_vol: pd.DataFrame,
+        vix_data: pd.Series | None = None,
+        start_date: str = "2000-01-03",
+        hp_grid: list[dict[str, Any]] | None = None,
+        device: str = "auto",
+        skip_phase_a: bool = True,
+        holdout_start: str | None = None,
+        holdout_fraction: float = 0.1,
+        run_benchmarks: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Direct training mode: single train/holdout split, no walk-forward.
+
+        Same signature as run() plus holdout_start/holdout_fraction. Trains
+        the VAE on [data_start, holdout_start) with early stopping, evaluates
+        on [holdout_start, data_end], optionally runs benchmarks on the same split.
+
+        :param stock_data (pd.DataFrame): Raw stock data (long format)
+        :param returns (pd.DataFrame): Log-returns (dates x stocks)
+        :param trailing_vol (pd.DataFrame): 252-day trailing vol (dates x stocks)
+        :param vix_data (pd.Series | None): VIX daily close for crisis metrics
+        :param start_date (str): Data start date (unused, accepted for API compat)
+        :param hp_grid (list[dict] | None): HP configs. First entry used (or defaults)
+        :param device (str): PyTorch device ("auto", "cpu", "mps", "cuda")
+        :param skip_phase_a (bool): Accepted for API compat (always True)
+        :param holdout_start (str | None): Explicit train/test split date.
+            If None, computed as (1 - holdout_fraction) of the date range.
+        :param holdout_fraction (float): Fraction of dates for holdout (default 0.1)
+        :param run_benchmarks (bool): Run 6 benchmarks on the same split
+
+        :return results (dict): Results dict compatible with run() output
+        """
+        torch_device = (
+            get_optimal_device() if device == "auto" else torch.device(device)
+        )
+
+        # Ensure TensorBoard log directory exists
+        if self.tensorboard_dir is not None:
+            os.makedirs(self.tensorboard_dir, exist_ok=True)
+
+        # Reset accumulated state from any previous run
+        self.vae_results = []
+        self.benchmark_results = {}
+        self.e_stars = []
+        self.fold_schedule = []
+
+        # --- Step 1: Compute train/test split ---
+        all_dates = returns.index
+        if holdout_start is None:
+            split_idx = int(len(all_dates) * (1.0 - holdout_fraction))
+            holdout_start_ts: pd.Timestamp = pd.Timestamp(all_dates[split_idx])  # type: ignore[assignment]
+        else:
+            holdout_start_ts = pd.Timestamp(holdout_start)  # type: ignore[assignment]
+
+        train_dates = all_dates[all_dates < holdout_start_ts]
+        test_dates = all_dates[all_dates >= holdout_start_ts]
+
+        if len(train_dates) < self.config.data.window_length:
+            raise ValueError(
+                f"Training period too short: {len(train_dates)} days "
+                f"< window_length {self.config.data.window_length}"
+            )
+        if len(test_dates) == 0:
+            raise ValueError(
+                f"No test data after holdout_start={holdout_start_ts}"
+            )
+
+        _first: pd.Timestamp = pd.Timestamp(str(all_dates[0]))  # type: ignore[assignment]
+        _train_last: pd.Timestamp = pd.Timestamp(str(train_dates[-1]))  # type: ignore[assignment]
+        _test_first: pd.Timestamp = pd.Timestamp(str(test_dates[0]))  # type: ignore[assignment]
+        _test_last: pd.Timestamp = pd.Timestamp(str(test_dates[-1]))  # type: ignore[assignment]
+
+        data_start = str(_first.date())
+        train_end = str(_train_last.date())
+        oos_start = str(_test_first.date())
+        oos_end = str(_test_last.date())
+
+        logger.info(
+            "Direct training mode: train [%s, %s] (%d days), "
+            "test [%s, %s] (%d days)",
+            data_start, train_end, len(train_dates),
+            oos_start, oos_end, len(test_dates),
+        )
+
+        # --- Step 2: Build synthetic fold ---
+        fold: dict[str, object] = {
+            "fold_id": 0,
+            "train_start": data_start,
+            "train_end": train_end,
+            "val_start": train_end,
+            "oos_start": oos_start,
+            "oos_end": oos_end,
+            "is_holdout": False,
+        }
+        self.fold_schedule = [fold]
+
+        # --- Step 3: HP config ---
+        if hp_grid and len(hp_grid) > 0:
+            hp_config = hp_grid[0]
+            if len(hp_grid) > 1:
+                logger.info(
+                    "Direct mode: using first HP config from grid (%d configs provided)",
+                    len(hp_grid),
+                )
+        else:
+            hp_config = {
+                "mode": self.config.loss.mode,
+                "learning_rate": self.config.training.learning_rate,
+                "alpha": 1.0,
+            }
+
+        # --- Step 4: Compute rolling vol ---
+        rolling_vol = compute_rolling_realized_vol(returns, rolling_window=21)
+
+        # --- Step 5: Train with early stopping ---
+        e_star = self.config.training.max_epochs
+
+        state_bag: dict[str, Any] = {}
+        vae_metrics, w_vae = self._run_single_fold(
+            fold, returns, trailing_vol, rolling_vol, stock_data,
+            vix_data, hp_config, e_star, torch_device,
+            use_early_stopping=True,
+            _state_bag=state_bag,
+        )
+        self.record_vae_result(0, vae_metrics, e_star)
+
+        # --- Step 6: Benchmarks (optional) ---
+        if run_benchmarks:
+            for bench_name, bench_cls in BENCHMARK_CLASSES.items():
+                bench_metrics = self._run_benchmark_fold(
+                    bench_name, bench_cls, fold, returns, trailing_vol,
+                    None, True,
+                )
+                self.record_benchmark_result(bench_name, 0, bench_metrics)
+
+        # --- Step 7: Generate report ---
+        vae_df = aggregate_fold_metrics(self.vae_results)
+        bench_dfs: dict[str, pd.DataFrame] = {
+            name: aggregate_fold_metrics(results_list)
+            for name, results_list in self.benchmark_results.items()
+        }
+        report = generate_report(
+            vae_df, bench_dfs, self.e_stars,
+            fold_crisis_fractions=None,
+        )
+
+        logger.info(
+            "Direct training complete. Sharpe=%.3f, AU=%s",
+            vae_metrics.get("sharpe", 0.0),
+            vae_metrics.get("AU", "?"),
+        )
+
+        # --- Step 8: Return results (same keys as run() + extras) ---
+        return {
+            "fold_schedule": self.fold_schedule,
+            "vae_results": self.vae_results,
+            "benchmark_results": self.benchmark_results,
+            "e_stars": self.e_stars,
+            "report": report,
+            "holdout": None,
+            # Direct-mode extras
+            "direct_mode": True,
+            "state": state_bag,
+            "weights": w_vae,
+            "holdout_start": str(holdout_start_ts.date()),
+            "train_end": train_end,
+            "oos_start": oos_start,
+            "oos_end": oos_end,
+        }
+
+    # -------------------------------------------------------------------
     # Phase A: HP selection
     # -------------------------------------------------------------------
 
@@ -776,6 +954,7 @@ class FullPipeline:
         e_star: int,
         device: torch.device,
         use_early_stopping: bool = False,
+        _state_bag: dict[str, Any] | None = None,
     ) -> tuple[dict[str, float], np.ndarray]:
         """
         Run Phase B for a single fold: train → infer → risk model → portfolio → metrics.
@@ -898,6 +1077,12 @@ class FullPipeline:
             fold_id, e_star, t_train, fit_result["best_epoch"],
         )
 
+        if _state_bag is not None:
+            _state_bag["fit_result"] = fit_result
+            _state_bag["model_state_dict"] = {
+                k: v.cpu().clone() for k, v in model.state_dict().items()
+            }
+
         # 3. Infer latent trajectories → B
         logger.info("  [Fold %d] Inference: extracting latent profiles...", fold_id)
         trajectories = infer_latent_trajectories(
@@ -923,6 +1108,14 @@ class FullPipeline:
 
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
+
+        if _state_bag is not None:
+            _state_bag["B"] = B
+            _state_bag["B_A"] = B_A
+            _state_bag["inferred_stock_ids"] = inferred_stock_ids
+            _state_bag["AU"] = AU
+            _state_bag["active_dims"] = active_dims
+            _state_bag["kl_per_dim"] = kl_per_dim
 
         # 5. Dual rescaling
         # Build universe snapshots for estimation rescaling
@@ -983,6 +1176,12 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
+        if _state_bag is not None:
+            _state_bag["risk_model"] = risk_model
+            _state_bag["Sigma_z"] = Sigma_z
+            _state_bag["z_hat"] = z_hat
+            _state_bag["B_A_port"] = B_A_port
+
         logger.info(
             "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d)",
             fold_id, AU, B_A_port.shape[0], B_A_port.shape[1],
@@ -1007,6 +1206,11 @@ class FullPipeline:
             entropy_eps=pc.entropy_eps,
         )
         alpha_opt = select_operating_alpha(frontier)
+
+        if _state_bag is not None:
+            _state_bag["alpha_opt"] = alpha_opt
+            _state_bag["frontier"] = frontier
+
         logger.info(
             "  [Fold %d] Frontier done (%.1fs), alpha*=%.3f. Final SCA (%d starts)...",
             fold_id, time.monotonic() - t_port, alpha_opt, pc.n_starts,
