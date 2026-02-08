@@ -32,7 +32,6 @@ from src.data_pipeline.features import compute_rolling_realized_vol
 from src.inference.active_units import (
     compute_au_max_stat,
     filter_exposure_matrix,
-    measure_active_units,
     truncate_active_dims,
 )
 from src.inference.composite import aggregate_profiles, infer_latent_trajectories
@@ -1027,10 +1026,17 @@ class FullPipeline:
         )
         trainer.close()
 
-        # Measure AU
-        AU, kl_per_dim, active_dims = measure_active_units(
-            model, val_windows, device=device,
+        # Measure AU (fused into a single encode pass on val_windows)
+        _, kl_per_dim = infer_latent_trajectories(
+            model, val_windows,
+            window_metadata=metadata.iloc[:len(val_windows)],
+            batch_size=self.config.inference.batch_size,
+            device=device,
+            compute_kl=True,
         )
+        assert kl_per_dim is not None
+        active_mask = kl_per_dim > self.config.inference.au_threshold
+        AU = int(active_mask.sum())
 
         # Release GPU memory after Phase A eval
         clear_device_cache(device)
@@ -1201,20 +1207,23 @@ class FullPipeline:
             }
             _state_bag["vae_info"] = info
 
-        # 3. Infer latent trajectories → B
-        logger.info("  [Fold %d] Inference: extracting latent profiles...", fold_id)
-        trajectories = infer_latent_trajectories(
+        # 3. Infer latent trajectories → B (+ KL per dim in same pass)
+        logger.info("  [Fold %d] Inference + AU measurement (single pass)...", fold_id)
+        trajectories, kl_per_dim = infer_latent_trajectories(
             model, windows, metadata,
             batch_size=self.config.inference.batch_size,
             device=device,
+            compute_kl=True,
         )
         B, inferred_stock_ids = aggregate_profiles(trajectories, method="mean")
 
-        # 4. Measure AU and truncate
-        AU, kl_per_dim, active_dims = measure_active_units(
-            model, windows, device=device,
-            au_threshold=self.config.inference.au_threshold,
-        )
+        # 4. Derive AU from pre-computed KL (no extra forward pass)
+        assert kl_per_dim is not None
+        active_mask = kl_per_dim > self.config.inference.au_threshold
+        active_dims_unsorted = np.where(active_mask)[0]
+        sorted_order = np.argsort(-kl_per_dim[active_dims_unsorted])
+        active_dims = active_dims_unsorted[sorted_order].tolist()
+        AU = len(active_dims)
         au_max = compute_au_max_stat(
             n_obs=train_days,
             r_min=self.config.inference.r_min,
@@ -1236,6 +1245,8 @@ class FullPipeline:
             _state_bag["kl_per_dim"] = kl_per_dim
 
         # 5. Dual rescaling
+        logger.info("  [Fold %d] Dual rescaling (%d stocks, %d dates)...",
+                     fold_id, n_stocks, len(train_returns.index))
         # Build universe snapshots for estimation rescaling
         train_dates = [str(d.date()) for d in train_returns.index]
         universe_snapshots = {d: inferred_stock_ids for d in train_dates}

@@ -40,23 +40,31 @@ def estimate_factor_returns(
     z_hat_list: list[np.ndarray] = []
     valid_dates: list[str] = []
 
+    # Pre-extract returns as numpy for fast row access
+    ret_matrix = returns.values  # (n_dates, n_stocks)
+    ret_dates = returns.index
+    ret_col_to_idx = {col: j for j, col in enumerate(returns.columns)}
+    # Build date lookup dict (handles both string and Timestamp index)
+    ret_date_to_loc = {str(d) if not isinstance(d, str) else d: i
+                       for i, d in enumerate(ret_dates)}
+
     for date_str in sorted_dates:
         B_t = B_A_by_date[date_str]  # (n_active, AU)
         if B_t.shape[0] < B_t.shape[1]:
-            # Underdetermined: skip this date
             continue
 
-        # Get returns for active stocks
         active_stocks = universe_snapshots.get(date_str, [])
-        if date_str not in returns.index:
+        date_loc = ret_date_to_loc.get(date_str)
+        if date_loc is None:
             continue
 
-        # Match stocks: B_t rows correspond to the same stocks as universe_snapshots
-        available_cols = [s for s in active_stocks if s in returns.columns]
-        if len(available_cols) < B_t.shape[1]:
+        # Vectorized column lookup
+        col_indices = [ret_col_to_idx[s] for s in active_stocks
+                       if s in ret_col_to_idx]
+        if len(col_indices) < B_t.shape[1]:
             continue
 
-        r_t = returns.loc[date_str, available_cols].values.astype(np.float64)
+        r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
         # Handle NaN in returns: drop stocks with NaN
         valid_mask = ~np.isnan(r_t)
@@ -77,7 +85,6 @@ def estimate_factor_returns(
         valid_dates.append(date_str)
 
     if not z_hat_list:
-        # Return empty arrays with correct AU dimension
         AU = next(iter(B_A_by_date.values())).shape[1] if B_A_by_date else 0
         return np.empty((0, AU), dtype=np.float64), []
 
@@ -109,18 +116,27 @@ def compute_residuals(
     """
     residuals_by_stock: dict[int, list[float]] = {sid: [] for sid in stock_ids}
 
+    # Pre-extract returns as numpy for fast access
+    ret_matrix = returns.values
+    ret_dates = returns.index
+    ret_col_to_idx = {col: j for j, col in enumerate(returns.columns)}
+    ret_date_to_loc = {str(d) if not isinstance(d, str) else d: i
+                       for i, d in enumerate(ret_dates)}
+
     for t_idx, date_str in enumerate(dates):
         if date_str not in B_A_by_date:
             continue
 
         B_t = B_A_by_date[date_str]
         active_stocks = universe_snapshots.get(date_str, [])
-        available_cols = [s for s in active_stocks if s in returns.columns]
+        available_cols = [s for s in active_stocks if s in ret_col_to_idx]
 
-        if date_str not in returns.index:
+        date_loc = ret_date_to_loc.get(date_str)
+        if date_loc is None:
             continue
 
-        r_t = returns.loc[date_str, available_cols].values.astype(np.float64)
+        col_indices = [ret_col_to_idx[s] for s in available_cols]
+        r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
         # ε_{i,t} = r_{i,t} - B̃_{A,i,t} ẑ_t
         predicted = B_t[:len(available_cols)] @ z_hat[t_idx]

@@ -23,28 +23,37 @@ def infer_latent_trajectories(
     window_metadata: pd.DataFrame,
     batch_size: int = 512,
     device: torch.device | None = None,
-) -> dict[int, np.ndarray]:
+    compute_kl: bool = False,
+) -> tuple[dict[int, np.ndarray], np.ndarray | None]:
     """
     Forward pass (encode only, no sampling) for all windows.
 
     model.eval() + torch.no_grad() — inference only.
-    Uses model.encode(x) which returns mu directly.
+    Optionally computes marginal KL per dimension in the same pass
+    (avoids a second forward pass for AU measurement).
 
     :param model (VAEModel): Trained VAE model
     :param windows (torch.Tensor): All windows (N_windows, T, F)
     :param window_metadata (pd.DataFrame): Must contain 'stock_id' column
     :param batch_size (int): Batch size for inference
     :param device (torch.device | None): Device for computation
+    :param compute_kl (bool): Also compute KL per dimension (for AU measurement)
 
     :return trajectories (dict): stock_id (int) → ndarray (n_windows_for_stock, K)
+    :return kl_per_dim (np.ndarray | None): Marginal KL per dimension (K,), or None
     """
     if device is None:
         device = next(model.parameters()).device
 
     model.eval()
     N = windows.shape[0]
+    K = model.K
     all_mu: list[np.ndarray] = []
     n_batches = (N + batch_size - 1) // batch_size
+
+    # KL accumulator (if requested)
+    sum_kl = torch.zeros(K, device=device, dtype=torch.float32) if compute_kl else None
+    n_samples = 0
 
     # AMP autocast: 2-3x faster on CUDA/MPS Tensor Cores, no-op on CPU
     _use_amp = device.type in ("cuda", "mps")
@@ -64,8 +73,19 @@ def infer_latent_trajectories(
         for start in batch_iter:
             end = min(start + batch_size, N)
             x = windows[start:end].to(device, non_blocking=True)
-            mu = model.encode(x)  # (batch, K), deterministic
-            all_mu.append(mu.float().cpu().numpy())  # ensure float32 output
+
+            if compute_kl:
+                # Use encoder directly to get both mu and log_var
+                x_enc = x.transpose(1, 2)  # (B, F, T)
+                mu, log_var = model.encoder(x_enc)
+                all_mu.append(mu.float().cpu().numpy())
+                # Accumulate KL: 0.5 * (μ² + exp(lv) - lv - 1)
+                kl_batch = 0.5 * (mu.float() ** 2 + torch.exp(log_var.float()) - log_var.float() - 1.0)
+                sum_kl += kl_batch.sum(dim=0)  # type: ignore[union-attr]
+                n_samples += kl_batch.shape[0]
+            else:
+                mu = model.encode(x)  # (batch, K), deterministic
+                all_mu.append(mu.float().cpu().numpy())
 
     mu_all = np.concatenate(all_mu, axis=0)  # (N_windows, K)
 
@@ -78,7 +98,11 @@ def infer_latent_trajectories(
         mask = stock_ids_arr == sid
         trajectories[int(sid)] = mu_all[mask]
 
-    return trajectories
+    kl_per_dim: np.ndarray | None = None
+    if sum_kl is not None and n_samples > 0:
+        kl_per_dim = (sum_kl / n_samples).cpu().numpy()
+
+    return trajectories, kl_per_dim
 
 
 def aggregate_profiles(

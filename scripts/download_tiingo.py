@@ -92,6 +92,11 @@ EXCHANGE_CODE_MAP: dict[str, int] = {
 REQUESTS_PER_BATCH = 45
 BATCH_SLEEP_SECONDS = 3700  # ~61.7 minutes between batches of 45
 
+# Consecutive error backoff: if N errors in a row, likely soft rate limit
+CONSECUTIVE_ERROR_BACKOFF_BASE = 5.0    # seconds, doubles each consecutive error
+CONSECUTIVE_ERROR_BACKOFF_MAX = 120.0   # cap at 2 minutes
+CONSECUTIVE_ERROR_SOFT_LIMIT = 5        # after 5 consecutive errors, treat as soft rate limit
+
 
 # ---------------------------------------------------------------------------
 # Key Rotator
@@ -612,6 +617,7 @@ def phase_prices(
     all_work = [(t, "full") for t in to_download] + [(t, "update") for t in to_update]
 
     processed = 0
+    consecutive_errors = 0
 
     for i, (ticker, mode) in enumerate(all_work):
         if key_rotator.active_count == 0:
@@ -694,15 +700,39 @@ def phase_prices(
                     key_rotator.mark_rate_limited(retry_key)
                 continue
             # Record use of retry key
+            consecutive_errors = 0
             if retry_key is not None:
                 key_rotator.record_use(retry_key)
 
         elif status == "error":
+            consecutive_errors += 1
             progress.mark_failed(ticker, "request_error")
+
+            if consecutive_errors >= CONSECUTIVE_ERROR_SOFT_LIMIT:
+                # Likely soft rate limit — long pause then reset counter
+                logger.warning(
+                    "%d consecutive errors — likely soft rate limit. "
+                    "Pausing %.0f minutes before resuming...",
+                    consecutive_errors, BATCH_SLEEP_SECONDS / 60,
+                )
+                time.sleep(BATCH_SLEEP_SECONDS)
+                consecutive_errors = 0
+            else:
+                # Exponential backoff: 5s, 10s, 20s, 40s (capped at 120s)
+                delay = min(
+                    CONSECUTIVE_ERROR_BACKOFF_BASE * (2 ** (consecutive_errors - 1)),
+                    CONSECUTIVE_ERROR_BACKOFF_MAX,
+                )
+                logger.info(
+                    "Consecutive error #%d — backing off %.0fs",
+                    consecutive_errors, delay,
+                )
+                time.sleep(delay)
             continue
 
         elif status == "ok":
             # Record successful use of key
+            consecutive_errors = 0
             key_rotator.record_use(api_key)
 
         # Process result

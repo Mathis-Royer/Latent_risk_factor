@@ -66,32 +66,47 @@ def rescale_estimation(
 
     :return B_A_by_date (dict): date_str → B_A_t (n_active_t, AU)
     """
-    # Build stock_id → index mapping
     sid_to_idx = {sid: i for i, sid in enumerate(stock_ids)}
+
+    # Pre-extract the vol columns that exist, as a numpy matrix for fast lookup
+    available_sids = [sid for sid in stock_ids if sid in trailing_vol.columns]
+    if not available_sids:
+        return {}
+    vol_sub = trailing_vol[available_sids]  # DataFrame: (dates, n_available)
+    vol_matrix = vol_sub.values              # numpy: (n_dates, n_available)
+    vol_dates = vol_sub.index
+    vol_sid_to_col = {sid: j for j, sid in enumerate(available_sids)}
+    # Build date lookup dict once (handles both string and Timestamp index)
+    vol_date_to_loc = {str(d) if not isinstance(d, str) else d: i
+                       for i, d in enumerate(vol_dates)}
 
     B_A_by_date: dict[str, np.ndarray] = {}
 
     for date_str, active_stocks in universe_snapshots.items():
-        # Get indices and vols for active stocks
         active_indices = [sid_to_idx[s] for s in active_stocks if s in sid_to_idx]
         if not active_indices:
             continue
 
-        active_sids = [stock_ids[i] for i in active_indices]
-
-        # Get trailing vols at this date
-        if date_str not in trailing_vol.index:
+        # Fast date lookup via dict
+        date_loc = vol_date_to_loc.get(date_str)
+        if date_loc is None:
             continue
 
-        vols = np.array([
-            trailing_vol.loc[date_str, sid]
-            if sid in trailing_vol.columns else np.nan
-            for sid in active_sids
-        ], dtype=np.float64)
+        # Vectorized vol extraction for all active stocks at this date
+        col_indices = [vol_sid_to_col[stock_ids[i]] for i in active_indices
+                       if stock_ids[i] in vol_sid_to_col]
+        date_row = vol_matrix[int(date_loc)]  # type: ignore[arg-type]  # (n_available,)
+        if len(col_indices) != len(active_indices):
+            # Some stocks not in vol columns — fallback to NaN for missing
+            vols = np.array([
+                date_row[vol_sid_to_col[stock_ids[i]]]
+                if stock_ids[i] in vol_sid_to_col else np.nan
+                for i in active_indices
+            ], dtype=np.float64)
+        else:
+            vols = date_row[col_indices].astype(np.float64)
 
-        # Impute NaN/zero vols with cross-sectional median (consistent
-        # with rescale_portfolio — keeps all stocks, avoids dimension
-        # mismatch with downstream factor regression)
+        # Impute NaN/zero vols with cross-sectional median
         valid_mask = ~np.isnan(vols) & (vols > 0)
         if valid_mask.sum() < 2:
             continue
@@ -143,17 +158,34 @@ def rescale_portfolio(
 
     # Snap current_date to the most recent valid trading day in the index
     # (fold schedule dates may fall on weekends/holidays)
-    lookup_date = trailing_vol.index.asof(pd.Timestamp(current_date))
+    vol_index = trailing_vol.index
+    try:
+        # Try direct lookup first (exact match)
+        if current_date in vol_index:
+            lookup_date = current_date
+        else:
+            # asof: find most recent valid date <= current_date
+            lookup_date = vol_index.asof(pd.Timestamp(current_date))  # type: ignore[arg-type]
+    except TypeError:
+        # String index vs Timestamp comparison — find nearest by string sort
+        valid_dates = [str(d) for d in vol_index if str(d) <= current_date]
+        if not valid_dates:
+            return B_A[[sid_to_idx[s] for s in universe if s in sid_to_idx]]
+        lookup_date = valid_dates[-1]
+
     if isinstance(lookup_date, float) and np.isnan(lookup_date):
-        # No valid date found — return unscaled exposures
         return B_A[[sid_to_idx[s] for s in universe if s in sid_to_idx]]
 
-    # Get current-date trailing vols
-    vols = np.array([
-        trailing_vol.loc[lookup_date, sid]
-        if sid in trailing_vol.columns else np.nan
-        for sid in active_sids
-    ], dtype=np.float64)
+    # Vectorized vol extraction
+    available_sids = [sid for sid in active_sids if sid in trailing_vol.columns]
+    if not available_sids:
+        return B_A[[sid_to_idx[s] for s in universe if s in sid_to_idx]]
+
+    vol_row = trailing_vol.loc[lookup_date, available_sids]
+    vols = np.full(len(active_sids), np.nan, dtype=np.float64)
+    sid_lookup = {sid: j for j, sid in enumerate(active_sids)}
+    for sid in available_sids:
+        vols[sid_lookup[sid]] = float(vol_row[sid])  # type: ignore[arg-type]
 
     # Handle missing vols: use cross-sectional median
     valid_mask = ~np.isnan(vols) & (vols > 0)
