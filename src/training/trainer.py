@@ -16,6 +16,8 @@ import logging
 import math
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 from src.utils import get_optimal_device, get_dataloader_kwargs, get_amp_config
 from src.vae.loss import (
+    compute_co_movement_loss,
     compute_loss,
     compute_validation_elbo,
     get_beta_t,
@@ -71,6 +74,8 @@ class VAETrainer:
         device: torch.device | None = None,
         log_dir: str | None = None,
         logging_steps: int = 50,
+        max_pairs: int = 2048,
+        delta_sync: int = 21,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -89,6 +94,8 @@ class VAETrainer:
         :param device (torch.device | None): Device for training
         :param log_dir (str | None): TensorBoard log directory (None to disable)
         :param logging_steps (int): Log to TensorBoard every N training steps (0 to disable step logging)
+        :param max_pairs (int): Maximum number of pairs for co-movement loss
+        :param delta_sync (int): Max date gap for synchronous batching (days)
         """
         self.model = model
         self.loss_mode = loss_mode
@@ -96,6 +103,8 @@ class VAETrainer:
         self.lambda_co_max = lambda_co_max
         self.beta_fixed = beta_fixed
         self.warmup_fraction = warmup_fraction
+        self.max_pairs = max_pairs
+        self.delta_sync = delta_sync
         self.device = device or get_optimal_device()
 
         self.model = self.model.to(self.device)
@@ -174,9 +183,11 @@ class VAETrainer:
             if isinstance(batch_data, (list, tuple)):
                 x = batch_data[0].to(self.device)
                 batch_indices = batch_data[1] if len(batch_data) > 1 else None
+                raw_ret = batch_data[2].to(self.device) if len(batch_data) > 2 else None
             else:
                 x = batch_data.to(self.device)
                 batch_indices = None
+                raw_ret = None
 
             # Get crisis fractions for this batch
             if crisis_fractions is not None and batch_indices is not None:
@@ -196,6 +207,14 @@ class VAETrainer:
             ):
                 x_hat, mu, log_var = self.model(x)
 
+                # Co-movement loss on raw returns (ISD MOD-004: NOT z-scored)
+                co_mov_loss: torch.Tensor | None = None
+                cur_lambda_co = get_lambda_co(epoch, total_epochs, self.lambda_co_max)
+                if raw_ret is not None and cur_lambda_co > 0 and x.shape[0] >= 2:
+                    co_mov_loss = compute_co_movement_loss(
+                        mu, raw_ret, max_pairs=self.max_pairs,
+                    )
+
                 loss, components = compute_loss(
                     x=x,
                     x_hat=x_hat,
@@ -210,6 +229,7 @@ class VAETrainer:
                     lambda_co_max=self.lambda_co_max,
                     beta_fixed=self.beta_fixed,
                     warmup_fraction=self.warmup_fraction,
+                    co_movement_loss=co_mov_loss,
                 )
 
             # Backward pass (with GradScaler if available)
@@ -337,6 +357,9 @@ class VAETrainer:
         max_epochs: int = 100,
         batch_size: int = 256,
         crisis_fractions: torch.Tensor | None = None,
+        raw_returns: torch.Tensor | None = None,
+        window_metadata: pd.DataFrame | None = None,
+        strata: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """
         Full training loop with early stopping and LR scheduling.
@@ -346,22 +369,62 @@ class VAETrainer:
         :param max_epochs (int): Maximum number of epochs
         :param batch_size (int): Batch size
         :param crisis_fractions (torch.Tensor | None): f_c per training window
+        :param raw_returns (torch.Tensor | None): Raw returns per window (N_train, T)
+            for co-movement Spearman computation (ISD MOD-004)
+        :param window_metadata (pd.DataFrame | None): Window metadata with
+            stock_id, start_date, end_date for synchronous batching (INV-010)
+        :param strata (np.ndarray | None): Stratum assignment per window (N_train,)
+            from k-means clustering on trailing returns
 
         :return result (dict): Training results with best_epoch, best_val_elbo, history
         """
         # Create data loaders (auto-tuned workers + pin_memory for device)
         dl_kwargs = get_dataloader_kwargs(self.device)
-        train_dataset = TensorDataset(
-            train_windows,
-            torch.arange(len(train_windows)),
+
+        # Co-movement enabled: CurriculumBatchSampler (INV-010)
+        use_co_movement = (
+            raw_returns is not None
+            and window_metadata is not None
+            and self.lambda_co_max > 0
         )
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=False,
-            **dl_kwargs,  # type: ignore[arg-type]
-        )
+
+        _sampler: CurriculumBatchSampler | None = None
+
+        if use_co_movement:
+            assert raw_returns is not None  # for pyright
+            if strata is None:
+                strata = np.zeros(len(train_windows), dtype=int)
+            _sampler = CurriculumBatchSampler(
+                n_windows=len(train_windows),
+                batch_size=batch_size,
+                window_metadata=window_metadata,
+                strata=strata,
+                delta_sync=self.delta_sync,
+                synchronous=True,
+            )
+            train_dataset = TensorDataset(
+                train_windows,
+                torch.arange(len(train_windows)),
+                raw_returns,
+            )
+            # batch_sampler is mutually exclusive with batch_size/shuffle/drop_last
+            train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=_sampler,
+                **dl_kwargs,  # type: ignore[arg-type]
+            )
+        else:
+            train_dataset = TensorDataset(
+                train_windows,
+                torch.arange(len(train_windows)),
+            )
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                drop_last=False,
+                **dl_kwargs,  # type: ignore[arg-type]
+            )
 
         val_dataset = TensorDataset(val_windows)
         val_loader = DataLoader(
@@ -391,6 +454,11 @@ class VAETrainer:
             # Mode F: disable scheduler/early_stopping during warmup
             if self.loss_mode == "F" and epoch >= warmup_epochs:
                 self.scheduler.mode_f_warmup = False
+
+            # INV-010: switch batching mode per curriculum phase
+            if _sampler is not None:
+                lambda_co = get_lambda_co(epoch, max_epochs, self.lambda_co_max)
+                _sampler.set_synchronous(lambda_co > 0)
 
             # Train one epoch
             train_metrics = self.train_epoch(
@@ -442,10 +510,9 @@ class VAETrainer:
         if progress_bar is not None:
             progress_bar.close()
 
-        # Flush and close TensorBoard writer
+        # Flush TensorBoard (caller is responsible for close() after post-training logging)
         if self._tb_writer is not None:
             self._tb_writer.flush()
-            self._tb_writer.close()
 
         # If loop completed without early stopping, restore best
         if not self.early_stopping.stopped:
@@ -490,6 +557,16 @@ class VAETrainer:
         for key, tag in tag_map.items():
             if key in metrics:
                 self._tb_writer.add_scalar(tag, metrics[key], step)
+
+    def close(self) -> None:
+        """
+        Flush and close TensorBoard writer (idempotent).
+        Call after any post-training logging is done.
+        """
+        if self._tb_writer is not None:
+            self._tb_writer.flush()
+            self._tb_writer.close()
+            self._tb_writer = None
 
     def _compute_batch_au(
         self,

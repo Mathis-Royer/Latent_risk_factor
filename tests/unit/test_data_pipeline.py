@@ -150,7 +150,7 @@ class TestWindowing:
         vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
         stock_ids = list(returns_df.columns[:5])
 
-        windows, _ = create_windows(
+        windows, _, _ = create_windows(
             returns_df, vol_df, stock_ids, T=504, stride=252
         )
 
@@ -174,7 +174,7 @@ class TestWindowing:
         vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
         stock_ids = list(returns_df.columns[:5])
 
-        windows, metadata = create_windows(
+        windows, metadata, _ = create_windows(
             returns_df, vol_df, stock_ids, T=504, stride=252
         )
 
@@ -206,7 +206,7 @@ class TestWindowing:
             index=dates,
         )
 
-        windows, _ = create_windows(
+        windows, _, _ = create_windows(
             returns_df, vol_df, [1], T=504, stride=1, max_zero_frac=1.0
         )
 
@@ -241,10 +241,10 @@ class TestWindowing:
             index=dates,
         )
 
-        windows_normal, _ = create_windows(
+        windows_normal, _, _ = create_windows(
             returns_df, vol_df, [1], T=504, stride=1
         )
-        windows_sparse, _ = create_windows(
+        windows_sparse, _, _ = create_windows(
             returns_df, vol_df, [2], T=504, stride=1
         )
 

@@ -48,7 +48,7 @@ def create_windows(
     stride: int = 1,
     sigma_min: float = 1e-8,
     max_zero_frac: float = 0.20,
-) -> tuple[torch.Tensor, pd.DataFrame]:
+) -> tuple[torch.Tensor, pd.DataFrame, torch.Tensor]:
     """
     Create sliding windows from returns and volatility data.
 
@@ -69,8 +69,11 @@ def create_windows(
 
     :return windows (torch.Tensor): Shape (N, T, F), z-scored windows
     :return metadata (pd.DataFrame): Columns: stock_id, start_date, end_date
+    :return raw_returns (torch.Tensor): Shape (N, T), NaN-cleaned raw returns
+        (before z-scoring) for co-movement loss Spearman computation
     """
     all_windows: list[np.ndarray] = []
+    all_raw_returns: list[np.ndarray] = []
     metadata_records: list[dict[str, object]] = []
 
     dates = returns_df.index
@@ -139,6 +142,9 @@ def create_windows(
         vol_sigma = np.maximum(vol_sigma, sigma_min)
         vol_zscore = (vol_clean - vol_mu) / vol_sigma
 
+        # Store raw returns before z-scoring (for co-movement Spearman)
+        all_raw_returns.append(ret_clean.astype(np.float32))
+
         # Stack features: (n_valid, T, F=2)
         stacked = np.stack([ret_zscore, vol_zscore], axis=-1).astype(np.float32)
         all_windows.append(stacked)
@@ -153,13 +159,15 @@ def create_windows(
 
     if not all_windows:
         windows = torch.zeros(0, T, 2, dtype=torch.float32)
+        raw_returns = torch.zeros(0, T, dtype=torch.float32)
         metadata = pd.DataFrame(
             columns=["stock_id", "start_date", "end_date"]
         )
-        return windows, metadata
+        return windows, metadata, raw_returns
 
     # Concatenate all stocks: (N_total, T, F)
     windows = torch.from_numpy(np.concatenate(all_windows, axis=0))
+    raw_returns = torch.from_numpy(np.concatenate(all_raw_returns, axis=0))
     metadata = pd.DataFrame(metadata_records)
 
-    return windows, metadata
+    return windows, metadata, raw_returns

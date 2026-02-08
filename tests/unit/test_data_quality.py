@@ -140,9 +140,10 @@ def windows_and_metadata(
     universe_ids: list[int],
 ) -> tuple[torch.Tensor, pd.DataFrame]:
     """Create sliding windows from returns and rolling vol."""
-    return create_windows(
+    windows, metadata, _raw = create_windows(
         returns_df, rolling_vol, universe_ids, T=504, stride=252
     )
+    return windows, metadata
 
 
 # ---------------------------------------------------------------------------
@@ -612,7 +613,7 @@ class TestPipelineAlignment:
         train_returns = returns_df.loc[:train_end]
         train_vol = rolling_vol.loc[:train_end]
 
-        _, metadata = create_windows(
+        _, metadata, _ = create_windows(
             train_returns, train_vol, universe_ids, T=504, stride=252
         )
         if metadata.empty:
@@ -631,10 +632,10 @@ class TestPipelineAlignment:
         universe_ids: list[int],
     ) -> None:
         """Same inputs must produce identical windows."""
-        w1, m1 = create_windows(
+        w1, m1, _ = create_windows(
             returns_df, rolling_vol, universe_ids, T=504, stride=252
         )
-        w2, m2 = create_windows(
+        w2, m2, _ = create_windows(
             returns_df, rolling_vol, universe_ids, T=504, stride=252
         )
 
@@ -857,10 +858,11 @@ def tiingo_windows(
     tiingo_universe: list[int],
 ) -> tuple[torch.Tensor, pd.DataFrame]:
     """Create sliding windows from Tiingo data."""
-    return create_windows(
+    windows, metadata, _raw = create_windows(
         tiingo_returns, tiingo_rolling_vol, tiingo_universe,
         T=504, stride=252,
     )
+    return windows, metadata
 
 
 # ---------------------------------------------------------------------------
