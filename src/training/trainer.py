@@ -20,12 +20,13 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint_utils
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 
-from src.utils import get_optimal_device, get_dataloader_kwargs, get_amp_config
+from src.utils import get_optimal_device, get_dataloader_kwargs, get_amp_config, configure_backend
 from src.vae.loss import (
     compute_co_movement_loss,
     compute_loss,
@@ -77,6 +78,8 @@ class VAETrainer:
         max_pairs: int = 2048,
         delta_sync: int = 21,
         compile_model: bool = False,
+        gradient_accumulation_steps: int = 1,
+        gradient_checkpointing: bool = False,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -97,7 +100,9 @@ class VAETrainer:
         :param logging_steps (int): Log to TensorBoard every N training steps (0 to disable step logging)
         :param max_pairs (int): Maximum number of pairs for co-movement loss
         :param delta_sync (int): Max date gap for synchronous batching (days)
-        :param compile_model (bool): Use torch.compile for CUDA (requires PyTorch 2.x)
+        :param compile_model (bool): Use torch.compile (requires PyTorch 2.x)
+        :param gradient_accumulation_steps (int): Accumulate gradients over N steps
+        :param gradient_checkpointing (bool): Recompute activations on backward to save VRAM
         """
         self.model: VAEModel = model
         self.loss_mode = loss_mode
@@ -107,28 +112,43 @@ class VAETrainer:
         self.warmup_fraction = warmup_fraction
         self.max_pairs = max_pairs
         self.delta_sync = delta_sync
+        self._accumulation_steps = max(1, gradient_accumulation_steps)
+        self._gradient_checkpointing = gradient_checkpointing
         self.device = device or get_optimal_device()
         self._is_cuda = self.device.type == "cuda"
 
+        # Backend flags: cuDNN benchmark, TF32 (CUDA); no-op on MPS/CPU
+        configure_backend(self.device)
+
         self.model = self.model.to(self.device)
 
-        # CUDA-only: auto-tune cuDNN convolution algorithms
+        # torch.compile for op fusion (PyTorch 2.x, CUDA and MPS)
+        if compile_model and hasattr(torch, "compile") and self.device.type in ("cuda", "mps"):
+            try:
+                self.model = torch.compile(self.model)  # type: ignore[assignment]
+                logger.info("torch.compile enabled (%s)", self.device.type)
+            except Exception as e:
+                logger.warning("torch.compile failed, continuing without: %s", e)
+
+        # Optimizer: AdamW (fused on CUDA for 3-5% speedup)
+        optim_kwargs: dict[str, object] = {
+            "lr": learning_rate,
+            "betas": adam_betas,
+            "eps": adam_eps,
+            "weight_decay": weight_decay,
+        }
         if self._is_cuda:
-            torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
-
-        # CUDA-only: torch.compile for op fusion (PyTorch 2.x)
-        if compile_model and self._is_cuda and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model)  # type: ignore[assignment]
-            logger.info("torch.compile enabled (inductor backend)")
-
-        # Optimizer: AdamW with weight_decay
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=learning_rate,
-            betas=adam_betas,
-            eps=adam_eps,
-            weight_decay=weight_decay,
-        )
+            optim_kwargs["fused"] = True
+        try:
+            self.optimizer = torch.optim.AdamW(
+                model.parameters(), **optim_kwargs,  # type: ignore[arg-type]
+            )
+        except TypeError:
+            # fused=True not supported on this PyTorch version
+            optim_kwargs.pop("fused", None)
+            self.optimizer = torch.optim.AdamW(
+                model.parameters(), **optim_kwargs,  # type: ignore[arg-type]
+            )
 
         # Early stopping and scheduler
         self.early_stopping = EarlyStopping(patience=patience)
@@ -184,6 +204,7 @@ class VAETrainer:
         """
         self.model.train()
         _nb = self._is_cuda  # non_blocking transfers (CUDA only)
+        accum = self._accumulation_steps
 
         # Accumulate on-device to avoid per-batch CPU-GPU sync
         epoch_loss = torch.tensor(0.0, device=self.device)
@@ -193,7 +214,10 @@ class VAETrainer:
         epoch_sigma_sq = torch.tensor(0.0, device=self.device)
         n_batches = 0
 
-        for batch_data in train_loader:
+        # Zero gradients before first accumulation window
+        self.optimizer.zero_grad(set_to_none=True)
+
+        for step_in_epoch, batch_data in enumerate(train_loader):
             if isinstance(batch_data, (list, tuple)):
                 x = batch_data[0].to(self.device, non_blocking=_nb)
                 batch_indices = batch_data[1] if len(batch_data) > 1 else None
@@ -222,7 +246,14 @@ class VAETrainer:
                 dtype=self._amp_dtype,
                 enabled=self.use_amp,
             ):
-                x_hat, mu, log_var = self.model(x)
+                if self._gradient_checkpointing:
+                    cp_out = checkpoint_utils.checkpoint(
+                        self.model, x, use_reentrant=False,
+                    )
+                    assert cp_out is not None
+                    x_hat, mu, log_var = cp_out
+                else:
+                    x_hat, mu, log_var = self.model(x)
 
                 # Co-movement loss on raw returns (ISD MOD-004: NOT z-scored)
                 co_mov_loss: torch.Tensor | None = None
@@ -249,21 +280,27 @@ class VAETrainer:
                     co_movement_loss=co_mov_loss,
                 )
 
-            # Backward pass (with GradScaler if available)
-            self.optimizer.zero_grad(set_to_none=True)
+            # Backward pass with gradient accumulation
+            loss_scaled = loss / accum
             if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.scaler.scale(loss_scaled).backward()
             else:
-                loss.backward()
-                self.optimizer.step()
+                loss_scaled.backward()
 
-            # Clamp log_sigma_sq after optimizer step
-            with torch.no_grad():
-                self.model.log_sigma_sq.clamp_(
-                    self._log_sigma_sq_min, self._log_sigma_sq_max,
-                )
+            # Optimizer step every `accum` mini-batches
+            if (step_in_epoch + 1) % accum == 0:
+                if self.scaler is not None:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+
+                # Clamp log_sigma_sq after optimizer step
+                with torch.no_grad():
+                    self.model.log_sigma_sq.clamp_(
+                        self._log_sigma_sq_min, self._log_sigma_sq_max,
+                    )
 
             # Accumulate metrics (tensor += tensor, stays on device — no sync)
             epoch_loss += components["total"]
@@ -304,6 +341,19 @@ class VAETrainer:
                         loss=f"{float(epoch_loss / n_batches):.4f}",
                         epoch=f"{epoch + 1}/{total_epochs}",
                     )
+
+        # Flush leftover accumulated gradients (when n_batches % accum != 0)
+        if n_batches > 0 and n_batches % accum != 0:
+            if self.scaler is not None:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.no_grad():
+                self.model.log_sigma_sq.clamp_(
+                    self._log_sigma_sq_min, self._log_sigma_sq_max,
+                )
 
         n_batches = max(1, n_batches)
 

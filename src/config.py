@@ -268,6 +268,11 @@ class TrainingConfig:
     :param n_strata (int): Number of strata for synchronous batching
     :param curriculum_phase1_frac (float): Fraction of epochs for Phase 1
     :param curriculum_phase2_frac (float): Fraction of epochs for Phase 2
+    :param gradient_accumulation_steps (int): Accumulate gradients over N steps
+        before optimizer update. Simulates batch_size * N effective batch on
+        memory-constrained GPUs. Default 1 (no accumulation).
+    :param gradient_checkpointing (bool): Trade compute for VRAM by recomputing
+        activations during backward pass. Saves ~20% VRAM at ~5% speed cost.
     """
 
     max_epochs: int = 100
@@ -282,6 +287,8 @@ class TrainingConfig:
     n_strata: int = 15
     curriculum_phase1_frac: float = 0.30
     curriculum_phase2_frac: float = 0.30
+    gradient_accumulation_steps: int = 1
+    gradient_checkpointing: bool = False
 
     def __post_init__(self) -> None:
         _validate_range("max_epochs", self.max_epochs, default=100, lo=1)
@@ -297,6 +304,8 @@ class TrainingConfig:
                         default=0.30, lo=0)
         _validate_range("curriculum_phase2_frac", self.curriculum_phase2_frac,
                         default=0.30, lo=0)
+        _validate_range("gradient_accumulation_steps",
+                        self.gradient_accumulation_steps, default=1, lo=1)
         total_curriculum = self.curriculum_phase1_frac + self.curriculum_phase2_frac
         if total_curriculum > 1.0:
             raise ValueError(

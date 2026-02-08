@@ -67,7 +67,7 @@ from src.walk_forward.metrics import (
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
 )
-from src.utils import get_optimal_device
+from src.utils import get_optimal_device, configure_backend, clear_device_cache
 from src.walk_forward.phase_a import select_best_config
 from src.walk_forward.phase_b import check_training_sanity, determine_e_star
 from src.walk_forward.selection import aggregate_fold_metrics, summary_statistics
@@ -388,6 +388,7 @@ class FullPipeline:
         :return results (dict): Complete walk-forward results + report
         """
         torch_device = get_optimal_device() if device == "auto" else torch.device(device)
+        configure_backend(torch_device)
         if hp_grid is None and not skip_phase_a:
             hp_grid = self._default_hp_grid()
 
@@ -578,6 +579,7 @@ class FullPipeline:
         torch_device = (
             get_optimal_device() if device == "auto" else torch.device(device)
         )
+        configure_backend(torch_device)
 
         # Ensure TensorBoard log directory exists
         if self.tensorboard_dir is not None:
@@ -909,6 +911,8 @@ class FullPipeline:
             log_dir=log_dir,
             max_pairs=self.config.loss.max_pairs,
             delta_sync=self.config.loss.delta_sync,
+            gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
+            gradient_checkpointing=self.config.training.gradient_checkpointing,
         )
 
         fit_result = trainer.fit(
@@ -925,6 +929,9 @@ class FullPipeline:
         AU, kl_per_dim, active_dims = measure_active_units(
             model, val_windows, device=device,
         )
+
+        # Release GPU memory after Phase A eval
+        clear_device_cache(device)
 
         return {
             **hp,
@@ -1044,6 +1051,8 @@ class FullPipeline:
             log_dir=tb_dir,
             max_pairs=self.config.loss.max_pairs,
             delta_sync=self.config.loss.delta_sync,
+            gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
+            gradient_checkpointing=self.config.training.gradient_checkpointing,
         )
 
         # Co-movement data: strata from k-means on trailing returns
@@ -1313,6 +1322,13 @@ class FullPipeline:
             returns_aligned, B_A_port, z_hat,
         )
         metrics["explanatory_power"] = ep
+
+        # GPU memory logging + cleanup after fold
+        if device.type == "cuda":
+            peak_mb = torch.cuda.max_memory_allocated(device) / 1e6
+            logger.info("  GPU peak memory this fold: %.0f MB", peak_mb)
+            torch.cuda.reset_peak_memory_stats(device)
+        clear_device_cache(device)
 
         return metrics, w_final
 

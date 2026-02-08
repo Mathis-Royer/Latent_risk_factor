@@ -46,7 +46,14 @@ def infer_latent_trajectories(
     all_mu: list[np.ndarray] = []
     n_batches = (N + batch_size - 1) // batch_size
 
-    with torch.no_grad():
+    # AMP autocast: 2-3x faster on CUDA/MPS Tensor Cores, no-op on CPU
+    _use_amp = device.type in ("cuda", "mps")
+
+    with torch.no_grad(), torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
+        device_type=device.type,
+        dtype=torch.float16,
+        enabled=_use_amp,
+    ):
         batch_iter = tqdm(
             range(0, N, batch_size),
             total=n_batches,
@@ -56,9 +63,9 @@ def infer_latent_trajectories(
 
         for start in batch_iter:
             end = min(start + batch_size, N)
-            x = windows[start:end].to(device)
+            x = windows[start:end].to(device, non_blocking=True)
             mu = model.encode(x)  # (batch, K), deterministic
-            all_mu.append(mu.cpu().numpy())
+            all_mu.append(mu.float().cpu().numpy())  # ensure float32 output
 
     mu_all = np.concatenate(all_mu, axis=0)  # (N_windows, K)
 
