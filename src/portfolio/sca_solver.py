@@ -173,7 +173,9 @@ def solve_sca_subproblem(
     try:
         prob.solve(solver=cp.ECOS, warm_start=True, max_iters=500)
         if prob.status in ("optimal", "optimal_inaccurate") and w.value is not None:
-            return np.array(w.value).flatten()
+            result = np.array(w.value).flatten()
+            if not np.any(np.isnan(result)):
+                return result
     except cp.SolverError:
         pass
 
@@ -181,7 +183,9 @@ def solve_sca_subproblem(
     try:
         prob.solve(solver=cp.SCS, warm_start=True, max_iters=5000)
         if prob.status in ("optimal", "optimal_inaccurate") and w.value is not None:
-            return np.array(w.value).flatten()
+            result = np.array(w.value).flatten()
+            if not np.any(np.isnan(result)):
+                return result
     except cp.SolverError:
         pass
 

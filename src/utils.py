@@ -46,8 +46,13 @@ def configure_backend(device: torch.device) -> None:
     """
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
-        torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
-        torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
+        # New TF32 API (PyTorch >= 2.9); fall back to legacy if unavailable
+        if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+            torch.backends.cuda.matmul.fp32_precision = "tf32"  # type: ignore[attr-defined]
+            torch.backends.cudnn.conv.fp32_precision = "tf32"  # type: ignore[attr-defined]
+        else:
+            torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
+            torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
         logger.info(
             "CUDA backend configured: cudnn.benchmark=True, TF32 enabled"
         )

@@ -102,12 +102,15 @@ class FullPipeline:
         self,
         config: PipelineConfig | None = None,
         tensorboard_dir: str | None = None,
+        checkpoint_dir: str | None = None,
     ) -> None:
         """
         :param config (PipelineConfig | None): Pipeline configuration
         :param tensorboard_dir (str | None): TensorBoard log directory. If set,
             training metrics are logged to TensorBoard and the dashboard is
             auto-launched in a background process.
+        :param checkpoint_dir (str | None): Directory for model checkpoints.
+            Defaults to 'checkpoints/' if None.
         """
         self.config = config or PipelineConfig()
         self.fold_schedule: list[dict[str, object]] = []
@@ -115,6 +118,97 @@ class FullPipeline:
         self.benchmark_results: dict[str, list[dict[str, float]]] = {}
         self.e_stars: list[int] = []
         self.tensorboard_dir = tensorboard_dir
+        self.checkpoint_dir = checkpoint_dir
+
+    # -------------------------------------------------------------------
+    # Checkpoint save / load
+    # -------------------------------------------------------------------
+
+    def save_checkpoint(
+        self,
+        state_bag: dict[str, Any],
+        fold_info: dict[str, object],
+        metrics: dict[str, float],
+        weights: np.ndarray,
+        checkpoint_dir: str = "checkpoints",
+        tag: str = "latest",
+    ) -> str:
+        """
+        Save model state_dict + metadata to disk after training.
+
+        :param state_bag (dict): Internal state from _run_single_fold
+        :param fold_info (dict): Fold specification (dates, fold_id)
+        :param metrics (dict): Fold metrics
+        :param weights (np.ndarray): Portfolio weights
+        :param checkpoint_dir (str): Output directory
+        :param tag (str): Checkpoint name tag (e.g. 'latest', 'fold_03')
+
+        :return path (str): Path to saved checkpoint
+        """
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        path = os.path.join(checkpoint_dir, f"checkpoint_{tag}.pt")
+
+        checkpoint: dict[str, Any] = {
+            # Model reconstruction
+            "model_state_dict": state_bag.get("model_state_dict", {}),
+            "build_params": state_bag.get("build_params", {}),
+            "vae_info": state_bag.get("vae_info", {}),
+            # Training
+            "fit_result": {
+                k: v for k, v in state_bag.get("fit_result", {}).items()
+                if k != "model"  # Exclude model reference
+            },
+            # Inference
+            "AU": state_bag.get("AU", 0),
+            "active_dims": state_bag.get("active_dims"),
+            # Fold & metrics
+            "fold_info": fold_info,
+            "metrics": metrics,
+            "weights": weights,
+            # Config (serializable fields only)
+            "config": {
+                "data": {
+                    "window_length": self.config.data.window_length,
+                    "n_features": self.config.data.n_features,
+                },
+                "vae": {"K": self.config.vae.K},
+                "seed": self.config.seed,
+            },
+        }
+
+        torch.save(checkpoint, path)
+        logger.info("Checkpoint saved: %s (%.1f MB)", path, os.path.getsize(path) / 1e6)
+        return path
+
+    @staticmethod
+    def load_checkpoint(
+        path: str,
+        device: str = "cpu",
+    ) -> dict[str, Any]:
+        """
+        Load a saved checkpoint and reconstruct the VAE model.
+
+        :param path (str): Path to checkpoint file
+        :param device (str): Device for model loading
+
+        :return checkpoint (dict): Checkpoint with reconstructed 'model' key
+        """
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        build_params = checkpoint.get("build_params", {})
+
+        if build_params:
+            model, info = build_vae(**build_params)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            model.to(device)
+            model.eval()
+            checkpoint["model"] = model
+            checkpoint["vae_info"] = info
+            logger.info(
+                "Model restored from %s (AU=%s, device=%s)",
+                path, checkpoint.get("AU", "?"), device,
+            )
+
+        return checkpoint
 
     def _adapt_vae_params(
         self,
@@ -697,6 +791,13 @@ class FullPipeline:
             vae_metrics.get("AU", "?"),
         )
 
+        # --- Step 7b: Save checkpoint ---
+        ckpt_dir = self.checkpoint_dir or "checkpoints"
+        ckpt_path = self.save_checkpoint(
+            state_bag, fold, vae_metrics, w_vae,
+            checkpoint_dir=ckpt_dir, tag="direct",
+        )
+
         # --- Step 8: Return results (same keys as run() + extras) ---
         return {
             "fold_schedule": self.fold_schedule,
@@ -713,6 +814,7 @@ class FullPipeline:
             "train_end": train_end,
             "oos_start": oos_start,
             "oos_end": oos_end,
+            "checkpoint_path": ckpt_path,
         }
 
     # -------------------------------------------------------------------
@@ -1091,6 +1193,13 @@ class FullPipeline:
             _state_bag["model_state_dict"] = {
                 k: v.cpu().clone() for k, v in model.state_dict().items()
             }
+            _state_bag["build_params"] = {
+                "n": n_stocks, "T": T, "T_annee": T_annee, "F": F, "K": K,
+                "r_max": adapted["r_max"], "c_min": adapted["c_min"],
+                "dropout": adapted["dropout"],
+                "learn_obs_var": (mode != "F"),
+            }
+            _state_bag["vae_info"] = info
 
         # 3. Infer latent trajectories → B
         logger.info("  [Fold %d] Inference: extracting latent profiles...", fold_id)
@@ -1152,6 +1261,7 @@ class FullPipeline:
         logger.info("  [Fold %d] Dual rescaling done", fold_id)
 
         # 6. Factor regression → z_hat
+        logger.info("  [Fold %d] Factor regression: B_A(%d dates)...", fold_id, len(train_dates))
         z_hat, valid_dates = estimate_factor_returns(
             B_A_by_date, returns.loc[train_start:train_end],
             universe_snapshots,
@@ -1171,6 +1281,10 @@ class FullPipeline:
         )
 
         # 7. Covariance: Σ_z, D_ε, Σ_assets
+        logger.info(
+            "  [Fold %d] Factor regression done (%d valid dates). Covariance estimation...",
+            fold_id, z_hat.shape[0],
+        )
         Sigma_z = estimate_sigma_z(z_hat)
         D_eps = estimate_d_eps(
             residuals, inferred_stock_ids,
@@ -1243,6 +1357,8 @@ class FullPipeline:
         logger.info("  [Fold %d] SCA done. Cardinality enforcement...", fold_id)
 
         # Cardinality enforcement
+        logger.info("  [Fold %d] Cardinality enforcement (max %d eliminations)...",
+                     fold_id, pc.max_cardinality_elim)
         sca_kwargs = {
             "Sigma_assets": Sigma_assets,
             "B_prime": B_prime_port,

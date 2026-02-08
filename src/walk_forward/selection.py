@@ -47,6 +47,14 @@ def summary_statistics(
         if col not in fold_metrics.columns:
             continue
         values_arr = np.asarray(fold_metrics[col].dropna())
+        if len(values_arr) == 0:
+            stats.append({
+                "metric": col,
+                "mean": float("nan"), "median": float("nan"),
+                "std": float("nan"), "min": float("nan"),
+                "max": float("nan"), "count": 0,
+            })
+            continue
         stats.append({
             "metric": col,
             "mean": float(np.mean(values_arr)),
