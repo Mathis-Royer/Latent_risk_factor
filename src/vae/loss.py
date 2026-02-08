@@ -13,6 +13,7 @@ Reference: ISD Section MOD-004.
 """
 
 import math
+from typing import Any
 
 import torch
 import torch.nn.functional as F_torch
@@ -100,7 +101,7 @@ def compute_loss(
     beta_fixed: float = 1.0,
     warmup_fraction: float = 0.20,
     co_movement_loss: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Complete loss computation for a single batch.
 
@@ -173,16 +174,16 @@ def compute_loss(
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
         total_loss = recon_term + log_norm_term + beta_fixed * L_kl + lambda_co * L_co
 
-    # Monitoring components
-    components = {
-        "recon": L_recon.item(),
-        "kl": L_kl.item(),
-        "co_mov": L_co.item() if isinstance(L_co, torch.Tensor) else float(L_co),
-        "sigma_sq": sigma_sq.item(),
+    # Monitoring components — detached tensors to avoid per-batch GPU sync
+    components: dict[str, Any] = {
+        "recon": L_recon.detach(),
+        "kl": L_kl.detach(),
+        "co_mov": L_co.detach(),
+        "sigma_sq": sigma_sq.detach(),
         "lambda_co": lambda_co,
-        "recon_term": recon_term.item(),
-        "log_norm_term": log_norm_term.item() if isinstance(log_norm_term, torch.Tensor) else float(log_norm_term),
-        "total": total_loss.item(),
+        "recon_term": recon_term.detach(),
+        "log_norm_term": log_norm_term.detach(),
+        "total": total_loss.detach(),
     }
 
     if mode == "F":
@@ -298,20 +299,13 @@ def _batch_spearman(
 
 def _to_ranks(x: torch.Tensor) -> torch.Tensor:
     """
-    Convert each row to ranks (1-based).
+    Convert each row to ranks (1-based) via double argsort.
 
     :param x (torch.Tensor): Values (n_pairs, T)
 
     :return ranks (torch.Tensor): Ranks (n_pairs, T), float
     """
-    # argsort(argsort) gives ranks (0-based, convert to 1-based)
-    sorted_indices = x.argsort(dim=1)
-    ranks = torch.zeros_like(x)
-    batch_idx = torch.arange(x.shape[0], device=x.device).unsqueeze(1).expand_as(x)
-    ranks[batch_idx, sorted_indices] = torch.arange(
-        x.shape[1], device=x.device, dtype=x.dtype,
-    ).unsqueeze(0).expand_as(x)
-    return ranks + 1.0  # 1-based ranks
+    return x.argsort(dim=1).argsort(dim=1).to(x.dtype) + 1.0
 
 
 # ---------------------------------------------------------------------------

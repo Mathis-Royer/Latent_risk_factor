@@ -76,6 +76,7 @@ class VAETrainer:
         logging_steps: int = 50,
         max_pairs: int = 2048,
         delta_sync: int = 21,
+        compile_model: bool = False,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -96,8 +97,9 @@ class VAETrainer:
         :param logging_steps (int): Log to TensorBoard every N training steps (0 to disable step logging)
         :param max_pairs (int): Maximum number of pairs for co-movement loss
         :param delta_sync (int): Max date gap for synchronous batching (days)
+        :param compile_model (bool): Use torch.compile for CUDA (requires PyTorch 2.x)
         """
-        self.model = model
+        self.model: VAEModel = model
         self.loss_mode = loss_mode
         self.gamma = gamma
         self.lambda_co_max = lambda_co_max
@@ -106,8 +108,18 @@ class VAETrainer:
         self.max_pairs = max_pairs
         self.delta_sync = delta_sync
         self.device = device or get_optimal_device()
+        self._is_cuda = self.device.type == "cuda"
 
         self.model = self.model.to(self.device)
+
+        # CUDA-only: auto-tune cuDNN convolution algorithms
+        if self._is_cuda:
+            torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
+
+        # CUDA-only: torch.compile for op fusion (PyTorch 2.x)
+        if compile_model and self._is_cuda and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)  # type: ignore[assignment]
+            logger.info("torch.compile enabled (inductor backend)")
 
         # Optimizer: AdamW with weight_decay
         self.optimizer = torch.optim.AdamW(
@@ -171,31 +183,36 @@ class VAETrainer:
         :return metrics (dict): Epoch-level training metrics
         """
         self.model.train()
+        _nb = self._is_cuda  # non_blocking transfers (CUDA only)
 
-        epoch_loss = 0.0
-        epoch_recon = 0.0
-        epoch_kl = 0.0
-        epoch_co = 0.0
-        epoch_sigma_sq = 0.0
+        # Accumulate on-device to avoid per-batch CPU-GPU sync
+        epoch_loss = torch.tensor(0.0, device=self.device)
+        epoch_recon = torch.tensor(0.0, device=self.device)
+        epoch_kl = torch.tensor(0.0, device=self.device)
+        epoch_co = torch.tensor(0.0, device=self.device)
+        epoch_sigma_sq = torch.tensor(0.0, device=self.device)
         n_batches = 0
 
         for batch_data in train_loader:
             if isinstance(batch_data, (list, tuple)):
-                x = batch_data[0].to(self.device)
+                x = batch_data[0].to(self.device, non_blocking=_nb)
                 batch_indices = batch_data[1] if len(batch_data) > 1 else None
-                raw_ret = batch_data[2].to(self.device) if len(batch_data) > 2 else None
+                raw_ret = batch_data[2].to(self.device, non_blocking=_nb) if len(batch_data) > 2 else None
             else:
-                x = batch_data.to(self.device)
+                x = batch_data.to(self.device, non_blocking=_nb)
                 batch_indices = None
                 raw_ret = None
 
-            # Get crisis fractions for this batch
+            # Get crisis fractions for this batch (already on device if pre-moved)
             if crisis_fractions is not None and batch_indices is not None:
-                cf = crisis_fractions[batch_indices].to(self.device)
+                cf = crisis_fractions[batch_indices]
+                if cf.device != self.device:
+                    cf = cf.to(self.device, non_blocking=_nb)
             elif crisis_fractions is not None:
-                # Assume sequential access, take first B elements
                 B = x.shape[0]
-                cf = crisis_fractions[:B].to(self.device)
+                cf = crisis_fractions[:B]
+                if cf.device != self.device:
+                    cf = cf.to(self.device, non_blocking=_nb)
             else:
                 cf = torch.zeros(x.shape[0], device=self.device)
 
@@ -248,7 +265,7 @@ class VAETrainer:
                     self._log_sigma_sq_min, self._log_sigma_sq_max,
                 )
 
-            # Accumulate metrics
+            # Accumulate metrics (tensor += tensor, stays on device — no sync)
             epoch_loss += components["total"]
             epoch_recon += components["recon"]
             epoch_kl += components["kl"]
@@ -257,47 +274,49 @@ class VAETrainer:
             n_batches += 1
             self._global_step += 1
 
-            # Per-step TensorBoard logging
+            # Per-step TensorBoard logging (sync only when logging)
             if (
                 self._tb_writer is not None
                 and self._logging_steps > 0
                 and self._global_step % self._logging_steps == 0
             ):
                 self._tb_writer.add_scalar(
-                    "Step/loss", components["total"], self._global_step,
+                    "Step/loss", components["total"].item(), self._global_step,
                 )
                 self._tb_writer.add_scalar(
-                    "Step/reconstruction", components["recon"], self._global_step,
+                    "Step/reconstruction", components["recon"].item(), self._global_step,
                 )
                 self._tb_writer.add_scalar(
-                    "Step/kl_divergence", components["kl"], self._global_step,
+                    "Step/kl_divergence", components["kl"].item(), self._global_step,
                 )
                 self._tb_writer.add_scalar(
-                    "Step/co_movement", components["co_mov"], self._global_step,
+                    "Step/co_movement", components["co_mov"].item(), self._global_step,
                 )
                 self._tb_writer.add_scalar(
-                    "Step/sigma_sq", components["sigma_sq"], self._global_step,
+                    "Step/sigma_sq", components["sigma_sq"].item(), self._global_step,
                 )
 
-            # Update shared progress bar (HuggingFace-style: one bar for all steps)
+            # Update shared progress bar (throttle postfix to reduce syncs)
             if progress_bar is not None:
                 progress_bar.update(1)
-                progress_bar.set_postfix(
-                    loss=f"{epoch_loss / n_batches:.4f}",
-                    epoch=f"{epoch + 1}/{total_epochs}",
-                )
+                if n_batches % 10 == 1:
+                    progress_bar.set_postfix(
+                        loss=f"{float(epoch_loss / n_batches):.4f}",
+                        epoch=f"{epoch + 1}/{total_epochs}",
+                    )
 
         n_batches = max(1, n_batches)
 
         # Compute AU on the last batch (approximate monitoring)
         au_count = self._compute_batch_au(mu, log_var)
 
-        metrics = {
-            "train_loss": epoch_loss / n_batches,
-            "train_recon": epoch_recon / n_batches,
-            "train_kl": epoch_kl / n_batches,
-            "train_co": epoch_co / n_batches,
-            "sigma_sq": epoch_sigma_sq / n_batches,
+        # Single sync point: convert GPU accumulators to Python floats
+        metrics: dict[str, float] = {
+            "train_loss": float(epoch_loss / n_batches),
+            "train_recon": float(epoch_recon / n_batches),
+            "train_kl": float(epoch_kl / n_batches),
+            "train_co": float(epoch_co / n_batches),
+            "sigma_sq": float(epoch_sigma_sq / n_batches),
             "AU": au_count,
             "lambda_co": get_lambda_co(epoch, total_epochs, self.lambda_co_max),
             "learning_rate": self.scheduler.get_lr(),
@@ -320,15 +339,16 @@ class VAETrainer:
         :return val_elbo (float): Validation ELBO (lower is better)
         """
         self.model.eval()
-        total_elbo = 0.0
+        _nb = self._is_cuda
+        total_elbo = torch.tensor(0.0, device=self.device)
         n_batches = 0
 
         with torch.no_grad():
             for batch_data in val_loader:
                 if isinstance(batch_data, (list, tuple)):
-                    x = batch_data[0].to(self.device)
+                    x = batch_data[0].to(self.device, non_blocking=_nb)
                 else:
-                    x = batch_data.to(self.device)
+                    x = batch_data.to(self.device, non_blocking=_nb)
 
                 with torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
                     device_type=self._amp_device_type,
@@ -345,10 +365,10 @@ class VAETrainer:
                         log_sigma_sq=self.model.log_sigma_sq,
                     )
 
-                total_elbo += elbo.item()
+                total_elbo += elbo
                 n_batches += 1
 
-        return total_elbo / max(1, n_batches)
+        return float(total_elbo / max(1, n_batches))
 
     def fit(
         self,
@@ -378,6 +398,10 @@ class VAETrainer:
 
         :return result (dict): Training results with best_epoch, best_val_elbo, history
         """
+        # Pre-move crisis_fractions to device (avoids per-batch transfer)
+        if crisis_fractions is not None:
+            crisis_fractions = crisis_fractions.to(self.device)
+
         # Create data loaders (auto-tuned workers + pin_memory for device)
         dl_kwargs = get_dataloader_kwargs(self.device)
 
