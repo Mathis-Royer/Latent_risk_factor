@@ -46,21 +46,29 @@ def measure_active_units(
     N = windows.shape[0]
     K = model.K
 
-    # Accumulate KL components across batches
-    sum_kl_components = torch.zeros(K, device=device)
+    # Accumulate KL components across batches (float32 for numerical precision)
+    sum_kl_components = torch.zeros(K, device=device, dtype=torch.float32)
     n_samples = 0
 
-    with torch.no_grad():
+    # AMP autocast: 2-3x faster on CUDA/MPS Tensor Cores, no-op on CPU
+    _use_amp = device.type in ("cuda", "mps")
+
+    with torch.no_grad(), torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
+        device_type=device.type,
+        dtype=torch.float16,
+        enabled=_use_amp,
+    ):
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
-            x = windows[start:end].to(device)
+            x = windows[start:end].to(device, non_blocking=True)
 
             # Get mu and log_var from encoder
             x_enc = x.transpose(1, 2)  # (B, F, T)
             mu, log_var = model.encoder(x_enc)
 
             # KL per dimension per sample: 0.5 * (μ² + exp(lv) - lv - 1)
-            kl_batch = 0.5 * (mu ** 2 + torch.exp(log_var) - log_var - 1.0)
+            # Cast to float32 for accumulation precision
+            kl_batch = 0.5 * (mu.float() ** 2 + torch.exp(log_var.float()) - log_var.float() - 1.0)
             sum_kl_components += kl_batch.sum(dim=0)
             n_samples += kl_batch.shape[0]
 

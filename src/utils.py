@@ -1,5 +1,5 @@
 """
-Hardware adaptation utilities: device detection, DataLoader kwargs, AMP config.
+Hardware adaptation utilities: device detection, backend config, DataLoader kwargs, AMP config.
 
 Centralizes all platform-specific logic so that the rest of the codebase
 stays hardware-agnostic. Auto-detects the best configuration for the
@@ -31,6 +31,42 @@ def get_optimal_device() -> torch.device:
         return torch.device("cuda")
     logger.info("Device auto-detected: CPU")
     return torch.device("cpu")
+
+
+def configure_backend(device: torch.device) -> None:
+    """
+    Configure global PyTorch backend flags for optimal performance on the given device.
+
+    - CUDA: enable cuDNN auto-tuning, TF32 for matmuls and convolutions
+    - MPS / CPU: no-op (no equivalent flags)
+
+    Call once at pipeline start, before creating models or optimizers.
+
+    :param device (torch.device): Target compute device
+    """
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
+        torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
+        torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
+        logger.info(
+            "CUDA backend configured: cudnn.benchmark=True, TF32 enabled"
+        )
+
+
+def clear_device_cache(device: torch.device) -> None:
+    """
+    Release cached GPU memory for the given device.
+
+    - CUDA: torch.cuda.empty_cache()
+    - MPS: torch.mps.empty_cache() (if available)
+    - CPU: no-op
+
+    :param device (torch.device): Target compute device
+    """
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+        torch.mps.empty_cache()
 
 
 def _shm_available() -> bool:
@@ -76,11 +112,17 @@ def get_dataloader_kwargs(device: torch.device) -> dict[str, object]:
     pin_memory = device.type == "cuda"
     persistent_workers = num_workers > 0
 
-    return {
+    kwargs: dict[str, object] = {
         "num_workers": num_workers,
         "pin_memory": pin_memory,
         "persistent_workers": persistent_workers,
     }
+
+    # Prefetch next batches to overlap CPU→GPU transfer with compute
+    if num_workers > 0:
+        kwargs["prefetch_factor"] = 2
+
+    return kwargs
 
 
 def get_amp_config(device: torch.device) -> dict[str, object]:
