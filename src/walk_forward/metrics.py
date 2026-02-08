@@ -8,9 +8,12 @@ Layer 3: Portfolio quality (entropy, vol, MDD, returns, Sharpe, ...)
 Reference: ISD Section MOD-009 — Sub-task 4.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +173,13 @@ def portfolio_metrics(
     :return metrics (dict): Portfolio performance metrics
     """
     available = [s for s in universe if s in returns_oos.columns]
-    R_oos = returns_oos[available].values
+    R_oos = np.nan_to_num(np.asarray(returns_oos[available].values), nan=0.0)
     w_active = w[:len(available)]
+
+    # Guard against NaN weights (solver failure)
+    if np.any(np.isnan(w_active)):
+        logger.warning("NaN detected in portfolio weights — falling back to equal-weight")
+        w_active = np.ones(len(available)) / len(available)
 
     # Portfolio returns
     port_returns = R_oos @ w_active
