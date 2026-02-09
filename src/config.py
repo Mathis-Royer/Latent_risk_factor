@@ -419,6 +419,9 @@ class PortfolioConfig:
     :param armijo_max_iter (int): Maximum Armijo backtracking steps
     :param max_cardinality_elim (int): Max cardinality elimination rounds
     :param entropy_eps (float): Numerical stability for log in entropy
+    :param cardinality_method (str): Strategy for semi-continuous enforcement.
+        "auto" (best available), "sequential" (original), "gradient" (Taylor approx),
+        "miqp" (single MOSEK MIQP), "two_stage" (DVT §4.7 decomposition)
     :param alpha_grid (list): Grid of alpha values for frontier
     """
 
@@ -439,6 +442,7 @@ class PortfolioConfig:
     armijo_max_iter: int = 20
     max_cardinality_elim: int = 100
     entropy_eps: float = 1e-30
+    cardinality_method: str = "auto"
     alpha_grid: list[float] = field(
         default_factory=lambda: [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
     )
@@ -467,6 +471,9 @@ class PortfolioConfig:
                 "  Suggested     : [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]"
             )
         _validate_pair("w_min", self.w_min, "w_max", self.w_max, strict=True)
+        _validate_in("cardinality_method", self.cardinality_method,
+                     {"auto", "sequential", "gradient", "miqp", "two_stage"},
+                     default="auto")
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@ from src.portfolio.frontier import (
     compute_variance_entropy_frontier,
     select_operating_alpha,
 )
-from src.portfolio.sca_solver import multi_start_optimize, sca_optimize
+from src.portfolio.sca_solver import multi_start_optimize, sca_optimize, _safe_cholesky
 from src.risk_model.covariance import assemble_risk_model, estimate_d_eps, estimate_sigma_z
 from src.risk_model.factor_regression import compute_residuals, estimate_factor_returns
 from src.risk_model.rescaling import rescale_estimation, rescale_portfolio
@@ -145,7 +145,12 @@ class FullPipeline:
         :return path (str): Path to saved checkpoint
         """
         os.makedirs(checkpoint_dir, exist_ok=True)
-        path = os.path.join(checkpoint_dir, f"checkpoint_{tag}.pt")
+        bp = state_bag.get("build_params", {})
+        specs = (
+            f"N{bp.get('n', '?')}_Y{bp.get('T_annee', '?')}"
+            f"_T{bp.get('T', '?')}_K{bp.get('K', '?')}_F{bp.get('F', '?')}"
+        )
+        path = os.path.join(checkpoint_dir, f"checkpoint_{tag}_{specs}.pt")
 
         checkpoint: dict[str, Any] = {
             # Model reconstruction
@@ -153,10 +158,14 @@ class FullPipeline:
             "build_params": state_bag.get("build_params", {}),
             "vae_info": state_bag.get("vae_info", {}),
             # Training
-            "fit_result": {
-                k: v for k, v in state_bag.get("fit_result", {}).items()
-                if k != "model"  # Exclude model reference
-            },
+            "fit_result": (
+                {
+                    k: v for k, v in fit_res.items()
+                    if k != "model"  # Exclude model reference
+                }
+                if (fit_res := state_bag.get("fit_result")) is not None
+                else {}
+            ),
             # Inference
             "AU": state_bag.get("AU", 0),
             "active_dims": state_bag.get("active_dims"),
@@ -465,9 +474,13 @@ class FullPipeline:
         hp_grid: list[dict[str, Any]] | None = None,
         device: str = "auto",
         skip_phase_a: bool = False,
+        pretrained_model: str | None = None,
     ) -> dict[str, Any]:
         """
         Full walk-forward validation + holdout.
+
+        When pretrained_model is a checkpoint path (str), the saved encoder is
+        loaded once and reused for every fold, skipping VAE training entirely.
 
         :param stock_data (pd.DataFrame): Raw stock data (long format)
         :param returns (pd.DataFrame): Log-returns (dates × stocks)
@@ -477,6 +490,9 @@ class FullPipeline:
         :param hp_grid (list[dict] | None): HP grid for Phase A
         :param device (str): PyTorch device
         :param skip_phase_a (bool): Skip Phase A HP selection, use default config
+        :param pretrained_model (str | None): Path to checkpoint file.
+            If None, trains from scratch each fold. If str, loads encoder once
+            and reuses it for all folds (skips training).
 
         :return results (dict): Complete walk-forward results + report
         """
@@ -484,6 +500,26 @@ class FullPipeline:
         configure_backend(torch_device)
         if hp_grid is None and not skip_phase_a:
             hp_grid = self._default_hp_grid()
+
+        # Load pretrained model if checkpoint path provided
+        loaded_model = None
+        if pretrained_model is not None:
+            logger.info("Loading pretrained encoder from: %s", pretrained_model)
+            ckpt = self.load_checkpoint(pretrained_model, device=str(torch_device))
+            loaded_model = ckpt.get("model")
+            if loaded_model is None:
+                raise ValueError(
+                    f"Checkpoint has no model (missing build_params?): {pretrained_model}"
+                )
+            bp = ckpt.get("build_params", {})
+            if bp.get("T") and bp["T"] != self.config.data.window_length:
+                raise ValueError(
+                    f"Checkpoint T={bp['T']} != config T={self.config.data.window_length}"
+                )
+            if bp.get("F") and bp["F"] != self.config.data.n_features:
+                raise ValueError(
+                    f"Checkpoint F={bp['F']} != config F={self.config.data.n_features}"
+                )
 
         # Ensure TensorBoard log directory exists
         if self.tensorboard_dir is not None:
@@ -543,6 +579,7 @@ class FullPipeline:
                 fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, best_config, e_star, torch_device,
                 use_early_stopping=skip_phase_a,
+                pretrained_model=loaded_model,
             )
             self.record_vae_result(fold_id, vae_metrics, e_star)
 
@@ -587,6 +624,7 @@ class FullPipeline:
                 holdout_fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, holdout_config, e_star_holdout, torch_device,
                 use_early_stopping=skip_phase_a,
+                pretrained_model=loaded_model,
             )
             self.record_vae_result(holdout_id, holdout_metrics, e_star_holdout)
 
@@ -646,6 +684,7 @@ class FullPipeline:
         holdout_start: str | None = None,
         holdout_fraction: float = 0.1,
         run_benchmarks: bool = True,
+        pretrained_model: str | None = None,
     ) -> dict[str, Any]:
         """
         Direct training mode: single train/holdout split, no walk-forward.
@@ -653,6 +692,10 @@ class FullPipeline:
         Same signature as run() plus holdout_start/holdout_fraction. Trains
         the VAE on [data_start, holdout_start) with early stopping, evaluates
         on [holdout_start, data_end], optionally runs benchmarks on the same split.
+
+        When pretrained_model is a checkpoint path (str), the saved encoder is
+        loaded and training is skipped entirely. Only the portfolio optimization
+        head (inference → risk model → portfolio) is re-run.
 
         :param stock_data (pd.DataFrame): Raw stock data (long format)
         :param returns (pd.DataFrame): Log-returns (dates x stocks)
@@ -666,6 +709,8 @@ class FullPipeline:
             If None, computed as (1 - holdout_fraction) of the date range.
         :param holdout_fraction (float): Fraction of dates for holdout (default 0.1)
         :param run_benchmarks (bool): Run 6 benchmarks on the same split
+        :param pretrained_model (str | None): Path to checkpoint file.
+            If None, trains from scratch. If str, loads encoder and skips training.
 
         :return results (dict): Results dict compatible with run() output
         """
@@ -752,8 +797,32 @@ class FullPipeline:
         # --- Step 4: Compute rolling vol ---
         rolling_vol = compute_rolling_realized_vol(returns, rolling_window=21)
 
-        # --- Step 5: Train with early stopping ---
+        # --- Step 5: Train (or load pretrained encoder) ---
         e_star = self.config.training.max_epochs
+        loaded_model = None
+
+        if pretrained_model is not None:
+            logger.info("Loading pretrained encoder from: %s", pretrained_model)
+            ckpt = self.load_checkpoint(pretrained_model, device=str(torch_device))
+            loaded_model = ckpt.get("model")
+            if loaded_model is None:
+                raise ValueError(
+                    f"Checkpoint has no model (missing build_params?): {pretrained_model}"
+                )
+            # Validate T/F compatibility
+            bp = ckpt.get("build_params", {})
+            if bp.get("T") and bp["T"] != self.config.data.window_length:
+                raise ValueError(
+                    f"Checkpoint T={bp['T']} != config T={self.config.data.window_length}"
+                )
+            if bp.get("F") and bp["F"] != self.config.data.n_features:
+                raise ValueError(
+                    f"Checkpoint F={bp['F']} != config F={self.config.data.n_features}"
+                )
+            # Preserve original best_epoch for metrics
+            ckpt_fit = ckpt.get("fit_result")
+            if ckpt_fit and isinstance(ckpt_fit, dict):
+                e_star = int(ckpt_fit.get("best_epoch", 0))
 
         state_bag: dict[str, Any] = {}
         vae_metrics, w_vae = self._run_single_fold(
@@ -761,7 +830,16 @@ class FullPipeline:
             vix_data, hp_config, e_star, torch_device,
             use_early_stopping=True,
             _state_bag=state_bag,
+            pretrained_model=loaded_model,
         )
+
+        # When loading from checkpoint, carry over build_params and vae_info
+        # (needed for descriptive checkpoint filenames and metadata)
+        if loaded_model is not None:
+            state_bag.setdefault("build_params", ckpt.get("build_params", {}))
+            state_bag.setdefault("vae_info", ckpt.get("vae_info", {}))
+            state_bag.setdefault("fit_result", ckpt.get("fit_result"))
+
         self.record_vae_result(0, vae_metrics, e_star)
 
         # --- Step 6: Benchmarks (optional) ---
@@ -1071,9 +1149,13 @@ class FullPipeline:
         device: torch.device,
         use_early_stopping: bool = False,
         _state_bag: dict[str, Any] | None = None,
+        pretrained_model: Any = None,
     ) -> tuple[dict[str, float], np.ndarray]:
         """
         Run Phase B for a single fold: train → infer → risk model → portfolio → metrics.
+
+        When pretrained_model is provided, training is skipped and the given model
+        is used directly for inference onward.
 
         :param fold (dict): Fold specification
         :param returns (pd.DataFrame): Log-returns
@@ -1085,6 +1167,7 @@ class FullPipeline:
         :param e_star (int): Number of training epochs
         :param device (torch.device): Compute device
         :param use_early_stopping (bool): Enable early stopping (when Phase A is skipped)
+        :param pretrained_model (Any): Pre-loaded VAEModel to skip training. None = train.
 
         :return metrics (dict): Fold metrics
         :return w (np.ndarray): Portfolio weights
@@ -1123,92 +1206,109 @@ class FullPipeline:
             len(stock_ids), len(train_returns),
         )
 
-        # 2. Build and train VAE for E* epochs (no early stopping for Phase B)
+        # 2. Build and train VAE (or use pretrained model)
         n_stocks = len(stock_ids)
         T = self.config.data.window_length
         F = self.config.data.n_features
-
-        # Compute T_annee from training period and adapt VAE params
         train_days = len(train_returns)
         T_annee = max(1, train_days // 252)
-        adapted = self._adapt_vae_params(n_stocks, T_annee)
-        K = adapted["K"]
 
-        model, info = build_vae(
-            n=n_stocks, T=T, T_annee=T_annee, F=F, K=K,
-            r_max=adapted["r_max"],
-            c_min=adapted["c_min"],
-            dropout=adapted["dropout"],
-            learn_obs_var=(mode != "F"),
-        )
+        trainer: VAETrainer | None = None
 
-        # Phase B: train on full data for E* epochs
-        patience = (
-            self.config.training.patience if use_early_stopping
-            else e_star + 1  # Disable early stopping when E* comes from Phase A
-        )
-        tb_dir = self._tb_log_dir(fold_id, "phase_b")
-        trainer = VAETrainer(
-            model, loss_mode=mode, learning_rate=lr,
-            gamma=self.config.loss.gamma,
-            lambda_co_max=self.config.loss.lambda_co_max,
-            beta_fixed=self.config.loss.beta_fixed,
-            warmup_fraction=self.config.loss.warmup_fraction,
-            patience=patience,
-            lr_patience=self.config.training.lr_patience,
-            lr_factor=self.config.training.lr_factor,
-            device=device,
-            log_dir=tb_dir,
-            max_pairs=self.config.loss.max_pairs,
-            delta_sync=self.config.loss.delta_sync,
-            compile_model=self.config.training.compile_model,
-            gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
-            gradient_checkpointing=self.config.training.gradient_checkpointing,
-        )
+        if pretrained_model is not None:
+            # --- Skip training: use pre-loaded model ---
+            model = pretrained_model
+            model.to(device)
+            model.eval()
+            logger.info(
+                "  [Fold %d] Using pretrained encoder, skipping training.",
+                fold_id,
+            )
+            if _state_bag is not None:
+                _state_bag["fit_result"] = None
+                _state_bag["model_state_dict"] = {
+                    k: v.cpu().clone() for k, v in model.state_dict().items()
+                }
+        else:
+            # --- Train from scratch ---
+            adapted = self._adapt_vae_params(n_stocks, T_annee)
+            K = adapted["K"]
 
-        # Co-movement data: strata from k-means on trailing returns
-        window_strata = self._compute_window_strata(
-            train_returns, stock_ids, metadata,
-        )
+            model, info = build_vae(
+                n=n_stocks, T=T, T_annee=T_annee, F=F, K=K,
+                r_max=adapted["r_max"],
+                c_min=adapted["c_min"],
+                dropout=adapted["dropout"],
+                learn_obs_var=(mode != "F"),
+            )
 
-        # Use 90% for train, 10% for validation monitor (but don't stop early)
-        n_train = int(0.9 * windows.shape[0])
-        train_w = windows[:n_train]
-        val_w = windows[n_train:]
-        if val_w.shape[0] == 0:
-            val_w = train_w[-10:]
+            # Phase B: train on full data for E* epochs
+            patience = (
+                self.config.training.patience if use_early_stopping
+                else e_star + 1  # Disable early stopping when E* comes from Phase A
+            )
+            tb_dir = self._tb_log_dir(fold_id, "phase_b")
+            trainer = VAETrainer(
+                model, loss_mode=mode, learning_rate=lr,
+                gamma=self.config.loss.gamma,
+                lambda_co_max=self.config.loss.lambda_co_max,
+                beta_fixed=self.config.loss.beta_fixed,
+                warmup_fraction=self.config.loss.warmup_fraction,
+                patience=patience,
+                lr_patience=self.config.training.lr_patience,
+                lr_factor=self.config.training.lr_factor,
+                device=device,
+                log_dir=tb_dir,
+                max_pairs=self.config.loss.max_pairs,
+                delta_sync=self.config.loss.delta_sync,
+                compile_model=self.config.training.compile_model,
+                gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
+                gradient_checkpointing=self.config.training.gradient_checkpointing,
+            )
 
-        # Split co-movement data to training portion
-        train_raw = raw_ret[:n_train]
-        train_metadata = metadata.iloc[:n_train].reset_index(drop=True)
-        train_strata = window_strata[:n_train]
+            # Co-movement data: strata from k-means on trailing returns
+            window_strata = self._compute_window_strata(
+                train_returns, stock_ids, metadata,
+            )
 
-        fit_result = trainer.fit(
-            train_w, val_w,
-            max_epochs=e_star,
-            batch_size=self.config.training.batch_size,
-            raw_returns=train_raw,
-            window_metadata=train_metadata,
-            strata=train_strata,
-        )
-        t_train = time.monotonic() - t0
-        logger.info(
-            "  [Fold %d] Training: %d epochs in %.1fs (best_epoch=%d)",
-            fold_id, e_star, t_train, fit_result["best_epoch"],
-        )
+            # Use 90% for train, 10% for validation monitor (but don't stop early)
+            n_train = int(0.9 * windows.shape[0])
+            train_w = windows[:n_train]
+            val_w = windows[n_train:]
+            if val_w.shape[0] == 0:
+                val_w = train_w[-10:]
 
-        if _state_bag is not None:
-            _state_bag["fit_result"] = fit_result
-            _state_bag["model_state_dict"] = {
-                k: v.cpu().clone() for k, v in model.state_dict().items()
-            }
-            _state_bag["build_params"] = {
-                "n": n_stocks, "T": T, "T_annee": T_annee, "F": F, "K": K,
-                "r_max": adapted["r_max"], "c_min": adapted["c_min"],
-                "dropout": adapted["dropout"],
-                "learn_obs_var": (mode != "F"),
-            }
-            _state_bag["vae_info"] = info
+            # Split co-movement data to training portion
+            train_raw = raw_ret[:n_train]
+            train_metadata = metadata.iloc[:n_train].reset_index(drop=True)
+            train_strata = window_strata[:n_train]
+
+            fit_result = trainer.fit(
+                train_w, val_w,
+                max_epochs=e_star,
+                batch_size=self.config.training.batch_size,
+                raw_returns=train_raw,
+                window_metadata=train_metadata,
+                strata=train_strata,
+            )
+            t_train = time.monotonic() - t0
+            logger.info(
+                "  [Fold %d] Training: %d epochs in %.1fs (best_epoch=%d)",
+                fold_id, e_star, t_train, fit_result["best_epoch"],
+            )
+
+            if _state_bag is not None:
+                _state_bag["fit_result"] = fit_result
+                _state_bag["model_state_dict"] = {
+                    k: v.cpu().clone() for k, v in model.state_dict().items()
+                }
+                _state_bag["build_params"] = {
+                    "n": n_stocks, "T": T, "T_annee": T_annee, "F": F, "K": K,
+                    "r_max": adapted["r_max"], "c_min": adapted["c_min"],
+                    "dropout": adapted["dropout"],
+                    "learn_obs_var": (mode != "F"),
+                }
+                _state_bag["vae_info"] = info
 
         # 3. Infer latent trajectories → B (+ KL per dim in same pass)
         #    Inference uses stride=1 for full-resolution exposure matrix (DVT Section 5)
@@ -1389,6 +1489,7 @@ class FullPipeline:
         # Cardinality enforcement
         logger.info("  [Fold %d] Cardinality enforcement (max %d eliminations)...",
                      fold_id, pc.max_cardinality_elim)
+        L_sigma = _safe_cholesky(Sigma_assets)
         sca_kwargs = {
             "Sigma_assets": Sigma_assets,
             "B_prime": B_prime_port,
@@ -1398,7 +1499,10 @@ class FullPipeline:
             "phi": pc.phi, "w_bar": pc.w_bar,
             "w_max": pc.w_max,
             "w_old": None, "is_first": True,
+            "kappa_1": pc.kappa_1, "kappa_2": pc.kappa_2,
+            "delta_bar": pc.delta_bar, "tau_max": pc.tau_max,
             "entropy_eps": pc.entropy_eps,
+            "_L_sigma": L_sigma,
         }
         w_final = enforce_cardinality(
             w_opt, B_prime_port, eigenvalues,
@@ -1407,6 +1511,7 @@ class FullPipeline:
             sca_kwargs=sca_kwargs,
             max_eliminations=pc.max_cardinality_elim,
             entropy_eps=pc.entropy_eps,
+            method=pc.cardinality_method,
         )
 
         t_fold = time.monotonic() - t0
@@ -1429,11 +1534,12 @@ class FullPipeline:
         metrics["alpha_opt"] = alpha_opt
 
         # Log post-training metrics to TensorBoard
-        if trainer._tb_writer is not None:
-            trainer._tb_writer.add_scalar(
-                "Training/sharpe", metrics.get("sharpe", 0.0), e_star,
-            )
-        trainer.close()
+        if trainer is not None:
+            if trainer._tb_writer is not None:
+                trainer._tb_writer.add_scalar(
+                    "Training/sharpe", metrics.get("sharpe", 0.0), e_star,
+                )
+            trainer.close()
 
         # Layer 2: realized vs predicted variance + correlation
         if returns_oos.shape[0] > 0:
