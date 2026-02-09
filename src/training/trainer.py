@@ -452,8 +452,16 @@ class VAETrainer:
         if crisis_fractions is not None:
             crisis_fractions = crisis_fractions.to(self.device)
 
-        # Create data loaders (auto-tuned workers + pin_memory for device)
-        dl_kwargs = get_dataloader_kwargs(self.device)
+        # GPU pre-pin: move all tensors to device before DataLoader creation
+        # Eliminates per-batch CPU→GPU transfer (requires num_workers=0)
+        if self._is_cuda:
+            train_windows = train_windows.to(self.device)
+            val_windows = val_windows.to(self.device)
+            if raw_returns is not None:
+                raw_returns = raw_returns.to(self.device)
+            dl_kwargs: dict[str, object] = {"num_workers": 0, "pin_memory": False}
+        else:
+            dl_kwargs = get_dataloader_kwargs(self.device)
 
         # Co-movement enabled: CurriculumBatchSampler (INV-010)
         use_co_movement = (

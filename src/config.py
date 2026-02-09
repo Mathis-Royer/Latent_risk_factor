@@ -125,6 +125,8 @@ class DataPipelineConfig:
     :param vol_window (int): Trailing window for annualized volatility (days)
     :param vix_lookback_percentile (float): VIX percentile for crisis threshold
     :param min_valid_fraction (float): Minimum fraction of valid data for a stock
+    :param training_stride (int): Stride for training windows (DVT Table 8.1: 1-21).
+        Inference always uses stride=1. Default 21 (monthly) reduces redundancy ~20x.
     """
 
     n_stocks: int = 1000
@@ -135,6 +137,7 @@ class DataPipelineConfig:
     min_valid_fraction: float = 0.80
     data_source: str = "synthetic"
     data_dir: str = "data/"
+    training_stride: int = 21
 
     def __post_init__(self) -> None:
         _validate_range("n_stocks", self.n_stocks, default=1000, lo=1)
@@ -147,6 +150,7 @@ class DataPipelineConfig:
                         default=0.80, lo=0, hi=1, lo_exclusive=True)
         _validate_in("data_source", self.data_source,
                      {"synthetic", "tiingo", "csv"}, default="synthetic")
+        _validate_range("training_stride", self.training_stride, default=21, lo=1, hi=63)
 
     @property
     def D(self) -> int:
@@ -273,10 +277,12 @@ class TrainingConfig:
         memory-constrained GPUs. Default 1 (no accumulation).
     :param gradient_checkpointing (bool): Trade compute for VRAM by recomputing
         activations during backward pass. Saves ~20% VRAM at ~5% speed cost.
+    :param compile_model (bool): Use torch.compile for operator fusion on
+        CUDA/MPS (15-30% speedup). Initial compilation takes ~30-60s.
     """
 
     max_epochs: int = 100
-    batch_size: int = 256
+    batch_size: int = 512
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     adam_betas: tuple[float, float] = (0.9, 0.999)
@@ -289,10 +295,11 @@ class TrainingConfig:
     curriculum_phase2_frac: float = 0.30
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
+    compile_model: bool = True
 
     def __post_init__(self) -> None:
         _validate_range("max_epochs", self.max_epochs, default=100, lo=1)
-        _validate_range("batch_size", self.batch_size, default=256, lo=1)
+        _validate_range("batch_size", self.batch_size, default=512, lo=1)
         _validate_range("learning_rate", self.learning_rate, default=1e-4,
                         lo=0, lo_exclusive=True)
         _validate_range("patience", self.patience, default=10, lo=1)

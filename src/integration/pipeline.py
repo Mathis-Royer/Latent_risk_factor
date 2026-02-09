@@ -862,7 +862,7 @@ class FullPipeline:
         windows, metadata, raw_ret = create_windows(
             train_returns, train_rolling_vol, stock_ids,
             T=self.config.data.window_length,
-            stride=1,
+            stride=self.config.data.training_stride,
         )
 
         if windows.shape[0] == 0:
@@ -1012,6 +1012,7 @@ class FullPipeline:
             log_dir=log_dir,
             max_pairs=self.config.loss.max_pairs,
             delta_sync=self.config.loss.delta_sync,
+            compile_model=self.config.training.compile_model,
             gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
             gradient_checkpointing=self.config.training.gradient_checkpointing,
         )
@@ -1110,15 +1111,16 @@ class FullPipeline:
         windows, metadata, raw_ret = create_windows(
             train_returns, train_rolling_vol, stock_ids,
             T=self.config.data.window_length,
-            stride=1,
+            stride=self.config.data.training_stride,
         )
 
         if windows.shape[0] < 10:
             return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids)
 
         logger.info(
-            "  [Fold %d] Windowing: %d windows from %d stocks, %d train days",
-            fold_id, windows.shape[0], len(stock_ids), len(train_returns),
+            "  [Fold %d] Windowing: %d train windows (stride=%d) from %d stocks, %d days",
+            fold_id, windows.shape[0], self.config.data.training_stride,
+            len(stock_ids), len(train_returns),
         )
 
         # 2. Build and train VAE for E* epochs (no early stopping for Phase B)
@@ -1159,6 +1161,7 @@ class FullPipeline:
             log_dir=tb_dir,
             max_pairs=self.config.loss.max_pairs,
             delta_sync=self.config.loss.delta_sync,
+            compile_model=self.config.training.compile_model,
             gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
             gradient_checkpointing=self.config.training.gradient_checkpointing,
         )
@@ -1208,9 +1211,18 @@ class FullPipeline:
             _state_bag["vae_info"] = info
 
         # 3. Infer latent trajectories → B (+ KL per dim in same pass)
-        logger.info("  [Fold %d] Inference + AU measurement (single pass)...", fold_id)
+        #    Inference uses stride=1 for full-resolution exposure matrix (DVT Section 5)
+        infer_windows, infer_metadata, _ = create_windows(
+            train_returns, train_rolling_vol, stock_ids,
+            T=self.config.data.window_length,
+            stride=1,
+        )
+        logger.info(
+            "  [Fold %d] Inference: %d windows (stride=1). AU measurement...",
+            fold_id, infer_windows.shape[0],
+        )
         trajectories, kl_per_dim = infer_latent_trajectories(
-            model, windows, metadata,
+            model, infer_windows, infer_metadata,
             batch_size=self.config.inference.batch_size,
             device=device,
             compute_kl=True,

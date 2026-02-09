@@ -92,10 +92,8 @@ EXCHANGE_CODE_MAP: dict[str, int] = {
 REQUESTS_PER_BATCH = 45
 BATCH_SLEEP_SECONDS = 3700  # ~61.7 minutes between batches of 45
 
-# Consecutive error backoff: if N errors in a row, likely soft rate limit
-CONSECUTIVE_ERROR_BACKOFF_BASE = 5.0    # seconds, doubles each consecutive error
-CONSECUTIVE_ERROR_BACKOFF_MAX = 120.0   # cap at 2 minutes
-CONSECUTIVE_ERROR_SOFT_LIMIT = 5        # after 5 consecutive errors, treat as soft rate limit
+# Global retry budget: after this many errors, skip all subsequent failures
+MAX_GLOBAL_RETRIES = 2
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +497,18 @@ def fetch_ticker_prices(
             return None, "rate_limited"
 
         resp.raise_for_status()
-        data = resp.json()
+
+        # Empty or non-JSON body (delisted tickers) → no data, not an error
+        body = resp.text.strip() if resp.text else ""
+        if not body:
+            logger.debug("Empty response for %s (no data on Tiingo)", ticker)
+            return pd.DataFrame(), "ok"
+
+        try:
+            data = resp.json()
+        except ValueError:
+            logger.debug("Non-JSON response for %s — skipping (no data)", ticker)
+            return pd.DataFrame(), "ok"
 
         if not data:
             return pd.DataFrame(), "ok"
@@ -617,7 +626,7 @@ def phase_prices(
     all_work = [(t, "full") for t in to_download] + [(t, "update") for t in to_update]
 
     processed = 0
-    consecutive_errors = 0
+    global_retries_used = 0
 
     for i, (ticker, mode) in enumerate(all_work):
         if key_rotator.active_count == 0:
@@ -661,7 +670,7 @@ def phase_prices(
         else:
             fetch_start = start_date
 
-        # Fetch prices
+        # Fetch prices — single attempt (retry only if global budget allows)
         df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start)
 
         if status == "auth_failed":
@@ -670,15 +679,13 @@ def phase_prices(
             continue
 
         if status == "rate_limited":
-            # Mark key as rate-limited, retry this ticker with next key
             key_rotator.mark_rate_limited(api_key)
             retry_key = key_rotator.next_key()
             if retry_key is None:
-                # All keys exhausted — handle same as above
                 if wait_on_rate_limit:
                     wait = BATCH_SLEEP_SECONDS
                     logger.info(
-                        "All keys rate-limited by server. Waiting %.0f minutes (%d/%d done)...",
+                        "All keys rate-limited. Waiting %.0f minutes (%d/%d done)...",
                         wait / 60, i, total_work,
                     )
                     time.sleep(wait)
@@ -686,53 +693,30 @@ def phase_prices(
                     retry_key = key_rotator.next_key()
                 if retry_key is None:
                     logger.info(
-                        "All keys exhausted after 429 (%d/%d done). Re-run to resume.",
+                        "All keys exhausted (%d/%d done). Re-run to resume.",
                         i, total_work,
                     )
                     break
-            # Retry with the new key
-            df, status = fetch_ticker_prices(ticker, retry_key, start_date=fetch_start)
-            if status != "ok":
-                progress.mark_failed(ticker, f"retry_failed_{status}")
-                if status == "auth_failed" and retry_key is not None:
-                    key_rotator.disable_key(retry_key)
-                if status == "rate_limited" and retry_key is not None:
-                    key_rotator.mark_rate_limited(retry_key)
-                continue
-            # Record use of retry key
-            consecutive_errors = 0
             if retry_key is not None:
-                key_rotator.record_use(retry_key)
+                df, status = fetch_ticker_prices(ticker, retry_key, start_date=fetch_start)
+                if status == "ok":
+                    key_rotator.record_use(retry_key)
+                else:
+                    progress.mark_failed(ticker, f"retry_failed_{status}")
+                    continue
 
         elif status == "error":
-            consecutive_errors += 1
-            progress.mark_failed(ticker, "request_error")
+            # Retry once if global budget allows, otherwise skip immediately
+            if global_retries_used < MAX_GLOBAL_RETRIES:
+                global_retries_used += 1
+                df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start)
 
-            if consecutive_errors >= CONSECUTIVE_ERROR_SOFT_LIMIT:
-                # Likely soft rate limit — long pause then reset counter
-                logger.warning(
-                    "%d consecutive errors — likely soft rate limit. "
-                    "Pausing %.0f minutes before resuming...",
-                    consecutive_errors, BATCH_SLEEP_SECONDS / 60,
-                )
-                time.sleep(BATCH_SLEEP_SECONDS)
-                consecutive_errors = 0
-            else:
-                # Exponential backoff: 5s, 10s, 20s, 40s (capped at 120s)
-                delay = min(
-                    CONSECUTIVE_ERROR_BACKOFF_BASE * (2 ** (consecutive_errors - 1)),
-                    CONSECUTIVE_ERROR_BACKOFF_MAX,
-                )
-                logger.info(
-                    "Consecutive error #%d — backing off %.0fs",
-                    consecutive_errors, delay,
-                )
-                time.sleep(delay)
-            continue
+            if status == "error":
+                logger.debug("Skipping %s (error)", ticker)
+                progress.mark_failed(ticker, "request_error")
+                continue
 
-        elif status == "ok":
-            # Record successful use of key
-            consecutive_errors = 0
+        if status == "ok":
             key_rotator.record_use(api_key)
 
         # Process result
