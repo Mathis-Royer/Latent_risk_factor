@@ -6,3 +6,4 @@ results/
 keys.txt
 .DS_Store
 data/*
+Colab_config.txt

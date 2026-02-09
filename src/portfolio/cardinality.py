@@ -32,10 +32,58 @@ MIN_BATCH_SIZE = 3
 
 _MIQP_TIME_LIMIT = 120.0
 
+# Hard cap on binary variables for MI solver tractability
+_MAX_BINARY_VARS = 80
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+def _prescreen_active_stocks(
+    w: np.ndarray,
+    w_min: float,
+    label: str = "miqp",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Pre-screen stocks for MI formulation: keep only significant positions.
+
+    Uses w_min-aware threshold (w_min * 0.5) and a hard cap on binary
+    variables (_MAX_BINARY_VARS) to guarantee MI solver tractability.
+
+    :param w (np.ndarray): Continuous SCA solution (n,)
+    :param w_min (float): Minimum active weight
+    :param label (str): Strategy label for logging
+
+    :return active_idx (np.ndarray): Indices of stocks to model with binary z_i
+    :return fixed_idx (np.ndarray): Indices of stocks fixed at zero
+    """
+    n = len(w)
+    threshold = w_min * 0.5
+
+    # Step 1: filter by w_min-aware threshold
+    candidate_mask = w >= threshold
+    candidate_idx = np.where(candidate_mask)[0]
+
+    # Step 2: hard cap — if too many, keep top by weight
+    if len(candidate_idx) > _MAX_BINARY_VARS:
+        weights_at_candidates = w[candidate_idx]
+        top_order = np.argsort(-weights_at_candidates)[:_MAX_BINARY_VARS]
+        candidate_idx = candidate_idx[top_order]
+
+    active_set = set(candidate_idx.tolist())
+    active_idx = np.array(sorted(active_set), dtype=np.intp)
+    fixed_idx = np.array([i for i in range(n) if i not in active_set], dtype=np.intp)
+
+    pct_reduction = 100.0 * (1 - len(active_idx) / max(n, 1))
+    logger.info(
+        "    [%s] Pre-screening: %d/%d binary variables "
+        "(%.0f%% reduction, threshold=%.4f)",
+        label, len(active_idx), n, pct_reduction, threshold,
+    )
+
+    return active_idx, fixed_idx
+
 
 def _reduce_sca_kwargs(
     kwargs: dict[str, Any],
@@ -322,6 +370,10 @@ def _enforce_miqp(
         s.t. w_min * z_i <= w_i <= w_max * z_i,  z_i in {0,1}
              sum(w) = 1, turnover cap
 
+    Pre-screening: only creates binary z_i for stocks with w_i > 0 in the
+    continuous SCA solution. Stocks at zero are fixed, reducing the MIQP
+    complexity from O(n) to O(n_active) binary variables.
+
     Requires a mixed-integer-capable solver (MOSEK).
 
     :param w (np.ndarray): Continuous SCA solution (n,)
@@ -352,31 +404,40 @@ def _enforce_miqp(
         w, B_prime, eigenvalues, entropy_eps,
     )
 
+    # Pre-screening: w_min-aware threshold + hard cap
+    active_idx, fixed_idx = _prescreen_active_stocks(w, w_min, "miqp")
+    n_active = len(active_idx)
+
     # Decision variables
     w_var = cp.Variable(n)
-    z = cp.Variable(n, boolean=True)  # type: ignore[call-overload]
+    z_active = cp.Variable(n_active, boolean=True)  # type: ignore[call-overload]
 
     # Objective: same structure as _ParametricSCAProblem but with fixed gradient
+    # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
     entropy_term = alpha * (grad_H @ w_var)
     risk_term = lambda_risk * cp.sum_squares(L.T @ w_var)
-    conc_penalty = phi * cp.sum_squares(cp.maximum(0, w_var - w_bar))
+    conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
 
     turn_penalty: cp.Expression = cp.Constant(0.0)
     if w_old is not None and not is_first:
         delta_w = cp.abs(w_var - w_old)
         linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-        excess_turn = cp.maximum(0, delta_w - delta_bar)
-        quad_turn = kappa_2 * cp.sum_squares(excess_turn)
-        turn_penalty = linear_turn + quad_turn
+        excess_turn = cp.pos(delta_w - delta_bar)
+        quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+        turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
     obj = cp.Maximize(entropy_term - risk_term - conc_penalty - turn_penalty)
 
-    # Semi-continuous constraints via binary indicators
+    # Semi-continuous constraints: binary only for active stocks
+    active_list = active_idx.tolist()
+    fixed_list = fixed_idx.tolist()
     cstr_list = [
-        w_var >= w_min * z,
-        w_var <= w_max * z,
+        w_var[active_list] >= w_min * z_active,
+        w_var[active_list] <= w_max * z_active,
         cp.sum(w_var) == 1,
     ]
+    if len(fixed_list) > 0:
+        cstr_list.append(w_var[fixed_list] == 0)
     constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
 
     if w_old is not None and not is_first:
@@ -387,7 +448,7 @@ def _enforce_miqp(
 
     # Warm-start from continuous solution
     w_var.value = w
-    z.value = (w >= w_min * 0.5).astype(float)
+    z_active.value = (w[active_idx] >= w_min * 0.5).astype(float)
 
     # Solve via MI solver chain
     for solver_name, solver_kwargs in _MI_SOLVER_CHAIN:
@@ -513,30 +574,39 @@ def _enforce_two_stage(
     w_var = cp.Variable(n)
 
     # Tracking objective: minimize ||B'^T w - y*||^2 + regularization
+    # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
     tracking_error = cp.sum_squares(B_prime.T @ w_var - y_star)
     risk_reg = lambda_risk * cp.sum_squares(L.T @ w_var)
-    conc_penalty = phi * cp.sum_squares(cp.maximum(0, w_var - w_bar))
+    conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
 
     turn_penalty: cp.Expression = cp.Constant(0.0)
     if w_old is not None and not is_first:
         delta_w = cp.abs(w_var - w_old)
         linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-        excess_turn = cp.maximum(0, delta_w - delta_bar)
-        quad_turn = kappa_2 * cp.sum_squares(excess_turn)
-        turn_penalty = linear_turn + quad_turn
+        excess_turn = cp.pos(delta_w - delta_bar)
+        quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+        turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
     obj = cp.Minimize(
         tracking_error + risk_reg + conc_penalty + turn_penalty
     )
 
-    # Constraints
+    # Constraints (with pre-screening for MI mode)
     if use_mi:
-        z = cp.Variable(n, boolean=True)  # type: ignore[call-overload]
+        # Pre-screening: w_min-aware threshold + hard cap
+        active_idx, fixed_idx = _prescreen_active_stocks(w, w_min, "two_stage")
+        n_active = len(active_idx)
+
+        z_active = cp.Variable(n_active, boolean=True)  # type: ignore[call-overload]
+        active_list = active_idx.tolist()
+        fixed_list = fixed_idx.tolist()
         cstr_list = [
-            w_var >= w_min * z,
-            w_var <= w_max * z,
+            w_var[active_list] >= w_min * z_active,
+            w_var[active_list] <= w_max * z_active,
             cp.sum(w_var) == 1,
         ]
+        if len(fixed_list) > 0:
+            cstr_list.append(w_var[fixed_list] == 0)
     else:
         cstr_list = [
             w_var >= 0,
@@ -554,7 +624,7 @@ def _enforce_two_stage(
     # Warm-start
     w_var.value = w
     if use_mi:
-        z.value = (w >= w_min * 0.5).astype(float)  # type: ignore[possibly-undefined]
+        z_active.value = (w[active_idx] >= w_min * 0.5).astype(float)  # type: ignore[possibly-undefined]
 
     # Solve
     solver_chain = _MI_SOLVER_CHAIN if use_mi else _SOLVER_CHAIN
