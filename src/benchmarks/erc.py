@@ -63,13 +63,24 @@ class EqualRiskContribution(BenchmarkModel):
         constraints: list[cp.Constraint] = [y >= 1e-6]
 
         prob = cp.Problem(objective, constraints)
-        try:
-            prob.solve(solver=cp.ECOS, max_iters=500)
-        except cp.SolverError:
+
+        # Solver chain: MOSEK > ECOS > SCS (DVT Section 4.7)
+        solved = False
+        for solver, kwargs in [
+            (cp.MOSEK, {"warm_start": True}),
+            (cp.ECOS, {"warm_start": True, "max_iters": 500}),
+            (cp.SCS, {"warm_start": True, "max_iters": 5000}),
+        ]:
             try:
-                prob.solve(solver=cp.SCS, max_iters=5000)
-            except cp.SolverError:
-                return np.ones(n) / n
+                prob.solve(solver=solver, **kwargs)
+                if y.value is not None:
+                    solved = True
+                    break
+            except (cp.SolverError, Exception):
+                continue
+
+        if not solved:
+            return np.ones(n) / n
 
         if y.value is None:
             return np.ones(n) / n

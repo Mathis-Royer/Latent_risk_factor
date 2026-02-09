@@ -60,6 +60,33 @@ _SOLVER_CHAIN = _build_solver_chain()
 logger.debug("SCA solver chain: %s", [s[0] for s in _SOLVER_CHAIN])
 
 
+def _build_mi_solver_chain() -> list[tuple[str, dict[str, object]]]:
+    """
+    Build solver chain for mixed-integer problems.
+
+    Only MOSEK supports MI among our solver dependencies.
+
+    :return chain (list): Ordered list of (solver_name, solver_kwargs) tuples
+    """
+    installed = set(cp.installed_solvers())
+    chain: list[tuple[str, dict[str, object]]] = []
+    if "MOSEK" in installed:
+        chain.append(("MOSEK", {"warm_start": True}))
+    return chain
+
+
+_MI_SOLVER_CHAIN = _build_mi_solver_chain()
+
+
+def has_mi_solver() -> bool:
+    """
+    Check whether a mixed-integer-capable solver is available.
+
+    :return available (bool): True if MOSEK is installed
+    """
+    return len(_MI_SOLVER_CHAIN) > 0
+
+
 # ---------------------------------------------------------------------------
 # Cholesky factorization
 # ---------------------------------------------------------------------------

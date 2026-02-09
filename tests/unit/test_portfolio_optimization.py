@@ -15,11 +15,13 @@ Covers:
 Reference: ISD Section MOD-008.
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
-from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function
+from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function, has_mi_solver
 from src.portfolio.cardinality import enforce_cardinality
 from src.portfolio.constraints import (
     concentration_penalty,
@@ -346,6 +348,200 @@ class TestCardinality:
                 f"Violation at stock {i}: w={w_enforced[i]:.6f}, "
                 f"w_min={w_min}"
             )
+
+    def _make_violation_data(self) -> tuple[
+        np.ndarray, dict, dict[str, Any], float,
+    ]:
+        """Build shared test data with semi-continuous violations."""
+        np.random.seed(SEED)
+        data = _make_portfolio_data()
+        w_min = 0.01
+
+        rng = np.random.RandomState(SEED)
+        w = rng.dirichlet(np.ones(N_STOCKS)).astype(np.float64)
+        w[0] = 0.005
+        w[1] = 0.002
+        w[2] = 0.0001
+        w = w / w.sum()
+
+        sca_kwargs: dict[str, Any] = {
+            "Sigma_assets": data["Sigma_assets"],
+            "B_prime": data["B_prime"],
+            "eigenvalues": data["eigenvalues"],
+            "alpha": 1.0,
+            "lambda_risk": 1.0,
+            "phi": 25.0,
+            "w_bar": 0.03,
+            "w_max": 0.10,
+            "w_old": None,
+            "is_first": True,
+            "kappa_1": 0.1,
+            "kappa_2": 7.5,
+            "delta_bar": 0.01,
+            "tau_max": 0.30,
+            "entropy_eps": 1e-30,
+        }
+        return w, data, sca_kwargs, w_min
+
+    @staticmethod
+    def _check_semi_continuous(
+        w_enforced: np.ndarray, w_min: float, n: int,
+    ) -> None:
+        """Assert no weight in forbidden zone (0, w_min)."""
+        for i in range(n):
+            assert w_enforced[i] == 0.0 or w_enforced[i] >= w_min - 1e-8, (
+                f"Violation at stock {i}: w={w_enforced[i]:.6f}, w_min={w_min}"
+            )
+
+    def test_gradient_method(self) -> None:
+        """Gradient method satisfies semi-continuous constraint."""
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="gradient",
+        )
+
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+    def test_sequential_method(self) -> None:
+        """Sequential method (original) satisfies semi-continuous constraint."""
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="sequential",
+        )
+
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+    @pytest.mark.skipif(
+        not has_mi_solver(), reason="No MI-capable solver (MOSEK) available",
+    )
+    def test_miqp_method(self) -> None:
+        """MIQP method satisfies semi-continuous constraint."""
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="miqp",
+        )
+
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+    @pytest.mark.skipif(
+        not has_mi_solver(), reason="No MI-capable solver (MOSEK) available",
+    )
+    def test_two_stage_method(self) -> None:
+        """Two-stage method satisfies semi-continuous constraint."""
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="two_stage",
+        )
+
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+    def test_fallback_no_mi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When no MI solver, miqp falls back to gradient."""
+        monkeypatch.setattr(
+            "src.portfolio.cardinality.has_mi_solver", lambda: False,
+        )
+
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_miqp = enforce_cardinality(
+            w=w.copy(),
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="miqp",
+        )
+        w_grad = enforce_cardinality(
+            w=w.copy(),
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="gradient",
+        )
+
+        np.testing.assert_array_almost_equal(w_miqp, w_grad)
+
+    def test_auto_resolves(self) -> None:
+        """Auto method runs without error."""
+        w, data, sca_kwargs, w_min = self._make_violation_data()
+
+        def dummy_sca(
+            w_init: np.ndarray, **kwargs: object,
+        ) -> tuple[np.ndarray, float, float, int]:
+            return w_init.copy(), 0.0, 0.0, 1
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=dummy_sca,
+            sca_kwargs=sca_kwargs,
+            method="auto",
+        )
+
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
 
 
 class TestConstraints:

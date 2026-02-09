@@ -76,9 +76,16 @@ def rescale_estimation(
     vol_matrix = vol_sub.values              # numpy: (n_dates, n_available)
     vol_dates = vol_sub.index
     vol_sid_to_col = {sid: j for j, sid in enumerate(available_sids)}
-    # Build date lookup dict once (handles both string and Timestamp index)
-    vol_date_to_loc = {str(d) if not isinstance(d, str) else d: i
-                       for i, d in enumerate(vol_dates)}
+    # Build date lookup dict (handles "2024-01-01 00:00:00" and "2024-01-01" formats)
+    vol_date_to_loc: dict[str, int] = {}
+    for i, d in enumerate(vol_dates):
+        if isinstance(d, str):
+            vol_date_to_loc[d] = i
+        elif isinstance(d, pd.Timestamp):
+            vol_date_to_loc[str(d)] = i
+            vol_date_to_loc[str(d.date())] = i
+        else:
+            vol_date_to_loc[str(d)] = i
 
     B_A_by_date: dict[str, np.ndarray] = {}
 

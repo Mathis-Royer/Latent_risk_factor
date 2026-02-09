@@ -12,6 +12,7 @@ dependencies = [
     "scipy>=1.11",
     "cvxpy>=1.4",
     "ecos",
+    "mosek",
     "pandas>=2.0",
     "scikit-learn>=1.3",
     "statsmodels>=0.14",
@@ -25,9 +26,6 @@ dev = [
     "pyright",
     "pylint",
     "flake8",
-]
-mosek = [
-    "mosek",
 ]
 
 [build-system]

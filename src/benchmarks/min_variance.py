@@ -69,20 +69,19 @@ class MinimumVariance(BenchmarkModel):
             constraints.append(0.5 * cp.sum(cp.abs(w - w_old)) <= tau_max)
 
         prob = cp.Problem(objective, constraints)
-        try:
-            prob.solve(solver=cp.ECOS, warm_start=True)
-            if w.value is not None:
-                return np.array(w.value).flatten()
-        except cp.SolverError:
-            pass
 
-        # Fallback solver
-        try:
-            prob.solve(solver=cp.SCS, max_iters=5000)
-            if w.value is not None:
-                return np.array(w.value).flatten()
-        except cp.SolverError:
-            pass
+        # Solver chain: MOSEK > ECOS > SCS (DVT Section 4.7)
+        for solver, kwargs in [
+            (cp.MOSEK, {"warm_start": True}),
+            (cp.ECOS, {"warm_start": True}),
+            (cp.SCS, {"warm_start": True, "max_iters": 5000}),
+        ]:
+            try:
+                prob.solve(solver=solver, **kwargs)
+                if w.value is not None:
+                    return np.array(w.value).flatten()
+            except (cp.SolverError, Exception):
+                continue
 
         # Last resort: equal weight
         return np.ones(n) / n

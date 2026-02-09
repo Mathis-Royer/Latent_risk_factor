@@ -44,9 +44,16 @@ def estimate_factor_returns(
     ret_matrix = returns.values  # (n_dates, n_stocks)
     ret_dates = returns.index
     ret_col_to_idx = {col: j for j, col in enumerate(returns.columns)}
-    # Build date lookup dict (handles both string and Timestamp index)
-    ret_date_to_loc = {str(d) if not isinstance(d, str) else d: i
-                       for i, d in enumerate(ret_dates)}
+    # Build date lookup dict (handles "2024-01-01 00:00:00" and "2024-01-01" formats)
+    ret_date_to_loc: dict[str, int] = {}
+    for i, d in enumerate(ret_dates):
+        if isinstance(d, str):
+            ret_date_to_loc[d] = i
+        elif isinstance(d, pd.Timestamp):
+            ret_date_to_loc[str(d)] = i
+            ret_date_to_loc[str(d.date())] = i
+        else:
+            ret_date_to_loc[str(d)] = i
 
     for date_str in sorted_dates:
         B_t = B_A_by_date[date_str]  # (n_active, AU)
@@ -120,8 +127,15 @@ def compute_residuals(
     ret_matrix = returns.values
     ret_dates = returns.index
     ret_col_to_idx = {col: j for j, col in enumerate(returns.columns)}
-    ret_date_to_loc = {str(d) if not isinstance(d, str) else d: i
-                       for i, d in enumerate(ret_dates)}
+    ret_date_to_loc: dict[str, int] = {}
+    for i, d in enumerate(ret_dates):
+        if isinstance(d, str):
+            ret_date_to_loc[d] = i
+        elif isinstance(d, pd.Timestamp):
+            ret_date_to_loc[str(d)] = i
+            ret_date_to_loc[str(d.date())] = i
+        else:
+            ret_date_to_loc[str(d)] = i
 
     for t_idx, date_str in enumerate(dates):
         if date_str not in B_A_by_date:
