@@ -868,14 +868,7 @@ class FullPipeline:
             vae_metrics.get("AU", "?"),
         )
 
-        # --- Step 7b: Save checkpoint ---
-        ckpt_dir = self.checkpoint_dir or "checkpoints"
-        ckpt_path = self.save_checkpoint(
-            state_bag, fold, vae_metrics, w_vae,
-            checkpoint_dir=ckpt_dir, tag="direct",
-        )
-
-        # --- Step 8: Return results (same keys as run() + extras) ---
+        # --- Step 7b: Return results (same keys as run() + extras) ---
         return {
             "fold_schedule": self.fold_schedule,
             "vae_results": self.vae_results,
@@ -891,7 +884,6 @@ class FullPipeline:
             "train_end": train_end,
             "oos_start": oos_start,
             "oos_end": oos_end,
-            "checkpoint_path": ckpt_path,
         }
 
     # -------------------------------------------------------------------
@@ -1309,6 +1301,16 @@ class FullPipeline:
                     "learn_obs_var": (mode != "F"),
                 }
                 _state_bag["vae_info"] = info
+
+            # Save training checkpoint immediately (before portfolio optimization)
+            if _state_bag is not None:
+                ckpt_dir = self.checkpoint_dir or "checkpoints"
+                tag = f"fold{fold_id:02d}_train"
+                empty_w = np.ones(n_stocks) / n_stocks
+                self.save_checkpoint(
+                    _state_bag, fold, {}, empty_w,
+                    checkpoint_dir=ckpt_dir, tag=tag,
+                )
 
         # 3. Infer latent trajectories → B (+ KL per dim in same pass)
         #    Inference uses stride=1 for full-resolution exposure matrix (DVT Section 5)

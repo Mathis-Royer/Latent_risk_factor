@@ -154,18 +154,18 @@ class _ParametricSCAProblem:
         # Linearized entropy: α ∇H^T w
         entropy_term = alpha * (grad_H_param @ w)
 
-        # Concentration penalty
-        excess = cp.maximum(0, w - w_bar)
-        conc_penalty = phi * cp.sum_squares(excess)
+        # Concentration penalty — sum(square(pos(...))) for DCP compliance
+        # (sum_squares requires affine argument; pos(affine) is convex+nonneg)
+        conc_penalty = phi * cp.sum(cp.square(cp.pos(w - w_bar)))
 
-        # Turnover penalty
+        # Turnover penalty — same DCP-safe pattern
         turn_penalty: cp.Expression = cp.Constant(0.0)
         if w_old is not None and not is_first:
             delta_w = cp.abs(w - w_old)
             linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-            excess_turn = cp.maximum(0, delta_w - delta_bar)
-            quad_turn = kappa_2 * cp.sum_squares(excess_turn)
-            turn_penalty = linear_turn + quad_turn
+            excess_turn = cp.pos(delta_w - delta_bar)
+            quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+            turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
         obj = cp.Maximize(
             ret_term - risk_term + entropy_term - conc_penalty - turn_penalty
