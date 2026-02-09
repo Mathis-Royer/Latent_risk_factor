@@ -289,6 +289,11 @@ class VAETrainer:
 
             # Optimizer step every `accum` mini-batches
             if (step_in_epoch + 1) % accum == 0:
+                # Gradient clipping to prevent NaN from gradient explosion
+                if self.scaler is not None:
+                    self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
                 if self.scaler is not None:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
@@ -344,6 +349,10 @@ class VAETrainer:
 
         # Flush leftover accumulated gradients (when n_batches % accum != 0)
         if n_batches > 0 and n_batches % accum != 0:
+            if self.scaler is not None:
+                self.scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
             if self.scaler is not None:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
@@ -580,9 +589,19 @@ class VAETrainer:
 
             # Early stopping (protected during Mode F warmup)
             if self.loss_mode == "F" and epoch < warmup_epochs:
-                # During warmup, just record best without stopping
+                # During warmup: track progress but never stop.
+                # Do NOT call check() — best_loss recorded under β<1 is not
+                # comparable to post-warmup ELBO and would cause premature
+                # stopping as soon as warmup ends.
+                pass
+            elif self.loss_mode == "F" and epoch == warmup_epochs:
+                # First post-warmup epoch: seed early stopping with current
+                # ELBO so all future comparisons use the β=1 regime.
+                self.early_stopping.best_loss = val_elbo
+                self.early_stopping.best_epoch = epoch
+                self.early_stopping.best_state = None  # will be set on next improvement
+                self.early_stopping.counter = 0
                 self.early_stopping.check(val_elbo, epoch, self.model)
-                self.early_stopping.counter = 0  # Reset counter during warmup
             else:
                 should_stop = self.early_stopping.check(val_elbo, epoch, self.model)
                 if should_stop:
