@@ -160,9 +160,8 @@ def compute_loss(
     elif mode == "F":
         # Mode F: D/2·L_recon + β_t·L_KL + λ_co·L_co
         # σ²=1 frozen (no gradient on log_sigma_sq)
-        # β_t = min(1, epoch / T_warmup)
-        T_warmup = max(1, int(warmup_fraction * total_epochs))
-        beta_t = min(1.0, epoch / T_warmup)
+        # β_t = max(β_min, min(1, epoch / T_warmup))
+        beta_t = get_beta_t(epoch, total_epochs, warmup_fraction)
 
         recon_term = (D / 2.0) * L_recon
         log_norm_term = torch.tensor(0.0, device=x.device)
@@ -187,7 +186,7 @@ def compute_loss(
     }
 
     if mode == "F":
-        components["beta_t"] = min(1.0, epoch / max(1, int(warmup_fraction * total_epochs)))
+        components["beta_t"] = get_beta_t(epoch, total_epochs, warmup_fraction)
 
     return total_loss, components
 
@@ -395,17 +394,23 @@ def get_beta_t(
     epoch: int,
     total_epochs: int,
     warmup_fraction: float = 0.20,
+    beta_min: float = 0.01,
 ) -> float:
     """
-    Linear β annealing for Mode F.
+    Linear β annealing for Mode F with floor.
 
-    β_t = min(1, epoch / T_warmup)
+    β_t = max(β_min, min(1, epoch / T_warmup))
+
+    β_min > 0 ensures KL regularization is never fully disabled,
+    preventing the encoder from pushing μ to extreme values during
+    early warmup epochs.
 
     :param epoch (int): Current epoch (0-indexed)
     :param total_epochs (int): Total epochs
     :param warmup_fraction (float): Fraction for warmup
+    :param beta_min (float): Minimum β to prevent KL collapse
 
     :return beta_t (float): Current β value
     """
     T_warmup = max(1, int(warmup_fraction * total_epochs))
-    return min(1.0, epoch / T_warmup)
+    return max(beta_min, min(1.0, epoch / T_warmup))

@@ -159,8 +159,8 @@ def test_mode_F_beta_annealing() -> None:
     total_epochs = 100
     T_warmup = int(warmup_fraction * total_epochs)  # = 20
 
-    # At epoch 0: beta_t = 0/20 = 0.0
-    assert get_beta_t(0, total_epochs, warmup_fraction) == 0.0
+    # At epoch 0: beta_t = beta_min = 0.01 (floor prevents KL collapse)
+    assert get_beta_t(0, total_epochs, warmup_fraction) == 0.01
 
     # At epoch 10 (midway): beta_t = 10/20 = 0.5
     assert abs(get_beta_t(10, total_epochs, warmup_fraction) - 0.5) < 1e-6
