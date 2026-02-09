@@ -1228,6 +1228,13 @@ class FullPipeline:
             n_obs=train_days,
             r_min=self.config.inference.r_min,
         )
+        # Cross-sectional identification: AU must be < n_stocks for OLS regression
+        if au_max >= n_stocks:
+            logger.info(
+                "  [Fold %d] AU cap reduced: %d (statistical) -> %d (n_stocks-1)",
+                fold_id, au_max, n_stocks - 1,
+            )
+            au_max = n_stocks - 1
         AU, active_dims = truncate_active_dims(AU, kl_per_dim, active_dims, au_max)
 
         if AU == 0:
