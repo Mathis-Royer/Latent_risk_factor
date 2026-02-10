@@ -183,6 +183,7 @@ class VAEArchitectureConfig:
     window_length: int = 504
     n_features: int = 2
     r_max: float = 5.0
+    dropout: float = 0.1
 
     def __post_init__(self) -> None:
         _validate_range("K", self.K, default=200, lo=1)
@@ -193,6 +194,7 @@ class VAEArchitectureConfig:
         _validate_range("sigma_sq_max", self.sigma_sq_max, default=10.0,
                         lo=0, lo_exclusive=True)
         _validate_range("r_max", self.r_max, default=5.0, lo=0, lo_exclusive=True)
+        _validate_range("dropout", self.dropout, default=0.1, lo=0.0, hi=0.5)
         _validate_pair("sigma_sq_min", self.sigma_sq_min,
                        "sigma_sq_max", self.sigma_sq_max, strict=True)
 
