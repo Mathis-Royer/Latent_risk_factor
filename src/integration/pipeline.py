@@ -120,10 +120,14 @@ def _variance_targeting_scale(
     available = [s for s in stock_ids[:n] if s in train_returns.columns]
     if len(available) < 2:
         return 1.0
-    ew_returns = np.asarray(train_returns[available].mean(axis=1))
+    ew_returns = train_returns[available].mean(axis=1).dropna().to_numpy()
+    if len(ew_returns) < 2:
+        return 1.0
     realized_var = float(np.var(ew_returns, ddof=1))
 
     scale = realized_var / predicted_var
+    if not np.isfinite(scale):
+        return 1.0
     scale = float(np.clip(scale, _VT_SCALE_MIN, _VT_SCALE_MAX))
 
     logger.info(
