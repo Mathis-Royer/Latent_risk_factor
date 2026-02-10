@@ -87,6 +87,51 @@ BENCHMARK_CLASSES: dict[str, type] = {
     "pca_vol": PCAVolRiskParity,
 }
 
+# Variance-targeting scale bounds (safety clamps)
+_VT_SCALE_MIN = 0.01
+_VT_SCALE_MAX = 100.0
+
+
+def _variance_targeting_scale(
+    Sigma_assets: np.ndarray,
+    train_returns: "pd.DataFrame",
+    stock_ids: list[int],
+) -> float:
+    """
+    Compute scalar to calibrate Sigma_assets to in-sample realized variance.
+
+    Uses an equal-weight portfolio as reference: scale = Var_realized(EW) / Var_predicted(EW).
+    Clamped to [0.01, 100] to avoid pathological cases.
+
+    :param Sigma_assets (np.ndarray): Predicted covariance (n, n)
+    :param train_returns (pd.DataFrame): Training-period daily log-returns (dates x stocks)
+    :param stock_ids (list[int]): Stock IDs matching Sigma_assets rows
+
+    :return scale (float): Multiplicative calibration factor
+    """
+    n = Sigma_assets.shape[0]
+    w_eq = np.ones(n) / n
+
+    predicted_var = float(w_eq @ Sigma_assets @ w_eq)
+    if predicted_var <= 1e-12:
+        return 1.0
+
+    # Realized EW portfolio variance over training period
+    available = [s for s in stock_ids[:n] if s in train_returns.columns]
+    if len(available) < 2:
+        return 1.0
+    ew_returns = np.asarray(train_returns[available].mean(axis=1))
+    realized_var = float(np.var(ew_returns, ddof=1))
+
+    scale = realized_var / predicted_var
+    scale = float(np.clip(scale, _VT_SCALE_MIN, _VT_SCALE_MAX))
+
+    logger.info(
+        "  Variance targeting: realized_vol=%.4f, predicted_vol=%.4f, scale=%.4f",
+        np.sqrt(realized_var * 252), np.sqrt(predicted_var * 252), scale,
+    )
+    return scale
+
 
 class FullPipeline:
     """
@@ -271,7 +316,7 @@ class FullPipeline:
 
         # Step 4: If still > r_max, relax r_max with 10% headroom
         r_max_adapted = r_max_config
-        dropout = 0.1
+        dropout = 0.2
 
         if r > r_max_config:
             r_max_adapted = r * 1.1
@@ -1432,16 +1477,28 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
+        # Variance targeting: calibrate Sigma_assets so predicted EW
+        # portfolio variance matches in-sample realized EW variance.
+        vt_scale = _variance_targeting_scale(
+            Sigma_assets, returns.loc[train_start:train_end],
+            inferred_stock_ids,
+        )
+        Sigma_assets = Sigma_assets * vt_scale
+        eigenvalues = eigenvalues * vt_scale
+        D_eps_port = D_eps_port * vt_scale
+
         if _state_bag is not None:
             _state_bag["risk_model"] = risk_model
             _state_bag["Sigma_z"] = Sigma_z
             _state_bag["z_hat"] = z_hat
             _state_bag["B_A_port"] = B_A_port
+            _state_bag["vt_scale"] = vt_scale
 
         logger.info(
-            "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d)",
+            "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d), "
+            "vt_scale=%.4f",
             fold_id, AU, B_A_port.shape[0], B_A_port.shape[1],
-            Sigma_assets.shape[0], Sigma_assets.shape[1],
+            Sigma_assets.shape[0], Sigma_assets.shape[1], vt_scale,
         )
 
         # 8. Portfolio optimization: frontier → α*, SCA → w*
