@@ -625,6 +625,16 @@ class VAETrainer:
         overfit_ratio = best_val / max(last_train, 1e-8) if last_train > 0 else 0.0
         overfit_flag = overfit_ratio < 0.85 or overfit_ratio > 1.5
 
+        if overfit_flag:
+            logger.warning(
+                "Overfitting detected: val/train ratio=%.2f "
+                "(best_val=%.1f, last_train=%.1f, best_epoch=%d). "
+                "Consider: increase weight_decay, add dropout, "
+                "reduce max_epochs, or try Mode P (learnable sigma_sq).",
+                overfit_ratio, best_val, last_train,
+                self.early_stopping.best_epoch,
+            )
+
         return {
             "best_epoch": self.early_stopping.best_epoch,
             "best_val_elbo": self.early_stopping.best_loss,
