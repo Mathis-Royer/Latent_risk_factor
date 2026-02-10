@@ -412,7 +412,7 @@ def _enforce_miqp(
     w_var = cp.Variable(n)
     z_active = cp.Variable(n_active, boolean=True)  # type: ignore[call-overload]
 
-    # Objective: same structure as _ParametricSCAProblem but with fixed gradient
+    # Objective: same structure as SCA sub-problem but with fixed gradient
     # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
     entropy_term = alpha * (grad_H @ w_var)
     risk_term = lambda_risk * cp.sum_squares(L.T @ w_var)

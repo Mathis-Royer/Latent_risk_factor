@@ -8,7 +8,8 @@ Multi-start optimization (M=5 initializations):
 4-5. Random (Dirichlet + projection)
 
 SCA iterations linearize H(w) and solve a convex sub-problem via CVXPY.
-Parametric problem formulation reuses compiled structure across iterations.
+Each iteration builds a fresh problem with constant gradient coefficients
+to ensure DCP compliance across all CVXPY versions.
 
 DVT Section 4.7: "CVXPY + MOSEK/ECOS (recommended)".
 Reference: ISD Section MOD-008 — Sub-task 2.
@@ -108,19 +109,26 @@ def _safe_cholesky(Sigma: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Parametric CVXPY problem (built once, reused across SCA iterations)
+# SCA sub-problem builder (fresh CVXPY problem per iteration, DCP-safe)
 # ---------------------------------------------------------------------------
 
-class _ParametricSCAProblem:
-    """Pre-compiled CVXPY sub-problem with cp.Parameter for entropy gradient.
+class _SCASubproblemBuilder:
+    """SCA sub-problem builder with constant gradient coefficients.
 
-    Building the CVXPY problem once and updating only the gradient parameter
-    avoids re-compilation and re-canonicalization at each SCA iteration.
+    Builds a fresh CVXPY problem each iteration with the entropy gradient
+    as a constant numpy array (constant @ variable is always DCP-affine).
+    This avoids reliance on DPP canonicalization (cp.Parameter @ cp.Variable)
+    which can fail on certain CVXPY versions.
+
     Uses Cholesky factor L instead of Sigma for efficient cone formulation:
     λ ||L^T w||² = λ w^T Σ w.
     """
 
-    __slots__ = ('_w_var', '_grad_H_param', '_problem')
+    __slots__ = (
+        '_n', '_L_sigma', '_alpha', '_lambda_risk', '_phi', '_w_bar',
+        '_w_max', '_w_old', '_kappa_1', '_kappa_2', '_delta_bar',
+        '_tau_max', '_is_first', '_mu',
+    )
 
     def __init__(
         self,
@@ -139,32 +147,57 @@ class _ParametricSCAProblem:
         is_first: bool,
         mu: np.ndarray | None = None,
     ) -> None:
-        w = cp.Variable(n)
-        grad_H_param = cp.Parameter(n)
+        self._n = n
+        self._L_sigma = L_sigma
+        self._alpha = alpha
+        self._lambda_risk = lambda_risk
+        self._phi = phi
+        self._w_bar = w_bar
+        self._w_max = w_max
+        self._w_old = w_old
+        self._kappa_1 = kappa_1
+        self._kappa_2 = kappa_2
+        self._delta_bar = delta_bar
+        self._tau_max = tau_max
+        self._is_first = is_first
+        self._mu = mu
+
+    def solve(self, grad_H: np.ndarray) -> np.ndarray | None:
+        """
+        Build a fresh CVXPY problem with grad_H as constant and solve.
+
+        Pre-multiplies alpha * grad_H into a single constant coefficient vector
+        so that the entropy term is constant @ variable (always DCP-affine).
+
+        :param grad_H (np.ndarray): Entropy gradient at current iterate (n,)
+
+        :return w_star (np.ndarray | None): Optimal weights, or None if infeasible
+        """
+        w = cp.Variable(self._n)
 
         # Return term
-        if mu is not None:
-            ret_term = mu @ w
+        if self._mu is not None:
+            ret_term = self._mu @ w
         else:
             ret_term = 0.0
 
         # Risk via Cholesky: λ ||L^T w||² = λ w^T Σ w
-        risk_term = lambda_risk * cp.sum_squares(L_sigma.T @ w)
+        risk_term = self._lambda_risk * cp.sum_squares(self._L_sigma.T @ w)
 
-        # Linearized entropy: α ∇H^T w
-        entropy_term = alpha * (grad_H_param @ w)
+        # Linearized entropy: (α · ∇H)^T w — constant numpy vector @ variable
+        entropy_coeff = self._alpha * grad_H  # numpy array (constant)
+        entropy_term = entropy_coeff @ w
 
         # Concentration penalty — sum(square(pos(...))) for DCP compliance
-        # (sum_squares requires affine argument; pos(affine) is convex+nonneg)
-        conc_penalty = phi * cp.sum(cp.square(cp.pos(w - w_bar)))
+        conc_penalty = self._phi * cp.sum(cp.square(cp.pos(w - self._w_bar)))
 
         # Turnover penalty — same DCP-safe pattern
         turn_penalty: cp.Expression = cp.Constant(0.0)
-        if w_old is not None and not is_first:
-            delta_w = cp.abs(w - w_old)
-            linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-            excess_turn = cp.pos(delta_w - delta_bar)
-            quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+        if self._w_old is not None and not self._is_first:
+            delta_w = cp.abs(w - self._w_old)
+            linear_turn = self._kappa_1 * 0.5 * cp.sum(delta_w)
+            excess_turn = cp.pos(delta_w - self._delta_bar)
+            quad_turn = self._kappa_2 * cp.sum(cp.square(excess_turn))
             turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
         obj = cp.Maximize(
@@ -173,36 +206,24 @@ class _ParametricSCAProblem:
 
         cstr_list = [
             w >= 0,
-            w <= w_max,
+            w <= self._w_max,
             cp.sum(w) == 1,
         ]
         constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
-        if w_old is not None and not is_first:
-            turnover_cstr = 0.5 * cp.sum(cp.abs(w - w_old)) <= tau_max
+        if self._w_old is not None and not self._is_first:
+            turnover_cstr = 0.5 * cp.sum(cp.abs(w - self._w_old)) <= self._tau_max
             constraints.append(turnover_cstr)  # type: ignore[arg-type]
 
-        self._w_var = w
-        self._grad_H_param = grad_H_param
-        self._problem = cp.Problem(obj, constraints)
-
-    def solve(self, grad_H: np.ndarray) -> np.ndarray | None:
-        """
-        Update gradient parameter and solve via solver chain.
-
-        :param grad_H (np.ndarray): Entropy gradient at current iterate (n,)
-
-        :return w_star (np.ndarray | None): Optimal weights, or None if infeasible
-        """
-        self._grad_H_param.value = grad_H
+        problem = cp.Problem(obj, constraints)
 
         for solver_name, solver_kwargs in _SOLVER_CHAIN:
             try:
-                self._problem.solve(
+                problem.solve(
                     solver=solver_name, **solver_kwargs,  # type: ignore[arg-type]
                 )
-                if (self._problem.status in ("optimal", "optimal_inaccurate")
-                        and self._w_var.value is not None):
-                    result = np.array(self._w_var.value).flatten()
+                if (problem.status in ("optimal", "optimal_inaccurate")
+                        and w.value is not None):
+                    result = np.array(w.value).flatten()
                     if not np.any(np.isnan(result)):
                         return result
             except cp.SolverError:
@@ -389,8 +410,9 @@ def sca_optimize(
     # Pre-compute Cholesky once (or reuse from caller)
     L_sigma = _L_sigma if _L_sigma is not None else _safe_cholesky(Sigma_assets)
 
-    # Build parametric CVXPY problem once (reused across all SCA iterations)
-    subproblem = _ParametricSCAProblem(
+    # Build SCA sub-problem solver (rebuilds CVXPY problem each iteration
+    # with gradient as constant to avoid DPP compatibility issues)
+    subproblem = _SCASubproblemBuilder(
         n, L_sigma, alpha, lambda_risk, phi, w_bar, w_max,
         w_old, kappa_1, kappa_2, delta_bar, tau_max, is_first, mu,
     )
