@@ -62,6 +62,7 @@ from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.metrics import (
     crisis_period_return,
     factor_explanatory_power,
+    factor_explanatory_power_dynamic,
     portfolio_metrics,
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
@@ -1568,12 +1569,12 @@ class FullPipeline:
             )
             metrics["crisis_return_oos"] = crisis_ret
 
-        # Factor explanatory power (align returns to valid_dates from regression)
-        returns_aligned = returns.loc[valid_dates].reindex(
-            columns=inferred_stock_ids[:n_port],
-        ).fillna(0.0).values
-        ep = factor_explanatory_power(
-            returns_aligned, B_A_port, z_hat,
+        # Factor explanatory power — use estimation-rescaled B_A_by_date
+        # (matches the rescaling used to estimate z_hat via OLS)
+        ep = factor_explanatory_power_dynamic(
+            B_A_by_date, z_hat,
+            returns.loc[train_start:train_end],
+            universe_snapshots, valid_dates,
         )
         metrics["explanatory_power"] = ep
 

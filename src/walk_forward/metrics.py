@@ -130,6 +130,10 @@ def factor_explanatory_power(
     """
     Factor explanatory power: 1 - Var(residuals) / Var(returns).
 
+    WARNING: B_A must use the SAME rescaling as the regression that produced
+    z_hat. Mixing estimation vs portfolio rescaling gives wrong results.
+    Prefer factor_explanatory_power_dynamic() when B_A_by_date is available.
+
     :param returns (np.ndarray): Returns (T, n)
     :param B_A (np.ndarray): Rescaled exposures at each date (n, AU)
     :param z_hat (np.ndarray): Estimated factor returns (T, AU)
@@ -141,6 +145,83 @@ def factor_explanatory_power(
 
     total_var = np.var(returns)
     residual_var = np.var(residuals)
+
+    if total_var < 1e-10:
+        return 0.0
+
+    return float(1.0 - residual_var / total_var)
+
+
+def factor_explanatory_power_dynamic(
+    B_A_by_date: dict[str, np.ndarray],
+    z_hat: np.ndarray,
+    returns: "pd.DataFrame",
+    universe_snapshots: dict[str, list[int]],
+    valid_dates: list[str],
+) -> float:
+    """
+    Factor EP using time-varying estimation rescaling (matches z_hat regression).
+
+    Computes predicted_t = B_A_est(t) @ z_hat_t at each date, using the same
+    estimation-rescaled exposures that produced z_hat via OLS. This avoids the
+    scale mismatch that occurs when using portfolio-rescaled B_A_port.
+
+    :param B_A_by_date (dict): date_str -> B_A_est(t) (n_active_t, AU)
+    :param z_hat (np.ndarray): Estimated factor returns (n_dates, AU)
+    :param returns (pd.DataFrame): Log-returns (dates x stocks)
+    :param universe_snapshots (dict): date_str -> active stock_ids
+    :param valid_dates (list[str]): Dates corresponding to z_hat rows
+
+    :return EP (float): Explanatory power in [0, 1] (or negative if model adds noise)
+    """
+    sid_to_col: dict[int, int] = {
+        col: j for j, col in enumerate(returns.columns)
+    }
+    ret_values = returns.values
+
+    # Build date -> row index mapping
+    date_to_row: dict[str, int] = {}
+    for i, d in enumerate(returns.index):
+        if isinstance(d, pd.Timestamp):
+            date_to_row[str(d.date())] = i
+        else:
+            date_to_row[str(d)] = i
+
+    all_actual: list[float] = []
+    all_predicted: list[float] = []
+
+    for t_idx, date_str in enumerate(valid_dates):
+        if date_str not in B_A_by_date or date_str not in date_to_row:
+            continue
+
+        B_t = B_A_by_date[date_str]
+        active_sids = universe_snapshots.get(date_str, [])
+        z_t = z_hat[t_idx]
+        predicted_t = B_t @ z_t
+
+        row_idx = date_to_row[date_str]
+        n_active = min(len(active_sids), B_t.shape[0])
+
+        for i in range(n_active):
+            sid = active_sids[i]
+            if sid not in sid_to_col:
+                continue
+            col_idx = sid_to_col[sid]
+            r_it = ret_values[row_idx, col_idx]
+            if np.isnan(r_it):
+                continue
+            all_actual.append(float(r_it))
+            all_predicted.append(float(predicted_t[i]))
+
+    if len(all_actual) < 10:
+        return 0.0
+
+    actual = np.array(all_actual)
+    predicted = np.array(all_predicted)
+    residuals = actual - predicted
+
+    total_var = float(np.var(actual))
+    residual_var = float(np.var(residuals))
 
     if total_var < 1e-10:
         return 0.0
