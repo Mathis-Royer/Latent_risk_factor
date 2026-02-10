@@ -23,7 +23,7 @@ K_HEAD_KERNELS = (5, 21, 63)
 C_BRANCH = 48
 C_HEAD = 3 * C_BRANCH  # 144
 K_BODY = 7
-DROPOUT = 0.1
+DROPOUT = 0.2
 
 
 class InceptionHead(nn.Module):
