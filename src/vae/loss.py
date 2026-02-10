@@ -101,6 +101,8 @@ def compute_loss(
     beta_fixed: float = 1.0,
     warmup_fraction: float = 0.20,
     co_movement_loss: torch.Tensor | None = None,
+    sigma_sq_min: float = 1e-4,
+    sigma_sq_max: float = 10.0,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Complete loss computation for a single batch.
@@ -119,6 +121,8 @@ def compute_loss(
     :param beta_fixed (float): Fixed beta for Mode A (must be 1.0 for P)
     :param warmup_fraction (float): Fraction of epochs for Mode F β warmup
     :param co_movement_loss (torch.Tensor | None): Pre-computed L_co scalar
+    :param sigma_sq_min (float): Lower clamp for observation variance σ²
+    :param sigma_sq_max (float): Upper clamp for observation variance σ²
 
     :return total_loss (torch.Tensor): Scalar loss for backprop
     :return components (dict): Loss components for monitoring
@@ -141,8 +145,8 @@ def compute_loss(
     # KL loss
     L_kl = compute_kl_loss(mu, log_var)
 
-    # σ² = clamp(exp(log_sigma_sq), 1e-4, 10)
-    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=1e-4, max=10.0)
+    # σ² = clamp(exp(log_sigma_sq), sigma_sq_min, sigma_sq_max)
+    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)
 
     # Curriculum λ_co
     lambda_co = get_lambda_co(epoch, total_epochs, lambda_co_max)
@@ -351,6 +355,8 @@ def compute_validation_elbo(
     mu: torch.Tensor,
     log_var: torch.Tensor,
     log_sigma_sq: torch.Tensor,
+    sigma_sq_min: float = 1e-4,
+    sigma_sq_max: float = 10.0,
 ) -> torch.Tensor:
     """
     Validation ELBO — EXCLUDES γ and λ_co (INV-011), INCLUDES σ².
@@ -364,6 +370,8 @@ def compute_validation_elbo(
     :param mu (torch.Tensor): Latent mean (B, K)
     :param log_var (torch.Tensor): Latent log-variance (B, K)
     :param log_sigma_sq (torch.Tensor): Scalar log σ²
+    :param sigma_sq_min (float): Lower clamp for observation variance σ²
+    :param sigma_sq_max (float): Upper clamp for observation variance σ²
 
     :return L_val (torch.Tensor): Scalar validation ELBO
     """
@@ -378,7 +386,7 @@ def compute_validation_elbo(
     L_kl = compute_kl_loss(mu, log_var)
 
     # σ²
-    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=1e-4, max=10.0)
+    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)
 
     # Assembly: includes σ² terms
     L_val = (D / (2.0 * sigma_sq)) * L_recon + (D / 2.0) * torch.log(sigma_sq) + L_kl

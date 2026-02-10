@@ -38,6 +38,8 @@ class VAEModel(nn.Module):
         T_compressed: int,
         learn_obs_var: bool = True,
         dropout: float = 0.1,
+        sigma_sq_min: float = 1e-4,
+        sigma_sq_max: float = 10.0,
     ) -> None:
         """
         :param F (int): Number of input features
@@ -47,6 +49,8 @@ class VAEModel(nn.Module):
         :param T_compressed (int): Encoder's last temporal size
         :param learn_obs_var (bool): Whether σ² is learned (Mode P/A)
         :param dropout (float): Dropout rate for residual blocks
+        :param sigma_sq_min (float): Lower clamp for observation variance σ²
+        :param sigma_sq_max (float): Upper clamp for observation variance σ²
         """
         super().__init__()
 
@@ -54,6 +58,8 @@ class VAEModel(nn.Module):
         self.K = K
         self.T = T
         self.learn_obs_var = learn_obs_var
+        self.sigma_sq_min = sigma_sq_min
+        self.sigma_sq_max = sigma_sq_max
 
         # Encoder and decoder
         self.encoder = Encoder(F=F, K=K, channels=channels, dropout=dropout)
@@ -72,13 +78,13 @@ class VAEModel(nn.Module):
     @property
     def obs_var(self) -> torch.Tensor:
         """
-        Observation variance σ² = clamp(exp(log_sigma_sq), 1e-4, 10).
+        Observation variance σ² = clamp(exp(log_sigma_sq), sigma_sq_min, sigma_sq_max).
 
-        INV-002: scalar, clamped to [1e-4, 10].
+        INV-002: scalar, clamped to [sigma_sq_min, sigma_sq_max].
 
         :return sigma_sq (torch.Tensor): Scalar observation variance
         """
-        return torch.clamp(torch.exp(self.log_sigma_sq), min=1e-4, max=10.0)
+        return torch.clamp(torch.exp(self.log_sigma_sq), min=self.sigma_sq_min, max=self.sigma_sq_max)
 
     def reparameterize(
         self, mu: torch.Tensor, log_var: torch.Tensor,

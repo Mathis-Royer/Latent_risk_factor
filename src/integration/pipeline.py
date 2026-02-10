@@ -320,11 +320,11 @@ class FullPipeline:
 
         # Step 4: If still > r_max, relax r_max with 10% headroom
         r_max_adapted = r_max_config
-        dropout = 0.2
+        dropout = self.config.vae.dropout
 
         if r > r_max_config:
             r_max_adapted = r * 1.1
-            dropout = 0.2
+            dropout = max(dropout, 0.2)  # reinforce regularization for small universes
             logger.warning(
                 "Small universe adaptation: n=%d, T_annee=%d, K=%d->%d, "
                 "c_min=%d->%d, r=%.2f > r_max=%.1f. "
@@ -336,7 +336,7 @@ class FullPipeline:
             )
         elif c_min < C_MIN_DEFAULT:
             if r > 5.0:
-                dropout = 0.2
+                dropout = max(dropout, 0.2)  # reinforce regularization for small universes
             logger.info(
                 "Small universe adaptation: n=%d, K=%d->%d, c_min=%d->%d, "
                 "r=%.2f (within r_max=%.1f)%s.",
@@ -890,6 +890,10 @@ class FullPipeline:
             state_bag.setdefault("vae_info", ckpt.get("vae_info", {}))
             state_bag.setdefault("fit_result", ckpt.get("fit_result"))
 
+        # Fix E* bug: recover true best_epoch from fit_result instead of using max_epochs
+        if state_bag.get("fit_result") is not None:
+            e_star = state_bag["fit_result"]["best_epoch"]
+
         self.record_vae_result(0, vae_metrics, e_star)
 
         # --- Step 6: Benchmarks (optional) ---
@@ -1116,6 +1120,8 @@ class FullPipeline:
             c_min=adapted_params["c_min"],
             dropout=adapted_params["dropout"],
             learn_obs_var=(mode != "F"),
+            sigma_sq_min=self.config.vae.sigma_sq_min,
+            sigma_sq_max=self.config.vae.sigma_sq_max,
         )
 
         # Train
@@ -1135,6 +1141,8 @@ class FullPipeline:
             compile_model=self.config.training.compile_model,
             gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
             gradient_checkpointing=self.config.training.gradient_checkpointing,
+            sigma_sq_min=self.config.vae.sigma_sq_min,
+            sigma_sq_max=self.config.vae.sigma_sq_max,
         )
 
         fit_result = trainer.fit(
@@ -1282,6 +1290,8 @@ class FullPipeline:
                 c_min=adapted["c_min"],
                 dropout=adapted["dropout"],
                 learn_obs_var=(mode != "F"),
+                sigma_sq_min=self.config.vae.sigma_sq_min,
+                sigma_sq_max=self.config.vae.sigma_sq_max,
             )
 
             # Phase B: train on full data for E* epochs
@@ -1306,6 +1316,8 @@ class FullPipeline:
                 compile_model=self.config.training.compile_model,
                 gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
                 gradient_checkpointing=self.config.training.gradient_checkpointing,
+                sigma_sq_min=self.config.vae.sigma_sq_min,
+                sigma_sq_max=self.config.vae.sigma_sq_max,
             )
 
             # Co-movement data: strata from k-means on trailing returns

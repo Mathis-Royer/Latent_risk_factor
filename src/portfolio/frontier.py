@@ -140,5 +140,13 @@ def select_operating_alpha(
         if ratio < delta_H_threshold:
             return float(df["alpha"].iloc[i - 1])
 
-    # Default: last alpha in grid
-    return float(df["alpha"].iloc[-1])
+    # Default: last alpha in grid — WARNING: may indicate degenerate risk model
+    alpha_max = float(df["alpha"].iloc[-1])
+    logger.warning(
+        "select_operating_alpha: no elbow found (ΔH/ΔVar never < %.3f). "
+        "Returning α*=%.4g (max of grid). This may indicate the risk model "
+        "lacks exploitable factor structure — consider checking σ² convergence "
+        "and active units.",
+        delta_H_threshold, alpha_max,
+    )
+    return alpha_max

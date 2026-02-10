@@ -80,6 +80,8 @@ class VAETrainer:
         compile_model: bool = False,
         gradient_accumulation_steps: int = 1,
         gradient_checkpointing: bool = False,
+        sigma_sq_min: float = 1e-4,
+        sigma_sq_max: float = 10.0,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -103,6 +105,8 @@ class VAETrainer:
         :param compile_model (bool): Use torch.compile (requires PyTorch 2.x)
         :param gradient_accumulation_steps (int): Accumulate gradients over N steps
         :param gradient_checkpointing (bool): Recompute activations on backward to save VRAM
+        :param sigma_sq_min (float): Lower clamp for observation variance σ²
+        :param sigma_sq_max (float): Upper clamp for observation variance σ²
         """
         self.model: VAEModel = model
         self.loss_mode = loss_mode
@@ -156,9 +160,12 @@ class VAETrainer:
             self.optimizer, patience=lr_patience, factor=lr_factor,
         )
 
-        # log_sigma_sq clamping bounds
-        self._log_sigma_sq_min = math.log(1e-4)
-        self._log_sigma_sq_max = math.log(10.0)
+        # log_sigma_sq clamping bounds (from config)
+        self._log_sigma_sq_min = math.log(sigma_sq_min)
+        self._log_sigma_sq_max = math.log(sigma_sq_max)
+        self._sigma_sq_min = sigma_sq_min
+        self._sigma_sq_max = sigma_sq_max
+        self._sigma_sq_bounds_hit_streak = 0  # consecutive epochs hitting bounds
 
         # AMP (Automatic Mixed Precision) — auto-adapts to device
         amp_cfg = get_amp_config(self.device)
@@ -278,6 +285,8 @@ class VAETrainer:
                     beta_fixed=self.beta_fixed,
                     warmup_fraction=self.warmup_fraction,
                     co_movement_loss=co_mov_loss,
+                    sigma_sq_min=self._sigma_sq_min,
+                    sigma_sq_max=self._sigma_sq_max,
                 )
 
             # Backward pass with gradient accumulation
@@ -381,6 +390,25 @@ class VAETrainer:
             "learning_rate": self.scheduler.get_lr(),
         }
 
+        # Fix 5: Monitor σ² hitting bounds (DVT monitoring prescription)
+        avg_sigma_sq = float(epoch_sigma_sq / n_batches)
+        _eps = 1e-6
+        hitting_bounds = (
+            abs(avg_sigma_sq - self._sigma_sq_min) < _eps * self._sigma_sq_min
+            or abs(avg_sigma_sq - self._sigma_sq_max) < _eps * self._sigma_sq_max
+        )
+        if hitting_bounds:
+            self._sigma_sq_bounds_hit_streak += 1
+            if self._sigma_sq_bounds_hit_streak >= 5:
+                logger.warning(
+                    "σ² has been clamped at bounds (%.4g) for %d consecutive epochs. "
+                    "Current bounds: [%.4g, %.4g]. Consider adjusting sigma_sq_min/max.",
+                    avg_sigma_sq, self._sigma_sq_bounds_hit_streak,
+                    self._sigma_sq_min, self._sigma_sq_max,
+                )
+        else:
+            self._sigma_sq_bounds_hit_streak = 0
+
         if self.loss_mode == "F":
             metrics["beta_t"] = get_beta_t(epoch, total_epochs, self.warmup_fraction)
 
@@ -422,6 +450,8 @@ class VAETrainer:
                         mu=mu,
                         log_var=log_var,
                         log_sigma_sq=self.model.log_sigma_sq,
+                        sigma_sq_min=self._sigma_sq_min,
+                        sigma_sq_max=self._sigma_sq_max,
                     )
 
                 total_elbo += elbo

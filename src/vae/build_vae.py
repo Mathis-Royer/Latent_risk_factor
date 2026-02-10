@@ -282,6 +282,8 @@ def build_vae(
     learn_obs_var: bool = True,
     c_min: int = C_MIN_DEFAULT,
     dropout: float = DROPOUT,
+    sigma_sq_min: float = 1e-4,
+    sigma_sq_max: float = 10.0,
 ) -> tuple[VAEModel, dict]:
     """
     Factory function: derive and instantiate the full VAE architecture.
@@ -302,6 +304,8 @@ def build_vae(
     :param learn_obs_var (bool): Whether σ² is learned (True for P/A, False for F)
     :param c_min (int): Minimum final layer width (384 standard, 144 for small universes)
     :param dropout (float): Dropout rate for residual blocks (0.2 for reinforced reg)
+    :param sigma_sq_min (float): Lower clamp for observation variance σ²
+    :param sigma_sq_max (float): Upper clamp for observation variance σ²
 
     :return model (VAEModel): Instantiated VAE model
     :return info (dict): Architecture info dictionary
@@ -352,6 +356,8 @@ def build_vae(
         T_compressed=T_compressed,
         learn_obs_var=learn_obs_var,
         dropout=dropout,
+        sigma_sq_min=sigma_sq_min,
+        sigma_sq_max=sigma_sq_max,
     )
 
     info = {
