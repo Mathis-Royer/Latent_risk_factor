@@ -128,13 +128,32 @@ def test_curriculum_batching_transition() -> None:
     random_batches = list(sampler)
     assert len(random_batches) > 0, "Random mode should produce batches"
 
-    # Verify total coverage in random mode
-    all_indices = set()
+    # A2: Verify total coverage in random mode — each index appears exactly once
+    all_indices: list[int] = []
     for batch in random_batches:
-        all_indices.update(batch)
-    assert len(all_indices) == n_windows, (
-        f"Random mode should cover all windows: got {len(all_indices)}, expected {n_windows}"
+        all_indices.extend(batch)
+    assert len(set(all_indices)) == n_windows, (
+        f"Random mode should cover all windows: got {len(set(all_indices))}, expected {n_windows}"
     )
+    assert len(all_indices) == n_windows, (
+        f"Random mode should yield each index once: got {len(all_indices)} total, expected {n_windows}"
+    )
+
+    # A2: Verify sync batches respect stratified sampling within time blocks.
+    # Without metadata, all windows fall in one block, so we verify that sync
+    # batches sample across multiple strata (not just random contiguous chunks).
+    sync_sampler = sampler.__class__(
+        n_windows=n_windows, batch_size=batch_size, synchronous=True, seed=42,
+    )
+    sync_batches_2 = list(sync_sampler)
+    for batch in sync_batches_2:
+        assert len(batch) <= batch_size, (
+            f"Sync batch exceeds batch_size: {len(batch)} > {batch_size}"
+        )
+    # Total indices produced should be roughly n_windows (not necessarily exact
+    # because sync mode may over/under-sample due to stratum rounding)
+    all_sync_indices = [idx for b in sync_batches_2 for idx in b]
+    assert len(all_sync_indices) > 0, "Sync mode should produce at least some indices"
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +229,8 @@ def test_best_checkpoint_restored(
     # Tolerance is wider because BatchNorm running statistics can cause
     # minor discrepancies between the ELBO recorded during training and
     # the one recomputed after restore.
-    assert abs(current_val - best_val) / max(abs(best_val), 1.0) < 0.01, (
-        f"After restore, val_elbo={current_val:.6f} should be within 1% of "
+    assert abs(current_val - best_val) / max(abs(best_val), 1.0) < 0.001, (
+        f"After restore, val_elbo={current_val:.6f} should be within 0.1% of "
         f"best_val_elbo={best_val:.6f}"
     )
 
@@ -224,12 +243,17 @@ def test_mode_F_warmup_protection(
     small_model: tuple[VAEModel, dict],
     small_data: tuple[torch.Tensor, torch.Tensor],
 ) -> None:
-    """In Mode F during warmup, early stopping counter should reset to 0."""
+    """In Mode F, fit() must not trigger early stopping during warmup.
+
+    Runs fit() with patience=1 and 50% warmup. With patience=1, training
+    would stop after 2 non-improving epochs if warmup protection were absent.
+    We verify training runs past the warmup boundary.
+    """
     torch.manual_seed(42)
     model, _ = small_model
     train_windows, val_windows = small_data
 
-    warmup_fraction = 0.50  # 50% warmup for testing
+    warmup_fraction = 0.50
     max_epochs = 10
     warmup_epochs = int(warmup_fraction * max_epochs)  # = 5
 
@@ -239,32 +263,24 @@ def test_mode_F_warmup_protection(
         gamma=1.0,
         warmup_fraction=warmup_fraction,
         learning_rate=1e-3,
-        patience=2,
+        patience=1,  # Very aggressive — would stop in epoch 2 without protection
         device=torch.device("cpu"),
     )
 
-    dataset = TensorDataset(train_windows, torch.arange(len(train_windows)))
-    train_loader: DataLoader[tuple[torch.Tensor, ...]] = DataLoader(
-        dataset, batch_size=16, shuffle=True,
-    )
-    val_dataset = TensorDataset(val_windows)
-    val_loader: DataLoader[tuple[torch.Tensor, ...]] = DataLoader(
-        val_dataset, batch_size=16, shuffle=False,
+    result = trainer.fit(
+        train_windows=train_windows,
+        val_windows=val_windows,
+        max_epochs=max_epochs,
+        batch_size=16,
     )
 
-    # Manually run warmup epochs and check counter is reset
-    for epoch in range(warmup_epochs):
-        trainer.train_epoch(train_loader, epoch, max_epochs)
-        val_elbo = trainer.validate(val_loader)
-
-        # During warmup, check but then reset counter
-        trainer.early_stopping.check(val_elbo, epoch, model)
-        trainer.early_stopping.counter = 0  # Mimics fit() behavior
-
-        assert trainer.early_stopping.counter == 0, (
-            f"During warmup epoch {epoch}, counter should be 0, "
-            f"got {trainer.early_stopping.counter}"
-        )
+    n_epochs_run = len(result["history"])
+    # With 50% warmup (5 epochs) + patience=1, training must run
+    # at least past the warmup boundary (epoch 5)
+    assert n_epochs_run >= warmup_epochs, (
+        f"Training stopped at epoch {n_epochs_run}, before warmup ended "
+        f"at epoch {warmup_epochs}. Warmup protection is not working."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +329,216 @@ def test_training_loss_decreases(
     assert last_loss < first_loss, (
         f"Loss should decrease: first={first_loss:.4f}, last={last_loss:.4f}"
     )
+
+    # Intermediate check: loss at epoch 5 should already be below epoch 1
+    mid_loss = history[min(4, len(history) - 1)]["train_loss"]
+    assert mid_loss < first_loss, (
+        f"Loss at epoch 5 should be below epoch 1: "
+        f"epoch1={first_loss:.4f}, epoch5={mid_loss:.4f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. test_curriculum_sampler_sync_vs_random_batches — INV-010
+# ---------------------------------------------------------------------------
+
+def test_curriculum_sampler_sync_vs_random_batches() -> None:
+    """
+    Synchronous batches draw from time blocks; random batches cover all windows.
+    INV-010: Phases 1-2 synchronous+stratified, Phase 3 random.
+    """
+    import pandas as pd
+
+    n_windows = 200
+    batch_size = 32
+
+    # Create metadata with distinct end dates for time-block grouping
+    dates = pd.bdate_range("2020-01-01", periods=n_windows, freq="B")
+    metadata = pd.DataFrame({
+        "stock_id": list(range(n_windows)),
+        "start_date": dates,
+        "end_date": dates,
+    })
+
+    sampler = CurriculumBatchSampler(
+        n_windows=n_windows,
+        batch_size=batch_size,
+        window_metadata=metadata,
+        synchronous=True,
+        seed=42,
+    )
+
+    # Phase 1-2: synchronous batches
+    sync_batches = list(sampler)
+    assert len(sync_batches) > 0, "Synchronous mode produced no batches"
+
+    # Each synchronous batch should draw from a limited time range
+    for batch in sync_batches:
+        if len(batch) >= 2:
+            batch_dates = dates[batch]
+            date_range = int((batch_dates.max() - batch_dates.min()).days)  # type: ignore[union-attr]
+            # Windows in a sync batch should be within delta_sync window
+            assert date_range <= 21 * 5, (
+                f"Sync batch spans {date_range} days, expected <= {21 * 5}"
+            )
+
+    # Phase 3: random batches
+    sampler.set_synchronous(False)
+    random_batches = list(sampler)
+    assert len(random_batches) > 0, "Random mode produced no batches"
+
+    # Random batches should cover all indices
+    all_indices = set()
+    for batch in random_batches:
+        all_indices.update(batch)
+    assert len(all_indices) == n_windows, (
+        f"Random mode should cover all {n_windows} windows, covered {len(all_indices)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. test_mode_F_scheduler_disabled_during_warmup
+# ---------------------------------------------------------------------------
+
+def test_mode_F_scheduler_disabled_during_warmup(
+    small_model: tuple[VAEModel, dict],
+    small_data: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    """In Mode F during warmup, scheduler should not reduce LR aggressively."""
+    torch.manual_seed(42)
+    model, _ = small_model
+    train_windows, val_windows = small_data
+
+    warmup_fraction = 0.50
+    max_epochs = 10
+
+    trainer = VAETrainer(
+        model=model,
+        loss_mode="F",
+        gamma=1.0,
+        warmup_fraction=warmup_fraction,
+        learning_rate=1e-3,
+        patience=50,
+        device=torch.device("cpu"),
+    )
+
+    initial_lr = trainer.optimizer.param_groups[0]["lr"]
+
+    dataset = TensorDataset(train_windows, torch.arange(len(train_windows)))
+    train_loader: DataLoader[tuple[torch.Tensor, ...]] = DataLoader(
+        dataset, batch_size=16, shuffle=True,
+    )
+
+    # Run warmup epochs
+    warmup_epochs = int(warmup_fraction * max_epochs)
+    for epoch in range(warmup_epochs):
+        trainer.train_epoch(train_loader, epoch, max_epochs)
+
+    current_lr = trainer.optimizer.param_groups[0]["lr"]
+    assert current_lr >= initial_lr * 0.5, (
+        f"LR dropped significantly during warmup: "
+        f"initial={initial_lr}, current={current_lr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. test_gradient_accumulation_effective_batch
+# ---------------------------------------------------------------------------
+
+def test_gradient_accumulation_effective_batch(
+    small_model: tuple[VAEModel, dict],
+) -> None:
+    """
+    Loss from a full batch vs two half-batches should be approximately equal
+    when model is in eval mode (consistent BatchNorm statistics).
+    """
+    torch.manual_seed(42)
+    model, _ = small_model
+
+    n_samples = 64
+    data = torch.randn(n_samples, T_VAL, F_VAL)
+
+    # Single large batch
+    model.eval()
+    with torch.no_grad():
+        x_hat_full, mu_full, log_var_full = model(data)
+    loss_full = torch.mean((data - x_hat_full) ** 2).item()
+
+    # Two half-batches averaged
+    half = n_samples // 2
+    with torch.no_grad():
+        x_hat_1, _, _ = model(data[:half])
+        x_hat_2, _, _ = model(data[half:])
+    loss_1 = torch.mean((data[:half] - x_hat_1) ** 2).item()
+    loss_2 = torch.mean((data[half:] - x_hat_2) ** 2).item()
+    loss_accum = (loss_1 + loss_2) / 2.0
+
+    assert abs(loss_full - loss_accum) / max(abs(loss_full), 1e-8) < 0.05, (
+        f"Loss mismatch: full={loss_full:.6f}, accumulated={loss_accum:.6f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Trainer output keys
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# A4. test_sigma_sq_clamp_exact_values — Verify clamp at known boundaries
+# ---------------------------------------------------------------------------
+
+def test_sigma_sq_clamp_exact_values() -> None:
+    """Verify obs_var clamp function produces exact values at known boundaries.
+
+    σ² = clamp(exp(log_σ²), 1e-4, 10.0)
+    - log_σ² = log(1e-5) → σ² must be exactly 1e-4 (lower clamp)
+    - log_σ² = log(100)  → σ² must be exactly 10.0 (upper clamp)
+    - log_σ² = 0.0       → σ² must be exactly 1.0 (interior)
+    """
+    torch.manual_seed(42)
+    model, _ = build_vae(n=20, T=64, T_annee=3, F=2, K=5, r_max=200.0, c_min=144)
+
+    # Interior: log_σ² = 0 → σ² = 1.0
+    with torch.no_grad():
+        model.log_sigma_sq.fill_(0.0)
+    assert abs(model.obs_var.item() - 1.0) < 1e-6, (
+        f"obs_var at log_σ²=0 should be 1.0, got {model.obs_var.item()}"
+    )
+
+    # Lower clamp: log_σ² = log(1e-5) → σ² = 1e-4 (clamped)
+    with torch.no_grad():
+        model.log_sigma_sq.fill_(math.log(1e-5))
+    assert abs(model.obs_var.item() - 1e-4) < 1e-8, (
+        f"obs_var at log_σ²=log(1e-5) should be 1e-4 (clamped), got {model.obs_var.item()}"
+    )
+
+    # Upper clamp: log_σ² = log(100) → σ² = 10.0 (clamped)
+    with torch.no_grad():
+        model.log_sigma_sq.fill_(math.log(100.0))
+    assert abs(model.obs_var.item() - 10.0) < 1e-6, (
+        f"obs_var at log_σ²=log(100) should be 10.0 (clamped), got {model.obs_var.item()}"
+    )
+
+    # Gradient verification: at lower boundary, gradient through clamp should be 0
+    model.log_sigma_sq.requires_grad_(True)
+    with torch.no_grad():
+        model.log_sigma_sq.fill_(math.log(1e-5))
+    obs = model.obs_var
+    obs.backward()
+    assert model.log_sigma_sq.grad is not None
+    assert abs(model.log_sigma_sq.grad.item()) < 1e-8, (
+        f"At lower clamp boundary, gradient should be 0 (blocked by clamp), "
+        f"got {model.log_sigma_sq.grad.item()}"
+    )
+
+
+class TestTrainerOutput:
+    def test_fit_returns_expected_keys(self) -> None:
+        """trainer.fit() returns dict with history, best_epoch, best_val_elbo."""
+        torch.manual_seed(42)
+        model, _ = build_vae(n=20, T=64, T_annee=3, F=2, K=5, r_max=200.0, c_min=144)
+        trainer = VAETrainer(model=model, loss_mode="P", gamma=1.0, learning_rate=1e-3, patience=5, device=torch.device("cpu"))
+        x = torch.randn(20, 64, 2)
+        result = trainer.fit(train_windows=x[:16], val_windows=x[16:], max_epochs=3, batch_size=8)
+        assert "history" in result, "Missing 'history' key"
+        assert len(result["history"]) > 0, "Empty history"

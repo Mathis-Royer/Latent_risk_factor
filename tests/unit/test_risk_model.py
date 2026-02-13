@@ -141,27 +141,80 @@ class TestRescaling:
             "should produce different results"
         )
 
-    def test_winsorization(self) -> None:
-        """Winsorized ratios must be bounded to [P5, P95]."""
-        np.random.seed(SEED)
+    def test_rescaling_formula_known_values(self) -> None:
+        """Verify rescaling formula B_rescaled[i] = winsorized_ratio_i * B_A[i].
 
-        # Cross-section with one extreme outlier
-        vol_cross_section = np.array(
-            [0.20, 0.22, 0.18, 0.25, 0.19, 0.21, 0.23, 0.17, 5.0, 0.001],
+        Uses known inputs where:
+        1. Stock with vol == median has ratio exactly 1.0 (proves denominator is median)
+        2. Row-wise scaling is uniform across columns
+        """
+        n, au = 5, 2
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=1, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+
+        B_A = np.array([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+            [9.0, 10.0],
+        ], dtype=np.float64)
+
+        # Vols: stock 2 (index 2) is the exact median (odd count)
+        vols = np.array([[0.28, 0.29, 0.30, 0.31, 0.32]])
+        trailing_vol = pd.DataFrame(vols, index=date_strs, columns=stock_ids)
+        snapshots = {date_strs[0]: stock_ids[:]}
+
+        B_port = rescale_portfolio(B_A, trailing_vol, date_strs[0], stock_ids, stock_ids)
+
+        # Stock 2 has vol == median(0.30) -> ratio == 1.0, so B_rescaled[2] == B_A[2]
+        np.testing.assert_allclose(
+            B_port[2], B_A[2], atol=1e-10,
+            err_msg="Stock with vol == median should have ratio 1.0 (B unchanged)",
+        )
+
+        # All rows must be scaled uniformly: ratio_col0 == ratio_col1
+        for i in range(n):
+            ratio_col0 = B_port[i, 0] / B_A[i, 0]
+            ratio_col1 = B_port[i, 1] / B_A[i, 1]
+            assert abs(ratio_col0 - ratio_col1) < 1e-10, (
+                f"Stock {i}: scaling must be uniform across columns. "
+                f"ratio_col0={ratio_col0:.6f}, ratio_col1={ratio_col1:.6f}"
+            )
+
+    def test_winsorization_uses_median_not_mean(self) -> None:
+        """Winsorized ratios must use median as denominator, not mean.
+
+        With an extreme outlier pulling mean >> median, stocks at the median
+        value should have ratio ~1.0 (proving median is the denominator).
+        If mean were used, their ratio would be ~0.17 instead.
+        """
+        # 10 stocks: 9 at 0.20, 1 outlier at 10.0
+        vols = np.array(
+            [0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 10.0],
             dtype=np.float64,
         )
 
-        ratios = _compute_winsorized_ratios(vol_cross_section, 5.0, 95.0)
+        median_val = np.median(vols)
+        mean_val = np.mean(vols)
+        assert abs(median_val - 0.20) < 1e-10, "Median should be 0.20"
+        assert mean_val > 1.0, f"Mean should be >1.0 with outlier, got {mean_val}"
 
-        # The raw ratio for the extreme values would be far outside [P5, P95]
-        lo = np.percentile(vol_cross_section / np.median(vol_cross_section), 5.0)
-        hi = np.percentile(vol_cross_section / np.median(vol_cross_section), 95.0)
+        ratios = _compute_winsorized_ratios(vols, 5.0, 95.0)
 
-        assert np.all(ratios >= lo - 1e-10), (
-            f"Ratios below P5 bound: min ratio={ratios.min():.6f}, lo={lo:.6f}"
-        )
-        assert np.all(ratios <= hi + 1e-10), (
-            f"Ratios above P95 bound: max ratio={ratios.max():.6f}, hi={hi:.6f}"
+        # The 9 non-outlier stocks: if median used, ratio = 0.20/0.20 = 1.0
+        # If mean used, ratio = 0.20/1.18 ≈ 0.17 (far from 1.0)
+        for i in range(9):
+            assert abs(ratios[i] - 1.0) < 0.05, (
+                f"Stock {i}: ratio={ratios[i]:.4f}, expected ~1.0 "
+                f"(would be ~{0.20 / mean_val:.4f} if mean were used)"
+            )
+
+        # The outlier must be clipped below its raw ratio (50.0)
+        raw_outlier_ratio = 10.0 / median_val
+        assert ratios[9] < raw_outlier_ratio, (
+            f"Outlier not clipped: ratio={ratios[9]:.4f}, raw={raw_outlier_ratio:.4f}"
         )
 
 
@@ -216,7 +269,12 @@ class TestCovariance:
     """Tests for covariance estimation (MOD-007 sub-tasks 3-4)."""
 
     def test_Sigma_z_psd(self) -> None:
-        """Ledoit-Wolf Sigma_z must be positive semi-definite."""
+        """Ledoit-Wolf Sigma_z must be PSD and match shrinkage formula.
+
+        B1: Verify Sigma_LW = (1-delta)*S_sample + delta*(tr(S_sample)/AU)*I
+        """
+        from sklearn.covariance import LedoitWolf
+
         np.random.seed(SEED)
         rng = np.random.RandomState(SEED)
 
@@ -224,8 +282,35 @@ class TestCovariance:
         Sigma_z = estimate_sigma_z(z_hat)
 
         eigenvalues = np.linalg.eigvalsh(Sigma_z)
-        assert np.all(eigenvalues >= -1e-12), (
+        assert np.all(eigenvalues >= -1e-14), (
             f"Sigma_z not PSD: min eigenvalue = {eigenvalues.min():.2e}"
+        )
+
+        # B1: Verify LW shrinkage formula directly
+        lw = LedoitWolf()
+        lw.fit(z_hat)
+        delta = lw.shrinkage_
+        # LedoitWolf uses ddof=0 internally (1/n normalization)
+        S_sample = np.cov(z_hat.T, ddof=0)
+
+        # Shrinkage parameter in valid range
+        assert 0.0 <= delta <= 1.0, (
+            f"LW shrinkage delta={delta:.6f} outside [0, 1]"
+        )
+
+        # Reconstruct: Sigma_LW = (1-delta)*S_sample + delta*(tr(S)/AU)*I
+        target = (np.trace(S_sample) / AU) * np.eye(AU)
+        Sigma_LW_manual = (1.0 - delta) * S_sample + delta * target
+        np.testing.assert_allclose(
+            Sigma_z, Sigma_LW_manual, atol=1e-10,
+            err_msg="estimate_sigma_z doesn't match LW shrinkage formula",
+        )
+
+        # Shrinkage improves conditioning
+        cond_sample = np.linalg.cond(S_sample)
+        cond_lw = np.linalg.cond(Sigma_z)
+        assert cond_lw <= cond_sample + 1e-6, (
+            f"LW should improve conditioning: cond_sample={cond_sample:.1f}, cond_LW={cond_lw:.1f}"
         )
 
     def test_D_eps_floor(self) -> None:
@@ -341,3 +426,272 @@ class TestConditioning:
 
         assert z_hat.shape == (au,), f"Unexpected shape: {z_hat.shape}"
         assert np.all(np.isfinite(z_hat)), "z_hat contains non-finite values"
+
+        # A3: Verify ridge formula matches manual computation.
+        # λ_ridge = ridge_scale · tr(BᵀB) / AU
+        # z_hat = (BᵀB + λ_ridge·I)⁻¹ Bᵀr
+        BtB = B_t.T @ B_t
+        trace_BtB = np.trace(BtB)
+        lambda_ridge = 1e-6 * trace_BtB / max(1, au)
+        BtB_reg = BtB + lambda_ridge * np.eye(au)
+        Btr = B_t.T @ r_t
+        expected_z = np.linalg.solve(BtB_reg, Btr)
+        np.testing.assert_allclose(
+            z_hat, expected_z, atol=1e-10,
+            err_msg="safe_solve result doesn't match manual ridge formula",
+        )
+
+        # Verify ridge improves conditioning
+        kappa_raw = np.linalg.cond(BtB)
+        kappa_reg = np.linalg.cond(BtB_reg)
+        assert kappa_reg < kappa_raw, (
+            f"Ridge should improve conditioning: kappa_raw={kappa_raw:.2e}, kappa_reg={kappa_reg:.2e}"
+        )
+
+    def test_conditioning_guard_triggers_at_threshold(self) -> None:
+        """Ridge applied when condition number exceeds threshold (kappa > 1e6)."""
+        np.random.seed(SEED)
+        rng = np.random.RandomState(SEED)
+
+        n_active = 30
+        au = AU
+
+        # Well-conditioned B: should NOT apply ridge
+        B_good = rng.randn(n_active, au).astype(np.float64) * 0.3
+        r_good = rng.randn(n_active).astype(np.float64) * 0.01
+        z_good = safe_solve(B_good, r_good, conditioning_threshold=1e6)
+        assert np.all(np.isfinite(z_good))
+
+        # Ill-conditioned B: should apply ridge
+        B_bad = rng.randn(n_active, au).astype(np.float64)
+        B_bad[:, 1] = B_bad[:, 0] + rng.randn(n_active) * 1e-12
+        r_bad = rng.randn(n_active).astype(np.float64) * 0.01
+
+        kappa = np.linalg.cond(B_bad.T @ B_bad)
+        assert kappa > 1e6, (
+            f"Test setup: B_bad not ill-conditioned enough: kappa={kappa:.2e}"
+        )
+
+        z_bad = safe_solve(B_bad, r_bad, conditioning_threshold=1e6, ridge_scale=1e-6)
+        assert z_bad.shape == (au,)
+        assert np.all(np.isfinite(z_bad)), "Ridge fallback produced non-finite values"
+
+
+class TestResiduals:
+    """Tests for residual dtype and shape."""
+
+    def test_residuals_dtype_and_shape(self) -> None:
+        """Residuals must be float64 with shape (n_dates, n_stocks)."""
+        np.random.seed(SEED)
+        data = _make_risk_model_data()
+
+        B_A = data["B_A"]
+        trailing_vol = data["trailing_vol"]
+        universe_snapshots = data["universe_snapshots"]
+        stock_ids = data["stock_ids"]
+        returns = data["returns"]
+
+        B_A_by_date = rescale_estimation(
+            B_A, trailing_vol, universe_snapshots, stock_ids,
+        )
+
+        z_hat, valid_dates = estimate_factor_returns(
+            B_A_by_date, returns, universe_snapshots,
+        )
+
+        residuals = compute_residuals(
+            B_A_by_date, z_hat, returns, universe_snapshots, valid_dates, stock_ids,
+        )
+
+        assert isinstance(residuals, dict), "Residuals should be a dict"
+        for sid, res_list in residuals.items():
+            assert isinstance(res_list, list), f"Residuals[{sid}] not a list"
+            if res_list:
+                assert isinstance(res_list[0], float), (
+                    f"Residuals[{sid}][0] not float: {type(res_list[0])}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Dual rescaling correctness (INV-004)
+# ---------------------------------------------------------------------------
+
+
+class TestDualRescalingCorrectness:
+    """Tests verifying date-specific vs current-date rescaling (INV-004)."""
+
+    def test_estimation_uses_date_specific_vol(self) -> None:
+        """Different dates in rescale_estimation produce different matrices when vol differs."""
+        rng = np.random.RandomState(42)
+        n, au = 10, 3
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=30, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        B_A = rng.randn(n, au) * 0.3
+        # Deliberately different cross-sectional vol profile at different dates
+        vol_data = rng.uniform(0.15, 0.30, (30, n))
+        # First date: stock 0 has much higher vol relative to others
+        vol_data[0, :] = 0.20
+        vol_data[0, 0] = 0.80  # Outlier at first date only
+        trailing_vol = pd.DataFrame(vol_data, index=date_strs, columns=stock_ids)
+        snapshots = {d: stock_ids[:] for d in date_strs}
+        B_by_date = rescale_estimation(B_A, trailing_vol, snapshots, stock_ids)
+        assert isinstance(B_by_date, dict)
+        # First date (with outlier stock 0) should differ from last date
+        d0 = date_strs[0]
+        d_last = date_strs[-1]
+        if d0 in B_by_date and d_last in B_by_date:
+            assert not np.allclose(B_by_date[d0], B_by_date[d_last]), (
+                "Different vol dates should produce different rescaled B"
+            )
+
+    def test_portfolio_uses_current_date_only(self) -> None:
+        """rescale_portfolio is invariant to changes in non-current-date vol."""
+        rng = np.random.RandomState(42)
+        n, au = 10, 3
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=30, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        B_A = rng.randn(n, au) * 0.3
+        vol_data = rng.uniform(0.10, 0.30, (30, n))
+        trailing_vol_1 = pd.DataFrame(vol_data.copy(), index=date_strs, columns=stock_ids)
+        trailing_vol_2 = pd.DataFrame(vol_data.copy(), index=date_strs, columns=stock_ids)
+        # Change vol at first date (not current date = last date)
+        trailing_vol_2.iloc[0] = 5.0
+        current_date = date_strs[-1]
+        B_port_1 = rescale_portfolio(B_A, trailing_vol_1, current_date, stock_ids, stock_ids)
+        B_port_2 = rescale_portfolio(B_A, trailing_vol_2, current_date, stock_ids, stock_ids)
+        np.testing.assert_array_almost_equal(B_port_1, B_port_2, decimal=10,
+            err_msg="Portfolio rescaling should only use current date vol")
+
+
+# ---------------------------------------------------------------------------
+# Tests: Covariance properties (LW conditioning, D_eps floor)
+# ---------------------------------------------------------------------------
+
+
+class TestCovarianceProperties:
+    """Additional tests for covariance estimation quality."""
+
+    def test_ledoit_wolf_better_conditioned(self) -> None:
+        """Ledoit-Wolf shrinkage produces a better-conditioned matrix than sample covariance."""
+        rng = np.random.RandomState(42)
+        au = 5
+        n_dates = 30  # Small sample -> poorly conditioned sample cov
+        z_hat = rng.randn(n_dates, au)
+        Sigma_lw = estimate_sigma_z(z_hat)
+        Sigma_sample = np.cov(z_hat.T)
+        cond_lw = np.linalg.cond(Sigma_lw)
+        cond_sample = np.linalg.cond(Sigma_sample)
+        assert cond_lw <= cond_sample + 1e-6, (
+            f"LW condition={cond_lw:.1f} should be <= sample condition={cond_sample:.1f}"
+        )
+        # PSD check
+        assert np.all(np.linalg.eigvalsh(Sigma_lw) >= -1e-10)
+
+    def test_d_eps_floor_enforced(self) -> None:
+        """estimate_d_eps enforces floor even when residuals have zero variance."""
+        stock_ids = [0, 1, 2]
+        residuals: dict[int, list[float]] = {
+            0: [0.01, 0.02, -0.01],  # Normal
+            1: [0.0, 0.0, 0.0],       # Zero variance
+            2: [0.005],                # Single observation -> use floor
+        }
+        floor = 1e-6
+        D_eps = estimate_d_eps(residuals, stock_ids, d_eps_floor=floor)
+        assert D_eps.shape == (3,)
+        assert np.all(D_eps >= floor), f"Floor violated: min={D_eps.min()}"
+        assert D_eps[1] == floor, f"Zero-variance stock should get floor, got {D_eps[1]}"
+
+    def test_winsorization_applied_in_rescaling(self) -> None:
+        """INV-008: Extreme vol values must be bounded by winsorization in rescaling.
+
+        Creates a 50x outlier and verifies:
+        1. All values remain finite
+        2. The outlier stock's amplification is much less than the raw 50x ratio
+        """
+        rng = np.random.RandomState(42)
+        n, au = 20, 3
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=5, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        B_A = rng.randn(n, au) * 0.3
+        vol_data = np.full((5, n), 0.20)
+        vol_data[:, 0] = 10.0  # Extreme outlier: 50x median
+        trailing_vol = pd.DataFrame(vol_data, index=date_strs, columns=stock_ids)
+        snapshots = {d: stock_ids[:] for d in date_strs}
+        B_by_date = rescale_estimation(B_A, trailing_vol, snapshots, stock_ids)
+
+        ba_outlier_norm = np.linalg.norm(B_A[0])
+        for d in B_by_date:
+            assert np.all(np.isfinite(B_by_date[d])), f"Non-finite values at {d}"
+
+            # Without winsorization, the outlier ratio would be 10.0/0.20 = 50.
+            # After P95 clipping, it should be much less than 50.
+            rescaled_outlier_norm = np.linalg.norm(B_by_date[d][0])
+            if ba_outlier_norm > 1e-10:
+                amplification = rescaled_outlier_norm / ba_outlier_norm
+                assert amplification < 10.0, (
+                    f"Date {d}: outlier amplification = {amplification:.1f}x, "
+                    f"should be < 10x (raw ratio is 50x, P95 clips to ~3.5x)"
+                )
+
+
+# ---------------------------------------------------------------------------
+# M4: Sigma_z must use full history (anti-cyclical principle)
+# ---------------------------------------------------------------------------
+
+
+class TestSigmaZFullHistory:
+    """M4: Verify estimate_sigma_z uses all provided data, not a rolling window."""
+
+    def test_sigma_z_uses_all_data(self) -> None:
+        """
+        Provide factor returns from two distinct periods. Sigma_z from full
+        history must differ from Sigma_z on either period alone, proving
+        all data is used.
+        """
+        rng = np.random.RandomState(42)
+        au = 3
+
+        # Period 1: low-variance factors (100 dates)
+        z_period1 = rng.randn(100, au) * 0.005
+
+        # Period 2: high-variance factors with different correlation (100 dates)
+        z_period2 = rng.randn(100, au) * 0.05
+        z_period2[:, 1] = z_period2[:, 0] * 0.8 + rng.randn(100) * 0.01
+
+        # Full history = both periods
+        z_full = np.vstack([z_period1, z_period2])
+
+        Sigma_full = estimate_sigma_z(z_full)
+        Sigma_p1 = estimate_sigma_z(z_period1)
+        Sigma_p2 = estimate_sigma_z(z_period2)
+
+        # Sigma_full must differ from both period-specific estimates
+        assert not np.allclose(Sigma_full, Sigma_p1, atol=1e-6), (
+            "Sigma_z(full) should differ from Sigma_z(period1 only)"
+        )
+        assert not np.allclose(Sigma_full, Sigma_p2, atol=1e-6), (
+            "Sigma_z(full) should differ from Sigma_z(period2 only)"
+        )
+
+        # Sigma_full variance should be between period1 and period2 variances
+        # (since full history averages both regimes)
+        var_full = np.trace(Sigma_full)
+        var_p1 = np.trace(Sigma_p1)
+        var_p2 = np.trace(Sigma_p2)
+        assert var_p1 < var_full < var_p2, (
+            f"Full history variance (trace={var_full:.6f}) should be between "
+            f"period1 ({var_p1:.6f}) and period2 ({var_p2:.6f})"
+        )
+
+    def test_sigma_z_shape_matches_input(self) -> None:
+        """estimate_sigma_z output shape is (AU, AU) matching input columns."""
+        rng = np.random.RandomState(42)
+        for au in [3, 5, 10]:
+            z_hat = rng.randn(50, au) * 0.01
+            Sigma_z = estimate_sigma_z(z_hat)
+            assert Sigma_z.shape == (au, au), (
+                f"Sigma_z shape {Sigma_z.shape} != expected ({au}, {au})"
+            )
