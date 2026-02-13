@@ -1427,6 +1427,39 @@ class FullPipeline:
             _state_bag["active_dims"] = active_dims
             _state_bag["kl_per_dim"] = kl_per_dim
 
+            # Reconstruction MSE for diagnostics (train + OOS)
+            _train_recon = float("nan")
+            _fit_res = _state_bag.get("fit_result")
+            if _fit_res is not None and _fit_res.get("history"):
+                _train_recon = float(
+                    _fit_res["history"][-1].get("train_recon", float("nan"))
+                )
+            _oos_mse = float("nan")
+            try:
+                _oos_ret = returns.loc[oos_start:oos_end]
+                _oos_rvol = rolling_vol.loc[oos_start:oos_end]
+                if len(_oos_ret) >= T:
+                    _oos_w, _, _ = create_windows(
+                        _oos_ret, _oos_rvol, stock_ids,
+                        T=self.config.data.window_length, stride=T,
+                    )
+                    if _oos_w.shape[0] > 0:
+                        model.eval()
+                        with torch.no_grad():
+                            _oos_t = torch.tensor(
+                                _oos_w, dtype=torch.float32, device=device,
+                            )
+                            _x_hat, _, _ = model(_oos_t)
+                            _oos_mse = float(
+                                torch.nn.functional.mse_loss(_x_hat, _oos_t).item()
+                            )
+            except Exception:
+                pass
+            _state_bag["reconstruction"] = {
+                "train_mse": _train_recon,
+                "oos_mse": _oos_mse,
+            }
+
         # 5. Dual rescaling
         logger.info("  [Fold %d] Dual rescaling (%d stocks, %d dates)...",
                      fold_id, n_stocks, len(train_returns.index))
