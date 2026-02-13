@@ -96,7 +96,11 @@ latent_risk_factor/
 │       ├── __init__.py
 │       ├── pipeline.py               # FullPipeline orchestrator
 │       ├── statistical_tests.py      # Wilcoxon, Holm-Bonferroni, bootstrap
-│       └── reporting.py              # Results compilation
+│       ├── reporting.py              # Results compilation
+│       ├── diagnostics.py            # E2E diagnostic collection (health checks)
+│       ├── diagnostic_report.py      # Markdown/JSON/CSV report generation
+│       ├── diagnostic_plots.py       # PNG diagnostic plot generation
+│       └── visualization.py          # Dashboard display helpers
 │
 ├── tests/                            # Test suite
 │   ├── __init__.py
@@ -124,7 +128,8 @@ latent_risk_factor/
 │
 ├── scripts/                          # CLI entry points
 │   ├── run_walk_forward.py           # Run full walk-forward validation
-│   └── run_benchmarks.py             # Run benchmarks only
+│   ├── run_benchmarks.py             # Run benchmarks only
+│   └── run_diagnostic.py             # Comprehensive pipeline diagnostic (quick/full)
 │
 ├── ISD_methodology.md                # ISD Methodology v1.0
 ├── CLAUDE.md                         # Project-level Claude instructions
@@ -153,6 +158,7 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-10 | src/integration/, scripts/ | Added diagnostic pipeline: `diagnostics.py`, `diagnostic_report.py`, `diagnostic_plots.py`, `run_diagnostic.py` |
 | 2026-02-07 | src/, tests/ | Added `src/utils.py` (hardware adaptation) and `tests/unit/test_utils.py` |
 | 2026-02-06 | docs/ | Added implementation_decisions.md for logging spec gap decisions |
 | 2026-02-06 | Initial | Created full project tree from ISD specification |
