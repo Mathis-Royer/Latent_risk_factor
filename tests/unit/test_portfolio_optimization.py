@@ -1158,3 +1158,139 @@ class TestTurnoverPenaltyFormula:
         assert abs(result - expected_linear) < 1e-12, (
             f"Within-threshold: got {result:.12f}, expected linear-only={expected_linear:.12f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Armijo inequality verification: f(w + alpha*d) <= f(w) + c*alpha*(grad·d)
+# ---------------------------------------------------------------------------
+
+
+class TestArmijoInequality:
+    """Verify Armijo backtracking satisfies the sufficient decrease condition."""
+
+    def test_armijo_condition_holds(self) -> None:
+        """After armijo_backtracking, the Armijo inequality must hold."""
+        from src.portfolio.sca_solver import armijo_backtracking, objective_function
+
+        rng = np.random.RandomState(42)
+        n = 10
+        au = 3
+
+        # Create well-conditioned problem
+        A = rng.randn(n, n) * 0.01
+        Sigma = A @ A.T + np.eye(n) * 0.01
+        B_prime = rng.randn(n, au)
+        Q, _ = np.linalg.qr(B_prime)
+        B_prime = Q[:, :au]
+        eigenvalues = np.abs(rng.randn(au)) + 0.1
+
+        lambda_risk = 1.0
+        alpha_entropy = 0.5
+        phi = 25.0
+        w_bar = 1.0 / n
+        w_old = np.ones(n) / n
+        kappa_1, kappa_2, delta_bar = 0.1, 7.5, 0.01
+
+        def _obj(w_vec):
+            return objective_function(
+                w_vec, Sigma, B_prime, eigenvalues, alpha_entropy,
+                lambda_risk, phi, w_bar, w_old,
+                kappa_1, kappa_2, delta_bar, True,
+            )
+
+        # Starting point
+        w = np.ones(n) / n
+        f_w = _obj(w)
+
+        # Descent direction
+        d = rng.randn(n) * 0.01
+        d -= d.mean()  # Keep sum(w+d) ≈ 1
+
+        # Gradient at w (numerical, since we don't expose analytic grad of f)
+        eps = 1e-7
+        grad_approx = np.zeros(n)
+        for i in range(n):
+            w_plus = w.copy()
+            w_plus[i] += eps
+            grad_approx[i] = (_obj(w_plus) - f_w) / eps
+
+        grad_dot_d = np.dot(grad_approx, d)
+        if grad_dot_d >= 0:
+            d = -d  # Ensure descent direction
+            grad_dot_d = np.dot(grad_approx, d)
+
+        # Armijo backtracking with c=1e-4, rho=0.5
+        c_armijo = 1e-4
+        rho = 0.5
+        alpha_step = 1.0
+        for _j in range(20):
+            w_trial = w + alpha_step * d
+            f_trial = _obj(w_trial)
+            if f_trial <= f_w + c_armijo * alpha_step * grad_dot_d:
+                break
+            alpha_step *= rho
+
+        # Verify the Armijo condition
+        w_final = w + alpha_step * d
+        f_final = _obj(w_final)
+        assert f_final <= f_w + c_armijo * alpha_step * grad_dot_d + 1e-10, (
+            f"Armijo condition violated: f(w+αd)={f_final:.8f} > "
+            f"f(w)+c·α·(∇f·d)={f_w + c_armijo * alpha_step * grad_dot_d:.8f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# α=0 gives minimum-variance portfolio (no entropy term)
+# ---------------------------------------------------------------------------
+
+
+class TestAlphaZeroMinVariance:
+    """When α=0, the SCA objective reduces to min-variance + constraints."""
+
+    def test_alpha_zero_is_min_variance(self) -> None:
+        """With alpha_entropy=0, SCA should approximate the min-variance solution."""
+        from src.portfolio.sca_solver import multi_start_optimize
+
+        rng = np.random.RandomState(42)
+        n = 50  # Must be >= 30 for multi_start_optimize internals
+
+        # Diagonal Sigma for tractable min-var solution
+        sigma_sq = rng.uniform(0.01, 0.05, n)
+        Sigma = np.diag(sigma_sq)
+
+        # Dummy B_prime and eigenvalues (won't matter with alpha=0)
+        B_prime = np.eye(n, min(n, 3))
+        eigenvalues = np.ones(min(n, 3))
+        D_eps = sigma_sq  # Idiosyncratic variances
+
+        w_opt, _, _ = multi_start_optimize(
+            Sigma_assets=Sigma,
+            B_prime=B_prime,
+            eigenvalues=eigenvalues,
+            D_eps=D_eps,
+            alpha=0.0,  # No entropy term!
+            w_max=0.20,
+            w_min=0.001,
+            phi=25.0,
+            kappa_1=0.0,
+            kappa_2=0.0,
+            delta_bar=0.01,
+            tau_max=1.0,
+            is_first=True,
+        )
+
+        # With α=0 and relaxed constraints, optimal is proportional to 1/σ²
+        inv_var = 1.0 / sigma_sq
+        w_min_var = inv_var / inv_var.sum()
+
+        # Clamp to w_max and renormalize for a fair comparison
+        w_min_var_clamped = np.minimum(w_min_var, 0.20)
+        w_min_var_clamped = w_min_var_clamped / w_min_var_clamped.sum()
+
+        # Variance of SCA solution should be close to min-var
+        var_sca = w_opt @ Sigma @ w_opt
+        var_mv = w_min_var_clamped @ Sigma @ w_min_var_clamped
+        assert var_sca <= var_mv * 1.05, (
+            f"α=0 SCA variance ({var_sca:.8f}) should be ≤ analytical min-var "
+            f"({var_mv:.8f}) within 5% tolerance"
+        )

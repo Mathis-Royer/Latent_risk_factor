@@ -981,3 +981,142 @@ def test_co_movement_included_in_phase_1_excluded_in_phase_3() -> None:
         f"Phase 3: co-movement should not affect total loss. "
         f"With L_co={loss_p3.item():.6f}, without={loss_p3_no_co.item():.6f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# End-to-end ELBO with fully known values (all terms computed manually)
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndELBOKnownValues:
+    """Verify total loss equals manually computed ELBO for each mode (P, F, A)."""
+
+    def test_mode_P_total_loss_known_values(self) -> None:
+        """Mode P: total = D/(2σ²)·L_recon + (D/2)·ln(σ²) + KL + λ_co·L_co.
+
+        With fully deterministic inputs, compute each term manually.
+        """
+        torch.manual_seed(0)
+        # Use B=1 for simplicity
+        x = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])         # (1, 2, 2)
+        x_hat = torch.tensor([[[1.1, 1.9], [2.8, 4.2]]])      # (1, 2, 2)
+        mu = torch.tensor([[0.5, -0.3]])                       # (1, 2)
+        log_var = torch.tensor([[0.0, -1.0]])                   # (1, 2)
+        log_sigma_sq = torch.tensor(math.log(0.5))              # σ²=0.5
+        crisis_fractions = torch.tensor([0.0])                  # no crisis
+
+        D = 2 * 2  # T * F = 4
+        sigma_sq = 0.5
+
+        # L_recon = mean over batch of mean-per-element MSE
+        mse = ((x - x_hat) ** 2).mean()  # mean over all elements
+        L_recon_expected = mse.item()
+
+        # recon_term = D/(2σ²) * L_recon
+        recon_term_expected = (D / (2 * sigma_sq)) * L_recon_expected
+
+        # log_term = (D/2) * ln(σ²)
+        log_term_expected = (D / 2) * math.log(sigma_sq)
+
+        # KL per dim: 0.5 * (exp(log_var) + mu^2 - 1 - log_var)
+        # dim 0: 0.5 * (exp(0) + 0.25 - 1 - 0) = 0.5 * (1 + 0.25 - 1 - 0) = 0.125
+        # dim 1: 0.5 * (exp(-1) + 0.09 - 1 - (-1)) = 0.5 * (0.3679 + 0.09 - 1 + 1) = 0.2289
+        kl_per_dim = 0.5 * (torch.exp(log_var) + mu ** 2 - 1 - log_var)
+        kl_expected = kl_per_dim.sum(dim=1).mean().item()  # sum over K, mean over batch
+
+        # Total (no crisis, λ_co=0 at epoch 50 in phase 2)
+        _, components = compute_loss(
+            x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+            log_sigma_sq=log_sigma_sq, crisis_fractions=crisis_fractions,
+            epoch=70, total_epochs=100, mode="P", gamma=1.0,
+            lambda_co_max=0.0,
+        )
+
+        # Verify each component
+        assert abs(components["recon"].item() - L_recon_expected) < 1e-6, (
+            f"L_recon: got {components['recon'].item():.8f}, "
+            f"expected {L_recon_expected:.8f}"
+        )
+        assert abs(components["recon_term"].item() - recon_term_expected) < 1e-4, (
+            f"recon_term: got {components['recon_term'].item():.6f}, "
+            f"expected {recon_term_expected:.6f}"
+        )
+        assert abs(components["kl"].item() - kl_expected) < 1e-6, (
+            f"KL: got {components['kl'].item():.8f}, expected {kl_expected:.8f}"
+        )
+
+        # Total = recon_term + log_term + KL (gamma_eff=1 for f_c=0)
+        total_expected = recon_term_expected + log_term_expected + kl_expected
+        assert abs(components["total"].item() - total_expected) < 1e-4, (
+            f"Total Mode P: got {components['total'].item():.6f}, "
+            f"expected {total_expected:.6f}"
+        )
+
+    def test_mode_F_total_loss_known_values(self) -> None:
+        """Mode F: total = (D/2)·L_recon + β_t·KL (no log σ² term, no σ² in recon)."""
+        torch.manual_seed(0)
+        x = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
+        x_hat = torch.tensor([[[1.1, 1.9], [2.8, 4.2]]])
+        mu = torch.tensor([[0.5, -0.3]])
+        log_var = torch.tensor([[0.0, -1.0]])
+        log_sigma_sq = torch.tensor(0.0)  # Not used in Mode F
+        crisis_fractions = torch.tensor([0.0])
+
+        D = 2 * 2  # T * F = 4
+
+        # L_recon = MSE
+        L_recon = ((x - x_hat) ** 2).mean().item()
+
+        # recon_term = (D/2) * L_recon (no sigma_sq division)
+        recon_term_expected = (D / 2) * L_recon
+
+        # beta_t at epoch=100 (post-warmup) with warmup_fraction=0.5
+        # epoch=100 is beyond warmup → beta_t = 1.0
+        beta_t = 1.0
+
+        kl_per_dim = 0.5 * (torch.exp(log_var) + mu ** 2 - 1 - log_var)
+        kl_expected = kl_per_dim.sum(dim=1).mean().item()
+
+        _, components = compute_loss(
+            x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+            log_sigma_sq=log_sigma_sq, crisis_fractions=crisis_fractions,
+            epoch=99, total_epochs=100, mode="F", gamma=1.0,
+            warmup_fraction=0.5,
+        )
+
+        # Mode F: no log_sigma_sq term
+        total_expected = recon_term_expected + beta_t * kl_expected
+
+        assert abs(components["recon_term"].item() - recon_term_expected) < 1e-4, (
+            f"Mode F recon_term: got {components['recon_term'].item():.6f}, "
+            f"expected {recon_term_expected:.6f}"
+        )
+        assert abs(components["total"].item() - total_expected) < 1e-4, (
+            f"Mode F total: got {components['total'].item():.6f}, "
+            f"expected {total_expected:.6f}"
+        )
+
+    def test_validation_elbo_known_values(self) -> None:
+        """Validation ELBO = D/(2σ²)·L_recon + (D/2)ln(σ²) + KL (no crisis, no co-movement)."""
+        x = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
+        x_hat = torch.tensor([[[1.1, 1.9], [2.8, 4.2]]])
+        mu = torch.tensor([[0.5, -0.3]])
+        log_var = torch.tensor([[0.0, -1.0]])
+        log_sigma_sq = torch.tensor(math.log(0.5))
+
+        D = 4
+        sigma_sq = 0.5
+
+        L_recon = ((x - x_hat) ** 2).mean().item()
+        recon_term = (D / (2 * sigma_sq)) * L_recon
+        log_term = (D / 2) * math.log(sigma_sq)
+        kl_per_dim = 0.5 * (torch.exp(log_var) + mu ** 2 - 1 - log_var)
+        kl = kl_per_dim.sum(dim=1).mean().item()
+
+        expected_elbo = recon_term + log_term + kl
+
+        elbo = compute_validation_elbo(x, x_hat, mu, log_var, log_sigma_sq)
+
+        assert abs(elbo.item() - expected_elbo) < 1e-4, (
+            f"Validation ELBO: got {elbo.item():.6f}, expected {expected_elbo:.6f}"
+        )

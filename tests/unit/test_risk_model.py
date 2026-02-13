@@ -27,6 +27,11 @@ from src.risk_model.factor_regression import estimate_factor_returns, compute_re
 from src.risk_model.covariance import estimate_sigma_z, estimate_d_eps, assemble_risk_model
 from src.risk_model.conditioning import safe_solve
 
+from tests.fixtures.known_solutions import (
+    two_factor_solution,
+    rescaling_verification,
+)
+
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -695,3 +700,215 @@ class TestSigmaZFullHistory:
             assert Sigma_z.shape == (au, au), (
                 f"Sigma_z shape {Sigma_z.shape} != expected ({au}, {au})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Consume two_factor_solution fixture — verify eigendecomposition
+# ---------------------------------------------------------------------------
+
+
+class TestTwoFactorKnownSolution:
+    """Consume two_factor_solution() fixture and verify eigendecomposition + risk model assembly."""
+
+    def test_eigendecomposition_matches_sigma_z(self) -> None:
+        """B' Lambda B'^T must reconstruct Sigma_z exactly (eigendecomposition identity)."""
+        sol = two_factor_solution()
+        B_A = sol["B_A"]
+        Sigma_z = sol["Sigma_z"]
+        eigenvalues = sol["eigenvalues"]
+        V = sol["V"]
+        B_prime = sol["B_prime"]
+
+        # Eigendecomposition identity: V @ diag(eigenvalues) @ V^T == Sigma_z
+        Sigma_z_reconstructed = V @ np.diag(eigenvalues) @ V.T
+        np.testing.assert_allclose(
+            Sigma_z_reconstructed, Sigma_z, atol=1e-12,
+            err_msg="V @ diag(lambda) @ V^T must reconstruct Sigma_z",
+        )
+
+        # V must be orthogonal: V^T V == I
+        np.testing.assert_allclose(
+            V.T @ V, np.eye(sol["AU"]), atol=1e-12,
+            err_msg="Eigenvector matrix V must be orthogonal",
+        )
+
+    def test_rotated_covariance_equivalence(self) -> None:
+        """B_A @ Sigma_z @ B_A^T must equal B' @ diag(lambda) @ B'^T."""
+        sol = two_factor_solution()
+        B_A = sol["B_A"]
+        Sigma_z = sol["Sigma_z"]
+        eigenvalues = sol["eigenvalues"]
+        B_prime = sol["B_prime"]
+
+        Sigma_direct = B_A @ Sigma_z @ B_A.T
+        Sigma_rotated = B_prime @ np.diag(eigenvalues) @ B_prime.T
+        np.testing.assert_allclose(
+            Sigma_rotated, Sigma_direct, atol=1e-12,
+            err_msg="Rotation must preserve factor covariance: B Sigma_z B^T == B' Lambda B'^T",
+        )
+
+    def test_assemble_risk_model_with_two_factor(self) -> None:
+        """assemble_risk_model with known two-factor inputs produces correct Sigma_assets."""
+        sol = two_factor_solution()
+        B_A = sol["B_A"]
+        Sigma_z = sol["Sigma_z"]
+        D_eps = sol["D_eps"]
+        n = sol["n"]
+
+        risk_model = assemble_risk_model(B_A, Sigma_z, D_eps)
+        Sigma_assets = risk_model["Sigma_assets"]
+
+        # Manual computation: Sigma_assets = B_A @ Sigma_z @ B_A.T + diag(D_eps)
+        Sigma_expected = B_A @ Sigma_z @ B_A.T + np.diag(D_eps)
+        np.testing.assert_allclose(
+            Sigma_assets, Sigma_expected, atol=1e-12,
+            err_msg="assemble_risk_model result doesn't match manual formula",
+        )
+
+        # Sigma_assets must be symmetric and PSD
+        np.testing.assert_allclose(Sigma_assets, Sigma_assets.T, atol=1e-14)
+        eigs = np.linalg.eigvalsh(Sigma_assets)
+        assert np.all(eigs >= -1e-12), f"Sigma_assets not PSD: min eigenvalue={eigs.min()}"
+
+    def test_entropy_at_equal_weight_with_two_factor(self) -> None:
+        """Verify entropy H at equal weight using two-factor known solution."""
+        from src.portfolio.entropy import compute_entropy_and_gradient
+
+        sol = two_factor_solution()
+        B_prime = sol["B_prime"]
+        eigenvalues = sol["eigenvalues"]
+        w_equal = sol["w_equal"]
+        H_expected = sol["H_equal"]
+
+        H, grad_H = compute_entropy_and_gradient(w_equal, B_prime, eigenvalues)
+
+        assert abs(H - H_expected) < 1e-10, (
+            f"Entropy at equal weight: got {H:.10f}, expected {H_expected:.10f}"
+        )
+        assert grad_H.shape == (sol["n"],)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Consume rescaling_verification fixture — verify exact winsorized values
+# ---------------------------------------------------------------------------
+
+
+class TestRescalingKnownValues:
+    """Consume rescaling_verification() fixture and verify exact winsorized ratios."""
+
+    def test_winsorized_ratios_per_date(self) -> None:
+        """Verify winsorized ratios match fixture's pre-computed values at each date."""
+        fix = rescaling_verification()
+        sigma_it = fix["sigma_it"]
+        sigma_bar_t = fix["sigma_bar_t"]
+        ratios_winsorized = fix["ratios_winsorized"]
+        T_hist = fix["T_hist"]
+        n = fix["n"]
+
+        for t in range(T_hist):
+            computed_ratios = _compute_winsorized_ratios(
+                sigma_it[t], fix["winsorize_lo"], fix["winsorize_hi"],
+            )
+            np.testing.assert_allclose(
+                computed_ratios, ratios_winsorized[t], atol=1e-12,
+                err_msg=f"Winsorized ratios mismatch at date {t}",
+            )
+
+    def test_outlier_stock_clipped(self) -> None:
+        """Stock 0 (vol=2.0, extreme outlier) must be clipped below raw ratio."""
+        fix = rescaling_verification()
+        sigma_it = fix["sigma_it"]
+        sigma_bar_t = fix["sigma_bar_t"]
+
+        for t in range(fix["T_hist"]):
+            raw_ratio_0 = sigma_it[t, 0] / sigma_bar_t[t]
+            winsorized = _compute_winsorized_ratios(
+                sigma_it[t], fix["winsorize_lo"], fix["winsorize_hi"],
+            )
+            assert winsorized[0] <= raw_ratio_0 + 1e-10, (
+                f"Date {t}: outlier not clipped. raw={raw_ratio_0:.4f}, "
+                f"winsorized={winsorized[0]:.4f}"
+            )
+
+    def test_portfolio_rescaling_uses_last_date_ratios(self) -> None:
+        """B_A_portfolio must use ratios from the last date only."""
+        fix = rescaling_verification()
+        mu_A = fix["mu_A"]
+        ratios_last = fix["ratios_winsorized"][-1]
+        B_A_portfolio_expected = ratios_last[:, np.newaxis] * mu_A
+
+        np.testing.assert_allclose(
+            fix["B_A_portfolio"], B_A_portfolio_expected, atol=1e-12,
+            err_msg="Portfolio rescaling must use last date's winsorized ratios",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Non-trivial OLS test: B ≠ I, verify z_hat = (B^T B)^{-1} B^T r
+# ---------------------------------------------------------------------------
+
+
+class TestNonTrivialOLS:
+    """Factor regression with B ≠ I must still produce z_hat = (B^T B)^{-1} B^T r."""
+
+    def test_ols_formula_nontrivial_b(self) -> None:
+        """With B ≠ I and r = B @ z_true (no noise), OLS must recover z_true."""
+        rng = np.random.RandomState(42)
+        n = 15
+        au = 3
+        n_dates = 40
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=n_dates, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+
+        # Non-trivial well-conditioned B
+        B_raw = rng.randn(n, au).astype(np.float64) * 0.3
+        B_A_by_date = {d: B_raw.copy() for d in date_strs}
+
+        # True factor returns
+        z_true = rng.randn(n_dates, au).astype(np.float64) * 0.01
+
+        # r = B @ z (no noise → exact recovery expected)
+        returns_data = np.array([B_raw @ z_true[t] for t in range(n_dates)])
+        returns = pd.DataFrame(returns_data, index=date_strs, columns=stock_ids)
+
+        universe_snapshots = {d: stock_ids[:] for d in date_strs}
+
+        z_hat, valid_dates = estimate_factor_returns(
+            B_A_by_date, returns, universe_snapshots,
+        )
+
+        for t_idx, d in enumerate(valid_dates):
+            d_idx = date_strs.index(d)
+            np.testing.assert_allclose(
+                z_hat[t_idx], z_true[d_idx], atol=1e-8,
+                err_msg=f"OLS recovery failed at date {d}: B≠I case",
+            )
+
+
+# ---------------------------------------------------------------------------
+# D_eps variance formula: Var(residuals) with ddof=1, floored at 1e-6
+# ---------------------------------------------------------------------------
+
+
+class TestDEpsVarianceFormula:
+    """Verify D_eps = max(Var(eps_i, ddof=1), 1e-6) with known residuals."""
+
+    def test_d_eps_matches_manual_variance(self) -> None:
+        """D_eps for normal residuals must match np.var(eps, ddof=1)."""
+        rng = np.random.RandomState(42)
+        stock_ids = [0, 1, 2, 3, 4]
+        residuals_by_stock: dict[int, list[float]] = {}
+        expected_d_eps = np.zeros(5)
+
+        for i, sid in enumerate(stock_ids):
+            eps = list(rng.randn(100) * (0.01 * (i + 1)))
+            residuals_by_stock[sid] = eps
+            expected_d_eps[i] = max(np.var(eps, ddof=1), 1e-6)
+
+        D_eps = estimate_d_eps(residuals_by_stock, stock_ids, d_eps_floor=1e-6)
+
+        np.testing.assert_allclose(
+            D_eps, expected_d_eps, rtol=1e-10,
+            err_msg="D_eps doesn't match manual Var(eps, ddof=1) with floor",
+        )
