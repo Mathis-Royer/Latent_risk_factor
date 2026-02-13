@@ -25,7 +25,7 @@ from src.risk_model.rescaling import (
 )
 from src.risk_model.factor_regression import estimate_factor_returns, compute_residuals
 from src.risk_model.covariance import estimate_sigma_z, estimate_d_eps, assemble_risk_model
-from src.risk_model.conditioning import safe_solve
+from src.risk_model.conditioning import safe_solve, check_conditioning, apply_ridge
 
 from tests.fixtures.known_solutions import (
     two_factor_solution,
@@ -146,6 +146,17 @@ class TestRescaling:
             "should produce different results"
         )
 
+        # Formula verification for one date: manually compute rescaled B
+        verify_date = first_date
+        vol_at_date = trailing_vol.loc[verify_date].values.astype(np.float64)
+        sigma_bar = np.median(vol_at_date)
+        ratios_manual = _compute_winsorized_ratios(vol_at_date)
+        B_manual = B_A * ratios_manual[:, np.newaxis]
+        np.testing.assert_allclose(
+            B_A_by_date[verify_date], B_manual, atol=1e-12,
+            err_msg=f"Manual rescaling formula mismatch at date {verify_date}",
+        )
+
     def test_rescaling_formula_known_values(self) -> None:
         """Verify rescaling formula B_rescaled[i] = winsorized_ratio_i * B_A[i].
 
@@ -188,6 +199,26 @@ class TestRescaling:
                 f"ratio_col0={ratio_col0:.6f}, ratio_col1={ratio_col1:.6f}"
             )
 
+        # Verify non-median stock: stock 0 has vol=0.28, median=0.30
+        # Raw ratio = 0.28/0.30 = 0.9333, but P5 winsorization clips it upward
+        # Compute expected via _compute_winsorized_ratios for consistency
+        winsorized_ratios = _compute_winsorized_ratios(vols[0])
+        expected_ratio_stock0 = winsorized_ratios[0]
+        actual_ratio_stock0 = B_port[0, 0] / B_A[0, 0]
+        np.testing.assert_allclose(
+            actual_ratio_stock0, expected_ratio_stock0, atol=1e-10,
+            err_msg=(
+                f"Stock 0 winsorized ratio should be {expected_ratio_stock0:.6f}, "
+                f"got {actual_ratio_stock0:.6f}"
+            ),
+        )
+        # Verify the raw ratio (pre-winsorization) is less than the winsorized one
+        raw_ratio_stock0 = 0.28 / 0.30
+        assert expected_ratio_stock0 >= raw_ratio_stock0 - 1e-10, (
+            f"P5 winsorization should clip stock 0 upward: "
+            f"raw={raw_ratio_stock0:.6f}, winsorized={expected_ratio_stock0:.6f}"
+        )
+
     def test_winsorization_uses_median_not_mean(self) -> None:
         """Winsorized ratios must use median as denominator, not mean.
 
@@ -220,6 +251,14 @@ class TestRescaling:
         raw_outlier_ratio = 10.0 / median_val
         assert ratios[9] < raw_outlier_ratio, (
             f"Outlier not clipped: ratio={ratios[9]:.4f}, raw={raw_outlier_ratio:.4f}"
+        )
+
+        # Verify outlier is clipped to exactly P95 of the ratio distribution
+        raw_ratios = vols / np.median(vols)
+        p95 = np.percentile(raw_ratios, 95.0)
+        np.testing.assert_allclose(
+            ratios[9], p95, atol=1e-12,
+            err_msg=f"Outlier ratio should be clipped to P95={p95:.6f}, got {ratios[9]:.6f}",
         )
 
 
@@ -311,11 +350,11 @@ class TestCovariance:
             err_msg="estimate_sigma_z doesn't match LW shrinkage formula",
         )
 
-        # Shrinkage improves conditioning
+        # Shrinkage MUST improve conditioning (not just by a tiny additive margin)
         cond_sample = np.linalg.cond(S_sample)
         cond_lw = np.linalg.cond(Sigma_z)
-        assert cond_lw <= cond_sample + 1e-6, (
-            f"LW should improve conditioning: cond_sample={cond_sample:.1f}, cond_LW={cond_lw:.1f}"
+        assert cond_lw <= cond_sample * (1.0 + 1e-10), (
+            f"LW must improve conditioning: cond_sample={cond_sample:.1f}, cond_LW={cond_lw:.1f}"
         )
 
     def test_D_eps_floor(self) -> None:
@@ -467,6 +506,13 @@ class TestConditioning:
         z_good = safe_solve(B_good, r_good, conditioning_threshold=1e6)
         assert np.all(np.isfinite(z_good))
 
+        # Manual OLS verification: z_hat = (B^T B)^{-1} B^T r (no ridge)
+        z_hat_manual = np.linalg.solve(B_good.T @ B_good, B_good.T @ r_good)
+        np.testing.assert_allclose(
+            z_good, z_hat_manual, atol=1e-8,
+            err_msg="Well-conditioned safe_solve should match plain OLS",
+        )
+
         # Ill-conditioned B: should apply ridge
         B_bad = rng.randn(n_active, au).astype(np.float64)
         B_bad[:, 1] = B_bad[:, 0] + rng.randn(n_active) * 1e-12
@@ -480,6 +526,102 @@ class TestConditioning:
         z_bad = safe_solve(B_bad, r_bad, conditioning_threshold=1e6, ridge_scale=1e-6)
         assert z_bad.shape == (au,)
         assert np.all(np.isfinite(z_bad)), "Ridge fallback produced non-finite values"
+
+    def test_ridge_lambda_formula_exact(self) -> None:
+        """Verify ridge lambda formula: lambda_ridge = ridge_scale * tr(B^T B) / AU.
+
+        Creates a deliberately ill-conditioned B^T B (near-collinear columns),
+        verifies:
+        1. check_conditioning detects it (kappa > threshold)
+        2. apply_ridge uses the correct lambda = ridge_scale * trace / AU
+        3. safe_solve produces z_hat = (B^T B + lambda*I)^{-1} B^T r exactly
+
+        ISD/DVT coverage gap: formula-level verification of the ridge
+        regularization parameter, not just that ridge is applied.
+        """
+        rng = np.random.RandomState(99)
+        n_active = 50
+        au = 4
+        ridge_scale = 1e-6
+        threshold = 1e6
+
+        # Build a deliberately ill-conditioned B:
+        # Column 1 = Column 0 + tiny noise, Column 3 = Column 2 + tiny noise
+        B_t = rng.randn(n_active, au).astype(np.float64) * 0.5
+        B_t[:, 1] = B_t[:, 0] + rng.randn(n_active) * 1e-11
+        B_t[:, 3] = B_t[:, 2] + rng.randn(n_active) * 1e-11
+
+        r_t = rng.randn(n_active).astype(np.float64) * 0.01
+        BtB = B_t.T @ B_t
+
+        # Step 1: Verify ill-conditioning is detected
+        assert check_conditioning(BtB, threshold), (
+            f"Test setup failure: B^T B should be ill-conditioned. "
+            f"kappa={np.linalg.cond(BtB):.2e}, threshold={threshold:.0e}"
+        )
+        kappa_raw = np.linalg.cond(BtB)
+        assert kappa_raw > threshold, (
+            f"Condition number {kappa_raw:.2e} not above threshold {threshold:.0e}"
+        )
+
+        # Step 2: Verify apply_ridge uses exact formula
+        trace_BtB = np.trace(BtB)
+        lambda_ridge_expected = ridge_scale * trace_BtB / max(1, au)
+
+        BtB_reg = apply_ridge(BtB, ridge_scale)
+
+        # The regularized matrix should be BtB + lambda_ridge * I
+        BtB_reg_manual = BtB + lambda_ridge_expected * np.eye(au)
+        np.testing.assert_allclose(
+            BtB_reg, BtB_reg_manual, atol=1e-14,
+            err_msg=(
+                f"apply_ridge result doesn't match manual formula. "
+                f"lambda_ridge = {ridge_scale} * {trace_BtB:.6f} / {au} "
+                f"= {lambda_ridge_expected:.2e}"
+            ),
+        )
+
+        # Verify lambda_ridge > 0 (non-degenerate)
+        assert lambda_ridge_expected > 0, (
+            f"lambda_ridge should be positive, got {lambda_ridge_expected}"
+        )
+
+        # Step 3: Verify safe_solve produces the exact ridge OLS solution
+        z_hat = safe_solve(B_t, r_t, conditioning_threshold=threshold,
+                           ridge_scale=ridge_scale)
+
+        # Manual ridge OLS: z = (B^T B + lambda*I)^{-1} B^T r
+        Btr = B_t.T @ r_t
+        z_hat_manual = np.linalg.solve(BtB_reg_manual, Btr)
+
+        np.testing.assert_allclose(
+            z_hat, z_hat_manual, atol=1e-12,
+            err_msg=(
+                f"safe_solve result doesn't match manual ridge OLS formula. "
+                f"max diff = {np.max(np.abs(z_hat - z_hat_manual)):.2e}"
+            ),
+        )
+
+        # Step 4: Verify ridge actually improved conditioning
+        kappa_reg = np.linalg.cond(BtB_reg_manual)
+        assert kappa_reg < kappa_raw, (
+            f"Ridge should reduce condition number: "
+            f"raw={kappa_raw:.2e}, regularized={kappa_reg:.2e}"
+        )
+
+        # Step 5: Verify the diagonal perturbation is exactly lambda_ridge * I
+        diagonal_perturbation = np.diag(BtB_reg - BtB)
+        expected_diag = np.full(au, lambda_ridge_expected)
+        np.testing.assert_allclose(
+            diagonal_perturbation, expected_diag, atol=1e-14,
+            err_msg="Off-diagonal elements should be unchanged by ridge",
+        )
+        # Off-diagonal should be zero perturbation
+        off_diag_diff = (BtB_reg - BtB) - np.diag(diagonal_perturbation)
+        assert np.max(np.abs(off_diag_diff)) < 1e-14, (
+            f"Ridge should only modify diagonal: max off-diag change = "
+            f"{np.max(np.abs(off_diag_diff)):.2e}"
+        )
 
 
 class TestResiduals:
@@ -516,6 +658,23 @@ class TestResiduals:
                     f"Residuals[{sid}][0] not float: {type(res_list[0])}"
                 )
 
+        # Formula verification: eps_{i,t} = r_{i,t} - B_A_{i,t} @ z_hat_t
+        # Check first 3 stocks at the first valid date
+        first_date = valid_dates[0]
+        active_at_date = universe_snapshots[first_date]
+        B_t = B_A_by_date[first_date]
+        for check_idx in range(min(3, len(active_at_date))):
+            sid = active_at_date[check_idx]
+            r_it = float(returns.loc[first_date, sid])
+            b_it = B_t[check_idx]  # row for this stock at this date
+            eps_manual = r_it - float(b_it @ z_hat[0])
+            # The first residual stored for this stock should match
+            assert len(residuals[sid]) > 0, f"No residuals for stock {sid}"
+            np.testing.assert_allclose(
+                residuals[sid][0], eps_manual, atol=1e-10,
+                err_msg=f"Residual formula mismatch for stock {sid} at {first_date}",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tests: Dual rescaling correctness (INV-004)
@@ -549,6 +708,15 @@ class TestDualRescalingCorrectness:
             assert not np.allclose(B_by_date[d0], B_by_date[d_last]), (
                 "Different vol dates should produce different rescaled B"
             )
+
+        # Manual rescaled B for date 0 using winsorized ratios
+        vol_at_d0 = vol_data[0].astype(np.float64)
+        ratios_d0 = _compute_winsorized_ratios(vol_at_d0)
+        B_est_d0_manual = B_A * ratios_d0[:, np.newaxis]
+        np.testing.assert_allclose(
+            B_by_date[d0], B_est_d0_manual, atol=1e-8,
+            err_msg="Manual rescaled B at date 0 does not match function output",
+        )
 
     def test_portfolio_uses_current_date_only(self) -> None:
         """rescale_portfolio is invariant to changes in non-current-date vol."""
@@ -588,8 +756,8 @@ class TestCovarianceProperties:
         Sigma_sample = np.cov(z_hat.T)
         cond_lw = np.linalg.cond(Sigma_lw)
         cond_sample = np.linalg.cond(Sigma_sample)
-        assert cond_lw <= cond_sample + 1e-6, (
-            f"LW condition={cond_lw:.1f} should be <= sample condition={cond_sample:.1f}"
+        assert cond_lw <= cond_sample * (1.0 + 1e-10), (
+            f"LW must improve conditioning: cond_sample={cond_sample:.1f}, cond_LW={cond_lw:.1f}"
         )
         # PSD check
         assert np.all(np.linalg.eigvalsh(Sigma_lw) >= -1e-10)
@@ -632,13 +800,20 @@ class TestCovarianceProperties:
             assert np.all(np.isfinite(B_by_date[d])), f"Non-finite values at {d}"
 
             # Without winsorization, the outlier ratio would be 10.0/0.20 = 50.
-            # After P95 clipping, it should be much less than 50.
+            # After P95 clipping, it should equal P95 of the ratio distribution.
+            vols_at_d = vol_data[0].astype(np.float64)  # same at all dates
+            raw_ratios = vols_at_d / np.median(vols_at_d)
+            p95 = np.percentile(raw_ratios, 95.0)
+
             rescaled_outlier_norm = np.linalg.norm(B_by_date[d][0])
             if ba_outlier_norm > 1e-10:
                 amplification = rescaled_outlier_norm / ba_outlier_norm
-                assert amplification < 10.0, (
-                    f"Date {d}: outlier amplification = {amplification:.1f}x, "
-                    f"should be < 10x (raw ratio is 50x, P95 clips to ~3.5x)"
+                np.testing.assert_allclose(
+                    amplification, p95, atol=1e-8,
+                    err_msg=(
+                        f"Date {d}: outlier amplification={amplification:.6f}, "
+                        f"expected P95={p95:.6f}"
+                    ),
                 )
 
 
@@ -911,4 +1086,61 @@ class TestDEpsVarianceFormula:
         np.testing.assert_allclose(
             D_eps, expected_d_eps, rtol=1e-10,
             err_msg="D_eps doesn't match manual Var(eps, ddof=1) with floor",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fixture-based tests using known_solutions.py
+# ---------------------------------------------------------------------------
+
+
+class TestKnownSolutionsFixtures:
+    """Tests using pre-computed analytical solutions from known_solutions.py."""
+
+    def test_rescaling_fixture_winsorized_ratios(self) -> None:
+        """Verify _compute_winsorized_ratios against rescaling_verification fixture."""
+        fixture = rescaling_verification()
+        for t in range(fixture["T_hist"]):
+            actual = _compute_winsorized_ratios(fixture["sigma_it"][t])
+            expected = fixture["ratios_winsorized"][t]
+            np.testing.assert_allclose(
+                actual, expected, atol=1e-12,
+                err_msg=f"Winsorized ratios at date {t} don't match fixture",
+            )
+
+    def test_two_factor_entropy_fixture(self) -> None:
+        """Verify entropy computation against two_factor_solution fixture."""
+        from src.portfolio.entropy import compute_entropy_and_gradient
+
+        fixture = two_factor_solution()
+        H, grad_H = compute_entropy_and_gradient(
+            fixture["w_equal"], fixture["B_prime"], fixture["eigenvalues"],
+        )
+        np.testing.assert_allclose(
+            H, fixture["H_equal"], atol=1e-10,
+            err_msg="Entropy at equal weight should match fixture value",
+        )
+        assert grad_H.shape == (fixture["n"],)
+
+    def test_two_factor_risk_model_assembly(self) -> None:
+        """Verify assemble_risk_model against two_factor_solution fixture."""
+        fixture = two_factor_solution()
+        result = assemble_risk_model(
+            fixture["B_A"], fixture["Sigma_z"], fixture["D_eps"],
+        )
+        # Verify eigendecomposition
+        np.testing.assert_allclose(
+            result["eigenvalues"], fixture["eigenvalues"], atol=1e-10,
+            err_msg="Eigenvalues should match fixture",
+        )
+        # Verify V is orthogonal
+        V = result["V"]
+        np.testing.assert_allclose(
+            V @ V.T, np.eye(fixture["AU"]), atol=1e-10,
+            err_msg="V should be orthogonal",
+        )
+        # Verify rotated exposures
+        np.testing.assert_allclose(
+            result["B_prime_port"], fixture["B_prime"], atol=1e-10,
+            err_msg="Rotated exposures should match fixture",
         )

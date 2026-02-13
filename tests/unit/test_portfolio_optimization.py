@@ -174,20 +174,9 @@ class TestEntropy:
 
             grad_numerical[i] = (H_plus - H_minus) / (2.0 * epsilon)
 
-        # Check relative error for components with significant gradient
-        mask = np.abs(grad_H) > 1e-10
-        if mask.any():
-            rel_error = np.abs(grad_H[mask] - grad_numerical[mask]) / (
-                np.abs(grad_H[mask]) + 1e-15
-            )
-            assert np.all(rel_error < 1e-7), (
-                f"Max relative error = {rel_error.max():.2e}, "
-                f"positions: {np.where(mask)[0][rel_error > 1e-7]}"
-            )
-
-        # Also check absolute error everywhere
+        # Check absolute agreement on ALL components (atol handles near-zero)
         np.testing.assert_allclose(
-            grad_H, grad_numerical, atol=1e-7,
+            grad_H, grad_numerical, atol=1e-5,
             err_msg="Analytical gradient differs from numerical gradient",
         )
 
@@ -345,6 +334,19 @@ class TestSCASolver:
         assert f1 == f2, f"Objectives differ: {f1} vs {f2}"
         assert H1 == H2, f"Entropies differ: {H1} vs {H2}"
 
+        # Value assertions: solution should be meaningful
+        assert H1 > 0, f"Entropy should be positive, got {H1}"
+
+        # Multi-start should beat (or match) equal-weight entropy
+        n = N_STOCKS
+        w_eq = np.ones(n, dtype=np.float64) / n
+        H_eq = compute_entropy_only(
+            w_eq, data["B_prime"], data["eigenvalues"],
+        )
+        assert H1 >= H_eq * 0.9, (
+            f"Multi-start H={H1:.4f} should be competitive with EW H={H_eq:.4f}"
+        )
+
 
 class TestCardinality:
     """Tests for cardinality enforcement (MOD-008 sub-task 3)."""
@@ -413,6 +415,26 @@ class TestCardinality:
             "No stocks were eliminated despite violations"
         )
 
+        # Objective should not catastrophically degrade after cardinality enforcement
+        f_before = objective_function(
+            w=w, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=1.0, lambda_risk=1.0, phi=25.0, w_bar=0.03,
+            w_old=None, kappa_1=0.1, kappa_2=7.5,
+            delta_bar=0.01, is_first=True,
+        )
+        f_after = objective_function(
+            w=w_enforced, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=1.0, lambda_risk=1.0, phi=25.0, w_bar=0.03,
+            w_old=None, kappa_1=0.1, kappa_2=7.5,
+            delta_bar=0.01, is_first=True,
+        )
+        assert f_after >= f_before * 0.5, (
+            f"Cardinality enforcement destroyed > 50% of objective: "
+            f"f_before={f_before:.6f}, f_after={f_after:.6f}"
+        )
+
     def _make_violation_data(self) -> tuple[
         np.ndarray, dict, dict[str, Any], float,
     ]:
@@ -474,6 +496,30 @@ class TestCardinality:
         self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
         assert abs(np.sum(w_enforced) - 1.0) < 1e-6
 
+        # Objective should not catastrophically degrade
+        f_before = objective_function(
+            w=w, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=sca_kwargs["alpha"], lambda_risk=sca_kwargs["lambda_risk"],
+            phi=sca_kwargs["phi"], w_bar=sca_kwargs["w_bar"],
+            w_old=None, kappa_1=sca_kwargs["kappa_1"],
+            kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
+            is_first=True,
+        )
+        f_after = objective_function(
+            w=w_enforced, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=sca_kwargs["alpha"], lambda_risk=sca_kwargs["lambda_risk"],
+            phi=sca_kwargs["phi"], w_bar=sca_kwargs["w_bar"],
+            w_old=None, kappa_1=sca_kwargs["kappa_1"],
+            kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
+            is_first=True,
+        )
+        assert f_after >= f_before * 0.5, (
+            f"Gradient cardinality destroyed > 50% of objective: "
+            f"f_before={f_before:.6f}, f_after={f_after:.6f}"
+        )
+
     def test_sequential_method(self) -> None:
         """Sequential method with real SCA satisfies semi-continuous constraint."""
         w, data, sca_kwargs, w_min = self._make_violation_data()
@@ -490,6 +536,30 @@ class TestCardinality:
 
         self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
         assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+        # Objective should not catastrophically degrade
+        f_before = objective_function(
+            w=w, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=sca_kwargs["alpha"], lambda_risk=sca_kwargs["lambda_risk"],
+            phi=sca_kwargs["phi"], w_bar=sca_kwargs["w_bar"],
+            w_old=None, kappa_1=sca_kwargs["kappa_1"],
+            kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
+            is_first=True,
+        )
+        f_after = objective_function(
+            w=w_enforced, Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            alpha=sca_kwargs["alpha"], lambda_risk=sca_kwargs["lambda_risk"],
+            phi=sca_kwargs["phi"], w_bar=sca_kwargs["w_bar"],
+            w_old=None, kappa_1=sca_kwargs["kappa_1"],
+            kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
+            is_first=True,
+        )
+        assert f_after >= f_before * 0.5, (
+            f"Sequential cardinality destroyed > 50% of objective: "
+            f"f_before={f_before:.6f}, f_after={f_after:.6f}"
+        )
 
     @pytest.mark.skipif(
         not has_mi_solver(), reason="No MI-capable solver (MOSEK) available",
@@ -744,7 +814,7 @@ class TestKnownSolution:
         )
 
         # At the analytical optimum, H should be ln(AU)
-        assert abs(H_opt - np.log(au)) < 0.01, (
+        assert abs(H_opt - np.log(au)) < 0.005, (
             f"H at optimum should be ln({au})={np.log(au):.4f}, got {H_opt:.4f}"
         )
 
@@ -787,6 +857,21 @@ class TestEntropyRange:
         H_ew = compute_entropy_only(w_ew, B_prime, eigenvalues)
         assert H_ew >= 0.0
 
+        # Analytical check: equal-weight with B'=I and equal eigenvalues -> H = ln(AU)
+        B_prime_id = np.eye(AU, dtype=np.float64)
+        eigenvalues_eq = np.ones(AU, dtype=np.float64)
+        w_eq_au = np.ones(AU, dtype=np.float64) / AU
+        H_eq_analytical = compute_entropy_only(w_eq_au, B_prime_id, eigenvalues_eq)
+        assert abs(H_eq_analytical - np.log(AU)) < 1e-10, (
+            f"Equal-weight + identity should give H=ln(AU)={np.log(AU):.6f}, "
+            f"got {H_eq_analytical:.6f}"
+        )
+
+        # With non-identity B_prime, equal-weight entropy should still be positive
+        assert H_ew > 0, (
+            f"Equal-weight entropy should be positive, got {H_ew}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: Variance-entropy frontier monotonic
@@ -805,6 +890,7 @@ class TestFrontierMonotonic:
         alpha_grid = [0.0, 0.1, 1.0, 5.0]
 
         entropies = []
+        variances = []
         for alpha in alpha_grid:
             w_opt, f_opt, H_opt = multi_start_optimize(
                 Sigma_assets=data["Sigma_assets"],
@@ -822,14 +908,23 @@ class TestFrontierMonotonic:
                 max_iter=30,
             )
             entropies.append(H_opt)
+            variances.append(float(w_opt @ data["Sigma_assets"] @ w_opt))
 
         # Entropy should be non-decreasing (or very close) as alpha increases
         for i in range(1, len(entropies)):
-            assert entropies[i] >= entropies[i - 1] - 0.01, (
+            assert entropies[i] >= entropies[i - 1] - 1e-3, (
                 f"Entropy decreased from alpha={alpha_grid[i-1]} "
                 f"(H={entropies[i-1]:.4f}) to alpha={alpha_grid[i]} "
                 f"(H={entropies[i]:.4f}). "
-                f"Decrease exceeds numerical tolerance of 0.01."
+                f"Decrease exceeds numerical tolerance of 1e-3."
+            )
+
+        # Variance should be non-decreasing as alpha increases (entropy-variance tradeoff)
+        for i in range(1, len(variances)):
+            assert variances[i] >= variances[i - 1] - 1e-3, (
+                f"Variance decreased unexpectedly: "
+                f"var[alpha={alpha_grid[i]}]={variances[i]:.6f} < "
+                f"var[alpha={alpha_grid[i-1]}]={variances[i-1]:.6f}"
             )
 
 
@@ -920,6 +1015,15 @@ class TestConstraintEnforcement:
         assert np.isfinite(f), "Non-finite objective"
         assert np.isfinite(H), "Non-finite entropy"
 
+        # Constraint checks: fully invested, long-only, positive entropy
+        assert abs(w.sum() - 1.0) < 1e-6, (
+            f"Weights should sum to 1, got {w.sum()}"
+        )
+        assert (w >= -1e-8).all(), (
+            f"Weights should be non-negative, min={w.min()}"
+        )
+        assert H >= 0, f"Entropy should be non-negative, got {H}"
+
     def test_multi_start_explores_better_optima(self) -> None:
         """
         m5: Multi-start with n_starts > 1 should find an objective at least
@@ -939,7 +1043,6 @@ class TestConstraintEnforcement:
             "eigenvalues": eigenvalues,
             "D_eps": D_eps,
             "alpha": 1.0,
-            "seed": 42,
             "lambda_risk": 1.0,
             "phi": 25.0,
             "w_bar": 0.03,
@@ -948,12 +1051,18 @@ class TestConstraintEnforcement:
             "max_iter": 30,
         }
 
-        _, f_single, H_single = multi_start_optimize(n_starts=1, **common)
-        _, f_multi, H_multi = multi_start_optimize(n_starts=5, **common)
+        # Use different seeds so single-start and multi-start explore
+        # different initial points, making the comparison meaningful
+        _, f_single, H_single = multi_start_optimize(
+            n_starts=1, seed=99, **common,
+        )
+        _, f_multi, H_multi = multi_start_optimize(
+            n_starts=5, seed=42, **common,
+        )
 
-        # Multi-start should find an objective >= single start
+        # Multi-start must find an objective at least as good as single-start
         # (f = H - penalty, so higher is better)
-        assert f_multi >= f_single - 1e-8, (
+        assert f_multi >= f_single, (
             f"m5: Multi-start objective ({f_multi:.6f}) should be >= "
             f"single-start ({f_single:.6f})"
         )

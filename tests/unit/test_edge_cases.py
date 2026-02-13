@@ -227,7 +227,8 @@ class TestNearSingularCovariance:
     def test_near_singular_covariance(self) -> None:
         """
         z_hat with nearly collinear columns should still produce a PSD
-        covariance via Ledoit-Wolf shrinkage, and assemble_risk_model should succeed.
+        covariance via Ledoit-Wolf shrinkage, and assemble_risk_model
+        should produce Sigma_assets = B @ Sigma_z @ B.T + diag(D_eps).
         """
         rng = np.random.RandomState(42)
         n_dates = 100
@@ -270,6 +271,22 @@ class TestNearSingularCovariance:
         assert "V" in risk_model
         assert "B_prime_port" in risk_model
 
+        # Formula: Sigma_assets = B @ Sigma_z @ B.T + diag(D_eps)
+        Sigma_manual = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
+        np.testing.assert_allclose(
+            Sigma_assets, Sigma_manual, atol=1e-10,
+            err_msg="Sigma_assets != B @ Sigma_z @ B.T + diag(D_eps)",
+        )
+
+        # Eigendecomposition: B'_port = B @ V, eigenvalues from Sigma_z
+        V = risk_model["V"]
+        eigs = risk_model["eigenvalues"]
+        B_prime_port = risk_model["B_prime_port"]
+        np.testing.assert_allclose(
+            B_prime_port, B_A_port @ V, atol=1e-10,
+            err_msg="B_prime_port != B_A_port @ V",
+        )
+
 
 # ---------------------------------------------------------------------------
 # 6. Entropy with single active factor
@@ -302,3 +319,98 @@ class TestEntropySingleActiveFactor:
             grad_H, np.zeros(n), atol=1e-10,
             err_msg="Expected grad_H = zeros with AU=1",
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Non-zero drift returns: z-scoring and OLS must handle non-zero mean
+# ---------------------------------------------------------------------------
+
+
+class TestNonZeroDriftReturns:
+    """Real returns have non-zero mean (drift). Verify z-scoring and OLS work."""
+
+    def test_zscore_removes_drift(self) -> None:
+        """
+        Z-scoring per window must normalize mean to ~0 even when the raw
+        returns have a significant positive drift (mu=0.05/252 per day).
+        """
+        T = 64
+        n_stocks = 3
+        n_days = T + 50
+        rng = np.random.RandomState(42)
+
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        drift = 0.05 / 252  # ~20bp/day annualizing to ~5%
+        stock_ids = list(range(n_stocks))
+
+        returns_df = pd.DataFrame(
+            rng.randn(n_days, n_stocks) * 0.01 + drift,
+            index=dates,
+            columns=stock_ids,
+        )
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+
+        windows, metadata, raw_returns = create_windows(
+            returns_df, vol_df, stock_ids, T=T, stride=10,
+        )
+
+        # CONV-02: z-scored windows must have mean≈0, std≈1 per window per feature
+        for i in range(min(5, windows.shape[0])):
+            for f_idx in range(windows.shape[2]):
+                feat = windows[i, :, f_idx].numpy()
+                assert abs(feat.mean()) < 1e-3, (
+                    f"Window {i}, feat {f_idx}: z-scored mean={feat.mean():.6f} "
+                    f"(expected < 1e-3 despite drift)"
+                )
+                assert abs(feat.std() - 1.0) < 0.05, (
+                    f"Window {i}, feat {f_idx}: z-scored std={feat.std():.6f} "
+                    f"(expected ~1.0)"
+                )
+
+        # Raw returns must NOT be z-scored (needed for co-movement loss)
+        raw_means = raw_returns.mean(dim=1)
+        # With drift, raw means should be significantly non-zero
+        assert torch.any(torch.abs(raw_means) > 1e-4), (
+            "Raw returns with drift should have non-zero per-window mean"
+        )
+
+    def test_ols_regression_with_drift(self) -> None:
+        """
+        Factor regression z_hat = (B^T B)^{-1} B^T r must work correctly
+        when returns have a non-zero mean (drift component).
+        """
+        from src.risk_model.factor_regression import estimate_factor_returns
+
+        rng = np.random.RandomState(42)
+        n = 10
+        au = 3
+        n_dates = 50
+        drift = 0.05 / 252
+
+        stock_ids = list(range(n))
+        dates = pd.bdate_range("2020-01-02", periods=n_dates, freq="B")
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+
+        # Non-trivial B matrix
+        B_raw = rng.randn(n, au).astype(np.float64) * 0.3
+        B_A_by_date: dict[str, np.ndarray] = {d: B_raw.copy() for d in date_strs}
+
+        # True factor returns with drift
+        z_true = rng.randn(n_dates, au).astype(np.float64) * 0.01 + drift
+
+        # r = B @ z (no noise -> exact recovery expected)
+        returns_data = np.array([B_raw @ z_true[t] for t in range(n_dates)])
+        returns = pd.DataFrame(returns_data, index=date_strs, columns=stock_ids)
+        universe_snapshots: dict[str, list[int]] = {d: stock_ids[:] for d in date_strs}
+
+        z_hat, valid_dates = estimate_factor_returns(
+            B_A_by_date, returns, universe_snapshots,
+        )
+
+        # OLS must recover z_true exactly even with drift
+        for t_idx, d in enumerate(valid_dates):
+            d_idx = date_strs.index(d)
+            np.testing.assert_allclose(
+                z_hat[t_idx], z_true[d_idx], atol=1e-8,
+                err_msg=f"OLS recovery failed at {d} with drifted returns",
+            )

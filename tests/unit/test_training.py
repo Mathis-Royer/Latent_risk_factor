@@ -155,6 +155,30 @@ def test_curriculum_batching_transition() -> None:
     all_sync_indices = [idx for b in sync_batches_2 for idx in b]
     assert len(all_sync_indices) > 0, "Sync mode should produce at least some indices"
 
+    # A3: Verify sync batch date spread is bounded by delta_sync * 5
+    # when metadata is present. Without metadata, all windows fall in
+    # one time block, so spread is unconstrained. The check is meaningful
+    # only when multiple time blocks exist.
+    delta_sync = getattr(sync_sampler, "delta_sync", 21)
+    max_spread = delta_sync * 5
+    has_multiple_blocks = len(getattr(sync_sampler, "time_blocks", {})) > 1
+    if has_multiple_blocks:
+        for batch in sync_batches:
+            if len(batch) >= 2:
+                min_idx = min(batch)
+                max_idx = max(batch)
+                spread = max_idx - min_idx
+                assert spread <= max_spread, (
+                    f"Sync batch index spread {spread} exceeds "
+                    f"delta_sync * 5 = {max_spread}"
+                )
+    else:
+        # Without metadata: verify delta_sync attribute exists and has
+        # the expected default value
+        assert delta_sync == 21, (
+            f"Default delta_sync should be 21, got {delta_sync}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 3. test_early_stopping_patience — Stops after 3 non-improving epochs
@@ -282,6 +306,14 @@ def test_mode_F_warmup_protection(
         f"at epoch {warmup_epochs}. Warmup protection is not working."
     )
 
+    # Verify epochs trained >= warmup_fraction * max_epochs.
+    # For warmup_fraction=0.5, max_epochs=10 -> at least 5 epochs must run.
+    min_required_epochs = int(warmup_fraction * max_epochs)
+    assert n_epochs_run >= min_required_epochs, (
+        f"Expected at least warmup_fraction * max_epochs = {min_required_epochs} "
+        f"epochs, but only {n_epochs_run} ran."
+    )
+
 
 # ---------------------------------------------------------------------------
 # 6. test_training_loss_decreases — Loss decreases over 5 epochs on simple data
@@ -330,11 +362,36 @@ def test_training_loss_decreases(
         f"Loss should decrease: first={first_loss:.4f}, last={last_loss:.4f}"
     )
 
+    # FORMULA: loss should decrease by at least 10% over 10 epochs
+    # (on simple sinusoidal data, this is easily achievable)
+    assert last_loss < 0.9 * first_loss, (
+        f"Loss should decrease by at least 10%: "
+        f"first={first_loss:.4f}, last={last_loss:.4f}, "
+        f"ratio={last_loss/first_loss:.4f}"
+    )
+
     # Intermediate check: loss at epoch 5 should already be below epoch 1
     mid_loss = history[min(4, len(history) - 1)]["train_loss"]
     assert mid_loss < first_loss, (
         f"Loss at epoch 5 should be below epoch 1: "
         f"epoch1={first_loss:.4f}, epoch5={mid_loss:.4f}"
+    )
+
+    # Verify history contains train_loss entries
+    for entry in history:
+        assert "train_loss" in entry, "History entry missing 'train_loss' key"
+
+    # Verify best_val_elbo is <= minimum of all validation losses in history
+    val_losses = [e["val_loss"] for e in history if "val_loss" in e]
+    if val_losses:
+        assert result["best_val_elbo"] <= min(val_losses) + 1e-6, (
+            f"best_val_elbo={result['best_val_elbo']:.6f} should be <= "
+            f"min(val_losses)={min(val_losses):.6f}"
+        )
+
+    # Verify best_epoch is within valid range
+    assert 0 <= result["best_epoch"] < 10, (
+        f"best_epoch={result['best_epoch']} should be in [0, max_epochs)"
     )
 
 
@@ -435,10 +492,14 @@ def test_mode_F_scheduler_disabled_during_warmup(
         trainer.train_epoch(train_loader, epoch, max_epochs)
 
     current_lr = trainer.optimizer.param_groups[0]["lr"]
-    assert current_lr >= initial_lr * 0.5, (
-        f"LR dropped significantly during warmup: "
+    assert current_lr == pytest.approx(initial_lr, abs=1e-10), (
+        f"LR should be completely unchanged during warmup: "
         f"initial={initial_lr}, current={current_lr}"
     )
+
+    # FORMULA: after warmup, scheduler step SHOULD be able to reduce LR
+    # (we don't test the actual reduction here, just that LR is preserved
+    # during warmup — the formula is lr_t = lr_0 for t < T_warmup)
 
 
 # ---------------------------------------------------------------------------
@@ -542,3 +603,31 @@ class TestTrainerOutput:
         result = trainer.fit(train_windows=x[:16], val_windows=x[16:], max_epochs=3, batch_size=8)
         assert "history" in result, "Missing 'history' key"
         assert len(result["history"]) > 0, "Empty history"
+
+        # Verify additional required keys exist
+        assert "best_epoch" in result, "Missing 'best_epoch' key"
+        assert "best_val_elbo" in result, "Missing 'best_val_elbo' key"
+
+        # Verify best_epoch is a non-negative int
+        assert isinstance(result["best_epoch"], int), (
+            f"best_epoch should be int, got {type(result['best_epoch'])}"
+        )
+        assert result["best_epoch"] >= 0, (
+            f"best_epoch should be >= 0, got {result['best_epoch']}"
+        )
+
+        # Verify best_val_elbo is a finite float
+        assert isinstance(result["best_val_elbo"], float), (
+            f"best_val_elbo should be float, got {type(result['best_val_elbo'])}"
+        )
+        assert math.isfinite(result["best_val_elbo"]), (
+            f"best_val_elbo should be finite, got {result['best_val_elbo']}"
+        )
+
+        # If history contains val_loss entries, verify best_val_elbo <= min(val_losses)
+        val_losses = [e["val_loss"] for e in result["history"] if "val_loss" in e]
+        if val_losses:
+            assert result["best_val_elbo"] <= min(val_losses) + 1e-6, (
+                f"best_val_elbo={result['best_val_elbo']:.6f} should be <= "
+                f"min(val_losses)={min(val_losses):.6f}"
+            )

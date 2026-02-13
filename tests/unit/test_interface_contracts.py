@@ -171,6 +171,28 @@ def test_contract_data_to_windows(pipeline_data: dict) -> None:
         f"Expected torch.float32, got {raw_returns.dtype}"
     )
 
+    # FORMULA: CONV-02 — z-score per window per feature: mean≈0, std≈1
+    for feat_idx in range(windows.shape[2]):
+        feat_slice = windows[:, :, feat_idx]  # (N, T)
+        per_window_mean = feat_slice.mean(dim=1)  # (N,)
+        per_window_std = feat_slice.std(dim=1)    # (N,)
+        assert torch.all(torch.abs(per_window_mean) < 1e-4), (
+            f"Feature {feat_idx}: z-score mean not ~0, "
+            f"max |mean|={per_window_mean.abs().max():.6f}"
+        )
+        assert torch.all(torch.abs(per_window_std - 1.0) < 0.05), (
+            f"Feature {feat_idx}: z-score std not ~1, "
+            f"range [{per_window_std.min():.4f}, {per_window_std.max():.4f}]"
+        )
+
+    # FORMULA: raw returns must NOT be z-scored (ISD MOD-004)
+    raw_means = raw_returns.mean(dim=1)
+    raw_stds = raw_returns.std(dim=1)
+    assert not (torch.all(torch.abs(raw_means) < 1e-3)
+                and torch.all(torch.abs(raw_stds - 1.0) < 0.1)), (
+        "Raw returns appear z-scored — they must be raw for co-movement loss"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 2: VAE forward pass output contract
@@ -203,6 +225,24 @@ def test_contract_vae_forward(pipeline_data: dict) -> None:
     assert mu.dtype == torch.float32, f"mu dtype {mu.dtype} != float32"
     assert log_var.dtype == torch.float32, (
         f"log_var dtype {log_var.dtype} != float32"
+    )
+
+    # FORMULA: INV-002 — log_sigma_sq is a scalar, σ² = exp(log_sigma_sq)
+    model = pipeline_data["model"]
+    lss = model.log_sigma_sq.detach()
+    assert lss.ndim == 0, f"log_sigma_sq ndim={lss.ndim}, expected 0"
+    sigma_sq = torch.exp(lss)
+    assert sigma_sq > 0, f"σ² must be positive, got {sigma_sq}"
+
+    # FORMULA: reparameterization trick z = μ + exp(0.5·log_var)·ε
+    # In eval mode, mu and log_var should be deterministic
+    with torch.no_grad():
+        _, mu2, lv2 = model(batch)
+    assert torch.allclose(mu, mu2, atol=1e-6), (
+        "Eval mode mu should be deterministic"
+    )
+    assert torch.allclose(log_var, lv2, atol=1e-6), (
+        "Eval mode log_var should be deterministic"
     )
 
 
@@ -255,6 +295,27 @@ def test_contract_compute_loss(pipeline_data: dict) -> None:
                 f"Non-finite value in components['{key}']: {val}"
             )
 
+    # FORMULA: INV-001 — Mode P total loss = D/(2σ²)·MSE + D/2·ln(σ²) + KL
+    # Verify component decomposition matches formula
+    D = batch.shape[1] * batch.shape[2]  # T × F
+    sigma_sq = torch.exp(model.log_sigma_sq.detach()).item()
+    mse = components["recon"]  # per-element MSE
+    if isinstance(mse, torch.Tensor):
+        mse = mse.item()
+    kl = components["kl"]
+    if isinstance(kl, torch.Tensor):
+        kl = kl.item()
+    recon_term = components["recon_term"]
+    if isinstance(recon_term, torch.Tensor):
+        recon_term = recon_term.item()
+
+    # The recon_term should include D/(2σ²) coefficient
+    expected_recon_term = (D / (2.0 * sigma_sq)) * mse
+    assert abs(recon_term - expected_recon_term) < max(abs(expected_recon_term) * 1e-4, 1e-6), (
+        f"recon_term={recon_term:.6f} != D/(2σ²)·MSE="
+        f"{expected_recon_term:.6f} (D={D}, σ²={sigma_sq:.4f}, MSE={mse:.6f})"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 4: Inference output contract
@@ -271,6 +332,7 @@ def test_contract_inference_output(pipeline_data: dict) -> None:
 
     trajectories, kl_per_dim = infer_latent_trajectories(
         model, windows, metadata, batch_size=64, device=torch.device("cpu"),
+        compute_kl=True,
     )
 
     # Trajectories: dict mapping int stock_id -> ndarray
@@ -293,6 +355,23 @@ def test_contract_inference_output(pipeline_data: dict) -> None:
     assert all(isinstance(sid, int) for sid in stock_ids)
     assert B.shape[0] == len(stock_ids), (
         f"B.shape[0]={B.shape[0]} != len(stock_ids)={len(stock_ids)}"
+    )
+
+    # FORMULA: B[i] = mean(trajectories[stock_i]) — verify aggregation
+    for i, sid in enumerate(stock_ids):
+        traj = trajectories[sid]  # (M, K) array
+        expected_row = np.mean(traj, axis=0)
+        assert np.allclose(B[i], expected_row, atol=1e-10), (
+            f"B[{i}] (stock {sid}): aggregate_profiles mean mismatch. "
+            f"Expected {expected_row[:3]}..., got {B[i, :3]}..."
+        )
+
+    # FORMULA: KL per dim consistency — should have K values
+    assert kl_per_dim.shape == (K,), (
+        f"kl_per_dim.shape={kl_per_dim.shape}, expected ({K},)"
+    )
+    assert np.all(kl_per_dim >= 0), (
+        f"KL per dim must be non-negative, min={kl_per_dim.min()}"
     )
 
 
@@ -331,6 +410,23 @@ def test_contract_measure_active_units(pipeline_data: dict) -> None:
         assert d in range(K), (
             f"Active dim {d} not in range(0, {K})"
         )
+
+    # FORMULA: CONV-07 — AU = |{k : KL_k > 0.01}| exactly
+    expected_AU = int(np.sum(kl_per_dim > 0.01))
+    assert AU == expected_AU, (
+        f"AU={AU} but count(KL_k > 0.01)={expected_AU}. "
+        f"KL values: {kl_per_dim}"
+    )
+
+    # FORMULA: active_dims should be the indices where KL > 0.01,
+    # sorted by decreasing KL
+    expected_dims = [int(k) for k in np.where(kl_per_dim > 0.01)[0]]
+    expected_dims_sorted = sorted(
+        expected_dims, key=lambda k: kl_per_dim[k], reverse=True,
+    )
+    assert active_dims == expected_dims_sorted, (
+        f"active_dims={active_dims} != expected {expected_dims_sorted}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +489,41 @@ def test_contract_rescaling() -> None:
         f"B_A_port dtype {B_A_port.dtype}, expected float64"
     )
 
+    # FORMULA: INV-004 — Rescaling B̃_{A,i,t} = R_{i,t} · μ̄_{A,i}
+    # where R_{i,t} = winsorize(σ_{i,t} / median(σ_{.,t}))
+    # Verify portfolio rescaling numerically for last date
+    last_date_idx = trailing_vol.index[-1]
+    vols_last = trailing_vol.loc[last_date_idx, stock_ids].values.astype(np.float64)
+    median_vol = np.median(vols_last)
+    raw_ratios = vols_last / median_vol
+    # Winsorize at P5/P95
+    lo_p = np.percentile(raw_ratios, 5.0)
+    hi_p = np.percentile(raw_ratios, 95.0)
+    expected_ratios = np.clip(raw_ratios, lo_p, hi_p)
+    # Expected rescaled exposures
+    expected_B_port = B_A * expected_ratios[:, np.newaxis]
+    assert np.allclose(B_A_port, expected_B_port, atol=1e-10), (
+        f"Portfolio rescaling mismatch: max diff="
+        f"{np.abs(B_A_port - expected_B_port).max():.2e}"
+    )
+
+    # FORMULA: Verify estimation rescaling for one date
+    check_date = list(B_A_by_date.keys())[0]
+    check_date_idx = trailing_vol.index[
+        [str(d.date()) if hasattr(d, 'date') else str(d)
+         for d in trailing_vol.index].index(check_date)
+    ]
+    vols_check = trailing_vol.loc[check_date_idx, stock_ids].values.astype(np.float64)
+    med_check = np.median(vols_check)
+    ratios_check = vols_check / med_check
+    lo_c = np.percentile(ratios_check, 5.0)
+    hi_c = np.percentile(ratios_check, 95.0)
+    ratios_check = np.clip(ratios_check, lo_c, hi_c)
+    expected_B_est = B_A * ratios_check[:, np.newaxis]
+    assert np.allclose(B_A_by_date[check_date], expected_B_est, atol=1e-10), (
+        f"Estimation rescaling mismatch at {check_date}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 7: Factor regression contract
@@ -444,6 +575,41 @@ def test_contract_factor_regression() -> None:
     assert len(valid_dates) == z_hat.shape[0], (
         f"len(valid_dates)={len(valid_dates)} != z_hat.shape[0]={z_hat.shape[0]}"
     )
+
+    # FORMULA: OLS — ẑ_t = (B̃_t^T B̃_t)^{-1} B̃_t^T r_t
+    # Verify one date manually
+    check_date = valid_dates[0]
+    B_t = B_A_by_date[check_date]
+    active_stocks = universe_snapshots[check_date]
+    date_idx = dates[
+        [str(d.date()) if hasattr(d, 'date') else str(d)
+         for d in dates].index(check_date)
+    ]
+    r_t = returns.loc[date_idx, active_stocks].values.astype(np.float64)
+    # Manual OLS
+    BtB = B_t.T @ B_t
+    Btr = B_t.T @ r_t
+    z_expected = np.linalg.solve(BtB, Btr)
+    assert np.allclose(z_hat[0], z_expected, atol=1e-10), (
+        f"OLS formula mismatch at {check_date}: "
+        f"expected {z_expected}, got {z_hat[0]}"
+    )
+
+    # FORMULA: With B=Identity, z_hat should equal returns
+    B_identity = {ds: np.eye(n, AU, dtype=np.float64) for ds in date_strings}
+    z_id, dates_id = estimate_factor_returns(
+        B_identity, returns, universe_snapshots,
+    )
+    for t_idx, ds in enumerate(dates_id):
+        d_idx = dates[
+            [str(d.date()) if hasattr(d, 'date') else str(d)
+             for d in dates].index(ds)
+        ]
+        r_row = returns.loc[d_idx].values[:AU].astype(np.float64)
+        # (I^T I)^{-1} I^T r = r[:AU]  (least-squares projection)
+        assert np.allclose(z_id[t_idx], r_row, atol=1e-8), (
+            f"B=I: z_hat should equal r[:AU] at {ds}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +672,41 @@ def test_contract_covariance_assembly() -> None:
         f"B_prime_port shape {B_prime_port.shape}, expected ({n}, {AU})"
     )
 
+    # FORMULA: Σ_assets = B Σ_z B^T + diag(D_ε) — verify assembly
+    Sigma_expected = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
+    assert np.allclose(Sigma_assets, Sigma_expected, atol=1e-10), (
+        f"Covariance assembly mismatch: max diff="
+        f"{np.abs(Sigma_assets - Sigma_expected).max():.2e}"
+    )
+
+    # FORMULA: eigendecomposition Σ_z = V Λ V^T (reconstruction)
+    Sigma_z_reconstructed = V @ np.diag(eigenvalues) @ V.T
+    assert np.allclose(Sigma_z, Sigma_z_reconstructed, atol=1e-10), (
+        f"Σ_z reconstruction mismatch: max diff="
+        f"{np.abs(Sigma_z - Sigma_z_reconstructed).max():.2e}"
+    )
+
+    # FORMULA: B' = B_A_port @ V (rotated exposures)
+    B_prime_expected = B_A_port @ V
+    assert np.allclose(B_prime_port, B_prime_expected, atol=1e-10), (
+        f"Rotated exposures mismatch: max diff="
+        f"{np.abs(B_prime_port - B_prime_expected).max():.2e}"
+    )
+
+    # FORMULA: rotation preserves covariance B'ΛB'^T = BΣ_zB^T
+    factor_cov_original = B_A_port @ Sigma_z @ B_A_port.T
+    factor_cov_rotated = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+    assert np.allclose(factor_cov_original, factor_cov_rotated, atol=1e-10), (
+        f"Rotation must preserve factor covariance: max diff="
+        f"{np.abs(factor_cov_original - factor_cov_rotated).max():.2e}"
+    )
+
+    # PSD verification: all eigenvalues of Σ_assets are ≥ 0
+    asset_eigs = np.linalg.eigvalsh(Sigma_assets)
+    assert np.all(asset_eigs >= -1e-10), (
+        f"Σ_assets has negative eigenvalues: min={asset_eigs.min()}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 9: Entropy and gradient contract
@@ -540,6 +741,49 @@ def test_contract_entropy_and_gradient() -> None:
     assert grad_H.dtype == np.float64, (
         f"grad_H dtype {grad_H.dtype}, expected float64"
     )
+
+    # FORMULA: H ∈ [0, ln(AU)] — entropy bounds
+    assert H <= np.log(AU) + 1e-10, (
+        f"H={H:.4f} > ln(AU)={np.log(AU):.4f}"
+    )
+
+    # FORMULA: manual entropy computation step-by-step
+    beta_prime = B_prime.T @ w  # (AU,)
+    c_prime = (beta_prime ** 2) * eigenvalues  # (AU,)
+    C = np.sum(c_prime)
+    if C > 1e-30:
+        c_hat = c_prime / C
+        log_c_hat = np.log(np.maximum(c_hat, 1e-30))
+        H_manual = -np.sum(c_hat * log_c_hat)
+        assert abs(H - H_manual) < 1e-10, (
+            f"Entropy manual recomputation mismatch: H={H:.10f}, "
+            f"manual={H_manual:.10f}"
+        )
+
+    # FORMULA: gradient via finite differences
+    delta = 1e-7
+    grad_fd = np.zeros(n)
+    for i in range(n):
+        w_plus = w.copy()
+        w_plus[i] += delta
+        w_plus /= w_plus.sum()  # Re-normalize
+        H_plus, _ = compute_entropy_and_gradient(w_plus, B_prime, eigenvalues)
+        w_minus = w.copy()
+        w_minus[i] -= delta
+        w_minus = np.maximum(w_minus, 0)
+        w_minus /= w_minus.sum()
+        H_minus, _ = compute_entropy_and_gradient(w_minus, B_prime, eigenvalues)
+        grad_fd[i] = (H_plus - H_minus) / (2.0 * delta)
+
+    # Gradient check: analytical vs finite differences (relaxed for normalization)
+    grad_norm = np.linalg.norm(grad_H)
+    if grad_norm > 1e-6:
+        cos_sim = np.dot(grad_H, grad_fd) / (
+            np.linalg.norm(grad_H) * np.linalg.norm(grad_fd) + 1e-30
+        )
+        assert cos_sim > 0.9, (
+            f"Gradient direction mismatch: cosine similarity={cos_sim:.4f}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +840,29 @@ def test_contract_multi_start_optimize() -> None:
     assert isinstance(H, float), f"H type {type(H)}, expected float"
     assert math.isfinite(f_val), f"f_val={f_val} is not finite"
     assert math.isfinite(H), f"H={H} is not finite"
+
+    # FORMULA: H ≥ 0 (entropy non-negative)
+    assert H >= -1e-10, f"Entropy H={H} should be >= 0"
+
+    # FORMULA: H ≤ ln(AU) (entropy upper bound)
+    assert H <= np.log(AU) + 0.01, (
+        f"H={H:.4f} exceeds max entropy ln({AU})={np.log(AU):.4f}"
+    )
+
+    # FORMULA: INV-012 constraints satisfied
+    w_max = 0.10
+    assert np.all(w <= w_max + 1e-6), (
+        f"max weight {w.max():.4f} > w_max={w_max}"
+    )
+
+    # FORMULA: concentration penalty recomputation
+    # P_conc = Σ max(0, w_i - w_bar)²
+    w_bar = 0.03
+    P_conc = np.sum(np.maximum(0, w - w_bar) ** 2)
+    assert math.isfinite(P_conc), f"P_conc={P_conc} is not finite"
+
+    # FORMULA: first rebalancing → turnover penalty = 0
+    # (is_first=True was passed)
 
 
 # ---------------------------------------------------------------------------
@@ -670,3 +937,20 @@ def test_contract_enforce_cardinality() -> None:
             f"Weight[{i}]={wi} violates semi-continuous constraint "
             f"(should be 0 or >= {w_min})"
         )
+
+    # FORMULA: cardinality reduction — at least one stock eliminated
+    n_active = np.sum(result > 1e-8)
+    n_original = np.sum(w_opt > 1e-8)
+    assert n_active <= n_original, (
+        f"Cardinality enforcement should not increase active stocks: "
+        f"{n_active} > {n_original}"
+    )
+
+    # FORMULA: entropy should remain defined and non-negative
+    H_result, _ = compute_entropy_and_gradient(result, B_prime, eigenvalues)
+    assert H_result >= -1e-10, (
+        f"Post-cardinality entropy H={H_result} should be >= 0"
+    )
+    assert math.isfinite(H_result), (
+        f"Post-cardinality entropy H={H_result} is not finite"
+    )

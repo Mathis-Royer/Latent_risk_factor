@@ -102,12 +102,18 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     assert not torch.isnan(windows).any(), "NaN in windows"
     assert not torch.isnan(raw_returns).any(), "NaN in raw_returns"
 
-    # Z-score check: per-window mean ≈ 0, std ≈ 1
+    # Z-score check: per-window mean ≈ 0, std ≈ 1 (CONV-02)
     for i in range(min(5, windows.shape[0])):
         for f in range(2):
             feat = windows[i, :, f].numpy()
-            assert abs(feat.mean()) < 0.1, f"Window {i}, feat {f}: mean={feat.mean()}"
-            assert abs(feat.std() - 1.0) < 0.1, f"Window {i}, feat {f}: std={feat.std()}"
+            assert abs(feat.mean()) < 1e-3, (
+                f"CONV-02: Window {i}, feat {f}: mean={feat.mean():.6f} "
+                f"(expected < 1e-3)"
+            )
+            assert abs(feat.std() - 1.0) < 0.05, (
+                f"CONV-02: Window {i}, feat {f}: std={feat.std():.6f} "
+                f"(expected within 0.05 of 1.0)"
+            )
 
     # ---------------------------------------------------------------
     # Stage 3: VAE build + train
@@ -147,7 +153,7 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     result = trainer.fit(
         train_windows=train_windows,
         val_windows=val_windows,
-        max_epochs=3,
+        max_epochs=10,
         batch_size=32,
     )
 
@@ -190,9 +196,13 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     )
 
     if AU_final == 0:
-        # Use all K dims as fallback for testing
-        AU_final = min(K, 5)
-        active_dims_final = list(range(AU_final))
+        pytest.fail(
+            f"AU=0 after truncation: the VAE produced no active factors "
+            f"(AU_raw={AU}, au_max={au_max}, kl_per_dim={kl_per_dim}). "
+            f"This indicates the model failed to learn useful latent "
+            f"representations on synthetic data. Check training config, "
+            f"synthetic data quality, or increase max_epochs."
+        )
 
     B_A = filter_exposure_matrix(B, active_dims_final)
     assert B_A.shape == (len(inferred_ids), AU_final)
@@ -307,9 +317,13 @@ def test_e2e_synthetic_100stocks_16years() -> None:
 
 @pytest.mark.slow
 def test_e2e_benchmarks_complete() -> None:
-    """All 6 benchmarks produce valid weights on synthetic data."""
+    """All 6 benchmarks produce valid weights on synthetic data (INV-012)."""
     from src.benchmarks.equal_weight import EqualWeight
     from src.benchmarks.inverse_vol import InverseVolatility
+    from src.benchmarks.min_variance import MinimumVariance
+    from src.benchmarks.erc import EqualRiskContribution
+    from src.benchmarks.pca_factor_rp import PCAFactorRiskParity
+    from src.benchmarks.pca_vol import PCAVolRiskParity
 
     rng = np.random.RandomState(42)
     n = 30
@@ -323,13 +337,55 @@ def test_e2e_benchmarks_complete() -> None:
         np.abs(rng.randn(252, n)) * 0.02 + 0.15,
         index=dates, columns=stock_ids,
     )
+    current_date = str(dates[-1].date())  # type: ignore[union-attr]
 
-    for BenchClass in [EqualWeight, InverseVolatility]:
-        bench = BenchClass()
+    w_max = 0.05
+    w_min = 0.001
+    constraint_params: dict[str, float] = {
+        "w_max": w_max,
+        "w_min": w_min,
+        "phi": 25.0,
+        "kappa_1": 0.1,
+        "kappa_2": 7.5,
+        "delta_bar": 0.01,
+        "tau_max": 0.30,
+        "lambda_risk": 1.0,
+    }
+
+    all_benchmarks = [
+        EqualWeight(constraint_params=constraint_params),
+        InverseVolatility(constraint_params=constraint_params),
+        MinimumVariance(constraint_params=constraint_params),
+        EqualRiskContribution(constraint_params=constraint_params),
+        PCAFactorRiskParity(constraint_params=constraint_params),
+        PCAVolRiskParity(constraint_params=constraint_params),
+    ]
+
+    for bench in all_benchmarks:
+        name = bench.__class__.__name__
         bench.fit(returns, stock_ids, trailing_vol=trailing_vol,
-                  current_date=str(dates[-1].date()))
+                  current_date=current_date)
         w = bench.optimize(is_first=True)
-        assert w.shape == (n,), f"{BenchClass.__name__}: shape {w.shape}"
-        assert abs(np.sum(w) - 1.0) < 1e-4, f"{BenchClass.__name__}: sum={np.sum(w)}"
-        assert np.all(w >= -1e-8), f"{BenchClass.__name__}: negative weights"
-        assert np.all(np.isfinite(w)), f"{BenchClass.__name__}: non-finite"
+
+        # Shape and finiteness
+        assert w.shape == (n,), f"{name}: shape {w.shape}"
+        assert np.all(np.isfinite(w)), f"{name}: non-finite weights"
+
+        # Fully invested
+        assert abs(np.sum(w) - 1.0) < 1e-4, (
+            f"{name}: sum={np.sum(w):.6f}, expected 1.0"
+        )
+        # Long-only
+        assert np.all(w >= -1e-8), f"{name}: negative weights, min={np.min(w)}"
+
+        # INV-012: w_max constraint
+        assert np.max(w) <= w_max + 1e-6, (
+            f"{name}: max weight {np.max(w):.6f} exceeds w_max={w_max}"
+        )
+
+        # INV-012: Semi-continuous constraint (w_i = 0 or w_i >= w_min)
+        for i, wi in enumerate(w):
+            assert wi < 1e-10 or wi >= w_min - 1e-8, (
+                f"{name}: w[{i}]={wi:.8f} violates semi-continuous "
+                f"(must be 0 or >= {w_min})"
+            )

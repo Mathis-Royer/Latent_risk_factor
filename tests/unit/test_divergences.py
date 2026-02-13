@@ -168,7 +168,10 @@ class TestDiv04VarianceTargeting:
     """
 
     def test_variance_targeting_formula(self) -> None:
-        """scale = Var_realized(EW) / Var_predicted(EW), clamped [0.01, 100]."""
+        """scale = Var_realized(EW) / Var_predicted(EW), clamped [0.01, 100].
+
+        Verify exact formula: scale = realized_ew_var / predicted_ew_var.
+        """
         from src.integration.pipeline import _variance_targeting_scale
 
         rng = np.random.RandomState(42)
@@ -195,6 +198,17 @@ class TestDiv04VarianceTargeting:
             f"Scale {scale} outside [0.01, 100] clamp range"
         )
         assert np.isfinite(scale)
+
+        # Formula verification: manually compute the ratio
+        w_eq = np.ones(n) / n
+        predicted_var = float(w_eq @ Sigma @ w_eq)
+        ew_returns = returns_df[stock_ids].mean(axis=1).to_numpy()
+        realized_var = float(np.var(ew_returns, ddof=1))
+        expected_scale = np.clip(realized_var / max(predicted_var, 1e-30), 0.01, 100.0)
+        assert abs(scale - expected_scale) / max(expected_scale, 1e-10) < 0.01, (
+            f"Scale={scale:.6f} != expected={expected_scale:.6f} "
+            f"(realized={realized_var:.2e}, predicted={predicted_var:.2e})"
+        )
 
     def test_variance_targeting_clamp_lower(self) -> None:
         """When predicted var >> realized var, scale is clamped to 0.01."""
@@ -303,8 +317,12 @@ class TestDiv05AutoAdaptation:
         adapted = pipeline._adapt_vae_params(n_stocks=30, T_annee=3)
 
         # With 30 stocks and 3 years, the default c_min=384 violates capacity
-        # so _adapt should reduce c_min to 144
-        assert adapted["c_min"] <= 384, "c_min should be ≤ 384"
+        # so _adapt should reduce c_min strictly below the default
+        from src.vae.build_vae import C_MIN_DEFAULT
+        assert adapted["c_min"] < C_MIN_DEFAULT, (
+            f"c_min should be reduced below default {C_MIN_DEFAULT}, "
+            f"got {adapted['c_min']}"
+        )
 
     def test_adapt_relaxes_r_max_last_resort(self) -> None:
         """When K and c_min reduction don't suffice, r_max is relaxed by 10%."""
@@ -347,8 +365,9 @@ class TestDiv08MultiStartComposition:
     """
 
     def test_multi_start_generates_5_starts(self) -> None:
-        """multi_start_optimize with n_starts=5 uses all 5 starting points."""
+        """multi_start_optimize with n_starts=5 produces a valid entropy-maximizing solution."""
         from src.portfolio.sca_solver import multi_start_optimize
+        from src.portfolio.entropy import compute_entropy_only
 
         rng = np.random.RandomState(42)
         n = 50
@@ -360,7 +379,6 @@ class TestDiv08MultiStartComposition:
         eigenvalues = np.array([0.5, 0.3, 0.1])
         D_eps = np.diag(Sigma)
 
-        # Should run without error with n_starts=5
         w, f, H = multi_start_optimize(
             Sigma_assets=Sigma,
             B_prime=B_prime,
@@ -375,15 +393,47 @@ class TestDiv08MultiStartComposition:
         assert w.shape == (n,)
         assert np.isfinite(f) and np.isfinite(H)
 
-    def test_multi_start_start_1_is_equal_weight(self) -> None:
-        """Start #1 is exactly 1/n (verified by inspecting source)."""
-        # This verifies the code matches divergences.md description:
-        # "EW, inverse-diag, inverse-vol, 2 random"
-        n = 50
+        # H should be non-negative: H = -sum(c_k * ln(c_k)) >= 0
+        assert H >= -1e-10, f"Entropy should be non-negative, got H={H}"
+
+        # Multi-start should beat or match equal-weight entropy
         w_ew = np.ones(n) / n
-        # Equal weight: all components equal
-        assert np.allclose(w_ew, w_ew[0]), "EW start is uniform"
-        assert abs(w_ew.sum() - 1.0) < 1e-10
+        H_ew = compute_entropy_only(w_ew, B_prime, eigenvalues)
+        assert H >= H_ew - 1e-4, (
+            f"Multi-start SCA entropy H={H:.6f} should be >= EW entropy H_ew={H_ew:.6f}"
+        )
+
+    def test_single_start_equal_weight_produces_valid_result(self) -> None:
+        """With n_starts=1 and alpha=0, multi_start uses EW start -> min-var solution."""
+        from src.portfolio.sca_solver import multi_start_optimize
+
+        rng = np.random.RandomState(42)
+        n = 50
+        A = rng.randn(n, n) * 0.01
+        Sigma = A @ A.T + np.eye(n) * 0.01
+        B_prime = rng.randn(n, 3)
+        Q, _ = np.linalg.qr(B_prime)
+        B_prime = Q[:, :3]
+        eigenvalues = np.array([0.5, 0.3, 0.1])
+        D_eps = np.diag(Sigma)
+
+        # n_starts=1 uses only EW as initial point
+        w, f, H = multi_start_optimize(
+            Sigma_assets=Sigma,
+            B_prime=B_prime,
+            eigenvalues=eigenvalues,
+            D_eps=D_eps,
+            alpha=0.0,
+            n_starts=1,
+            seed=42,
+            lambda_risk=1.0,
+            phi=0.0,
+            is_first=True,
+        )
+        assert w.shape == (n,)
+        assert abs(w.sum() - 1.0) < 1e-4, f"Weights sum to {w.sum()}"
+        assert np.all(w >= -1e-8), "Negative weight from EW start"
+        assert np.isfinite(f)
 
 
 # =====================================================================
@@ -457,13 +507,19 @@ class TestDiv10FreshCVXPY:
     """Divergence #10: Code builds fresh CVXPY problem each SCA iteration
     instead of parametric reuse. divergences.md says: 'Garder — robustesse'.
 
-    We cannot directly test 'freshness' of the CVXPY problem, but we verify
-    the solver converges correctly (the only observable consequence).
+    We verify the behavioral consequence: SCA must monotonically improve
+    the objective across iterations (fresh problems ensure no stale state).
     """
 
-    def test_sca_converges_with_fresh_problems(self) -> None:
-        """SCA with fresh CVXPY problems converges to a valid solution."""
-        from src.portfolio.sca_solver import sca_optimize
+    def test_sca_objective_monotonically_improves(self) -> None:
+        """SCA objective f(w_k) must be non-decreasing across iterations.
+
+        This is the observable guarantee of correct problem construction:
+        if stale parameters leaked between iterations, the objective
+        could decrease or oscillate.
+        """
+        from src.portfolio.sca_solver import sca_optimize, objective_function
+        from src.portfolio.entropy import compute_entropy_only
 
         rng = np.random.RandomState(42)
         n = 30
@@ -475,14 +531,35 @@ class TestDiv10FreshCVXPY:
         eigenvalues = np.array([0.5, 0.3, 0.1])
 
         w_init = np.ones(n) / n
-        w, f, H, n_iters = sca_optimize(
+
+        # Run SCA with enough iterations to verify convergence
+        w_opt, f_opt, H_opt, n_iters = sca_optimize(
             w_init=w_init,
             Sigma_assets=Sigma,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
             alpha=1.0,
+            lambda_risk=1.0,
+            phi=25.0,
+            w_bar=1.0 / n,
+            w_max=0.10,
+            is_first=True,
+            max_iter=50,
         )
-        assert abs(w.sum() - 1.0) < 1e-6, "Weights must sum to 1"
-        assert np.all(w >= -1e-8), "Weights must be non-negative"
+
+        # Verify basic constraints
+        assert abs(w_opt.sum() - 1.0) < 1e-6, "Weights must sum to 1"
+        assert np.all(w_opt >= -1e-8), "Weights must be non-negative"
         assert n_iters >= 1, "SCA should run at least 1 iteration"
-        assert np.isfinite(f) and np.isfinite(H)
+
+        # Key check: final objective must improve over initial
+        f_init = objective_function(
+            w=w_init, Sigma_assets=Sigma, B_prime=B_prime,
+            eigenvalues=eigenvalues, alpha=1.0, lambda_risk=1.0,
+            phi=25.0, w_bar=1.0 / n, w_old=None,
+            kappa_1=0.1, kappa_2=7.5, delta_bar=0.01, is_first=True,
+        )
+        assert f_opt >= f_init - 1e-6, (
+            f"SCA should improve objective: f_init={f_init:.6f}, "
+            f"f_opt={f_opt:.6f} (diff={f_opt - f_init:.2e})"
+        )

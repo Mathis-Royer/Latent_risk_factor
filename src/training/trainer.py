@@ -399,7 +399,8 @@ class VAETrainer:
         )
         if hitting_bounds:
             self._sigma_sq_bounds_hit_streak += 1
-            if self._sigma_sq_bounds_hit_streak >= 5:
+            # Log at milestones only: 5, 10, 20, 50, 100, 200, ...
+            if self._sigma_sq_bounds_hit_streak in (5, 10, 20, 50, 100, 200, 500):
                 logger.warning(
                     "σ² has been clamped at bounds (%.4g) for %d consecutive epochs. "
                     "Current bounds: [%.4g, %.4g]. Consider adjusting sigma_sq_min/max.",
