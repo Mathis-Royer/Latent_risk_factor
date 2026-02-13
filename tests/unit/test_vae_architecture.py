@@ -115,6 +115,21 @@ class TestChannelProgression:
                     f"{channels}"
                 )
 
+        # Exact formula verification for K=100 using build_vae info dict
+        _, info_k100 = build_vae(
+            n=200, T=504, T_annee=10, F=2, K=100, r_max=200.0,
+        )
+        actual_channels = info_k100["channels"]
+        C_HEAD = 144
+        C_L_k100 = compute_final_width(100)
+        L_k100 = compute_depth(504)
+        for l in range(L_k100 + 1):
+            expected = round_16(C_HEAD * (C_L_k100 / C_HEAD) ** (l / L_k100))
+            assert actual_channels[l] == expected, (
+                f"K=100, l={l}: actual={actual_channels[l]}, "
+                f"expected=round_16({C_HEAD}*({C_L_k100}/{C_HEAD})^({l}/{L_k100}))={expected}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tests 4-5: Capacity constraint
@@ -168,6 +183,11 @@ class TestCapacityConstraint:
         assert info["P_total"] > 0
         assert info["N"] > 0
 
+        # Exact formula: r = P_total / N
+        assert abs(info["r"] - info["P_total"] / info["N"]) < 1e-10, (
+            f"r={info['r']:.10f} != P_total/N={info['P_total'] / info['N']:.10f}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests 6-7: Encoder and Decoder output shapes
@@ -193,7 +213,8 @@ class TestShapes:
 
     def test_encoder_output_shape(self) -> None:
         """
-        mu and log_var both have shape (B, K).
+        mu and log_var both have shape (B, K), are finite, and log_var
+        implies valid variance via sigma_k^2 = exp(log_var_k).
         """
         x = torch.randn(SMALL_BATCH, SMALL_F, SMALL_T)  # (B, F, T) for encoder
         with torch.no_grad():
@@ -206,9 +227,18 @@ class TestShapes:
             f"Expected log_var shape ({SMALL_BATCH}, {SMALL_K}), got {log_var.shape}"
         )
 
+        # Values must be finite (no NaN/Inf from random init)
+        assert torch.isfinite(mu).all(), "mu contains NaN or Inf"
+        assert torch.isfinite(log_var).all(), "log_var contains NaN or Inf"
+
+        # INV-002: sigma_k^2 = exp(log_var_k) must be positive
+        sigma_sq = torch.exp(log_var)
+        assert (sigma_sq > 0).all(), "exp(log_var) should be strictly positive"
+
     def test_decoder_output_shape(self) -> None:
         """
-        x_hat has shape (B, F, T) from decoder (channels-first).
+        x_hat has shape (B, F, T) from decoder (channels-first),
+        is finite, and not trivially zero.
         """
         z = torch.randn(SMALL_BATCH, SMALL_K)
         with torch.no_grad():
@@ -219,10 +249,17 @@ class TestShapes:
             f"got {x_hat.shape}"
         )
 
+        # Values must be finite and non-trivial
+        assert torch.isfinite(x_hat).all(), "Decoder output contains NaN or Inf"
+        assert x_hat.abs().max() > 1e-10, (
+            "Decoder output is trivially zero — network likely not initialized correctly"
+        )
+
     def test_forward_roundtrip_shape(self) -> None:
         """
         forward(x) returns (x_hat, mu, log_var) with correct shapes.
         Input: (B, T, F), output x_hat: (B, T, F).
+        Also verifies reconstruction is finite and log_var in plausible range.
         """
         x = torch.randn(SMALL_BATCH, SMALL_T, SMALL_F)  # (B, T, F)
         with torch.no_grad():
@@ -234,6 +271,16 @@ class TestShapes:
         )
         assert mu.shape == (SMALL_BATCH, SMALL_K)
         assert log_var.shape == (SMALL_BATCH, SMALL_K)
+
+        # All outputs must be finite
+        assert torch.isfinite(x_hat).all(), "x_hat contains NaN or Inf"
+        assert torch.isfinite(mu).all(), "mu contains NaN or Inf"
+        assert torch.isfinite(log_var).all(), "log_var contains NaN or Inf"
+
+        # Reconstruction error should be finite and > 0 (untrained model)
+        recon_mse = torch.mean((x - x_hat) ** 2).item()
+        assert recon_mse > 0, "Reconstruction error is exactly zero (suspicious)"
+        assert np.isfinite(recon_mse), f"Reconstruction MSE is not finite: {recon_mse}"
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +390,13 @@ class TestObservationNoise:
             # Allow small float32 tolerance: 1e-4 may be ~9.9999e-5 in float32
             assert obs_var_low >= 1e-4 * (1.0 - 1e-5), (
                 f"obs_var should be clamped to ~1e-4, got {obs_var_low}"
+            )
+
+            # Interior value: log_sigma_sq=0 => exp(0)=1.0, within [1e-4, 10]
+            self.model.log_sigma_sq.fill_(0.0)
+            sigma_sq = torch.exp(self.model.log_sigma_sq).clamp(1e-4, 10.0).item()
+            assert abs(sigma_sq - 1.0) < 1e-6, (
+                f"exp(0) clamped to [1e-4,10] should be 1.0, got {sigma_sq}"
             )
 
 
@@ -567,10 +621,12 @@ class TestChannelFormula:
         for l in range(1, L + 1):
             expected_raw = C_HEAD * (ratio ** (l / L))
             actual = channels[l]
-            # Allow 10% tolerance due to round_16
-            assert abs(actual - expected_raw) / max(expected_raw, 1) < 0.10, (
+            # round_16 rounds to nearest multiple of 16, so max error is 8
+            # Use 16 as conservative bound to account for rounding direction
+            assert abs(actual - expected_raw) <= 16, (
                 f"Channel at layer {l}: actual={actual}, "
-                f"expected~={expected_raw:.1f} (>10% off)"
+                f"expected~={expected_raw:.1f} (off by {abs(actual - expected_raw):.1f}, "
+                f"max rounding error for round_16 is 8)"
             )
 
 
@@ -660,6 +716,34 @@ class TestBuildVAEModes:
             assert mu.shape == (2, SMALL_K)
             assert log_var.shape == (2, SMALL_K)
 
+        # Verify beta affects KL weighting in the loss
+        from src.vae.loss import compute_loss
+        crisis = torch.zeros(2)
+        model_p.train()
+        x_hat_p, mu_p, lv_p = model_p(x)
+        _, comp_b1 = compute_loss(
+            x=x, x_hat=x_hat_p, mu=mu_p, log_var=lv_p,
+            log_sigma_sq=model_p.log_sigma_sq,
+            crisis_fractions=crisis, epoch=50, total_epochs=100,
+            mode="A", gamma=3.0, beta_fixed=1.0,
+        )
+        _, comp_b2 = compute_loss(
+            x=x, x_hat=x_hat_p, mu=mu_p, log_var=lv_p,
+            log_sigma_sq=model_p.log_sigma_sq,
+            crisis_fractions=crisis, epoch=50, total_epochs=100,
+            mode="A", gamma=3.0, beta_fixed=2.0,
+        )
+        # beta_fixed=2 should add exactly 1×KL more to total loss vs beta_fixed=1
+        # total = recon_term + log_norm_term + beta * kl (lambda_co=0)
+        # delta_total = (2-1) * kl = kl
+        kl_raw = comp_b1["kl"].item()
+        if kl_raw > 1e-8:
+            delta_total = comp_b2["total"].item() - comp_b1["total"].item()
+            assert abs(delta_total - kl_raw) / kl_raw < 0.01, (
+                f"beta_fixed=2 should add KL={kl_raw:.6f} to total, "
+                f"but delta_total={delta_total:.6f}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tests: Decoder output shape and training properties
@@ -713,6 +797,26 @@ class TestDecoderOutputShape:
         # We just verify no NaN and shapes match
         assert not torch.isnan(x_hat1).any(), "NaN in output with dropout=0"
         assert x_hat1.shape == x.shape
+
+        # Decoder determinism in TRAIN mode with dropout=0
+        model.train()
+        z_fixed = torch.randn(4, 10)
+        with torch.no_grad():
+            dec_train1 = model.decoder(z_fixed)
+            dec_train2 = model.decoder(z_fixed)
+        assert torch.equal(dec_train1, dec_train2), (
+            "Decoder with dropout=0 should be deterministic even in train mode"
+        )
+
+        # Decoder determinism: same z input produces identical output in eval mode
+        model.eval()
+        z_fixed = torch.randn(4, 10)  # (B, K)
+        with torch.no_grad():
+            dec_out1 = model.decoder(z_fixed)
+            dec_out2 = model.decoder(z_fixed)
+        assert torch.equal(dec_out1, dec_out2), (
+            "Decoder with dropout=0 in eval mode should be fully deterministic"
+        )
 
 
 # ---------------------------------------------------------------------------

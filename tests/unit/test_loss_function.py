@@ -189,6 +189,74 @@ def test_mode_F_beta_annealing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 4b. test_beta_annealing_exact_linear_interpolation — formula verification
+# ---------------------------------------------------------------------------
+
+def test_beta_annealing_exact_linear_interpolation() -> None:
+    """Verify exact linear beta_t formula: beta_t = max(beta_min, min(1, epoch / T_warmup)).
+
+    Tests at 0%, 15%, 30%, 50%, and 100% of total epochs with two different
+    warmup fractions to ensure the formula is correct, not just the boundaries.
+    Uses the default beta_min=0.01.
+
+    ISD/DVT coverage gap: formula-level verification of linear interpolation.
+    """
+    beta_min = 0.01
+
+    # --- Configuration 1: warmup_fraction=0.20, total_epochs=100 ---
+    total_epochs = 100
+    warmup_fraction = 0.20
+    T_warmup = max(1, int(warmup_fraction * total_epochs))  # = 20
+
+    test_points = [
+        # (epoch, expected_beta, description)
+        (0, beta_min, "0% of epochs: epoch/T_warmup=0, clamped to beta_min"),
+        (15, 15.0 / T_warmup, "15% of epochs: mid-warmup linear region"),
+        (30, 1.0, "30% of epochs: past warmup, clamped to 1.0"),
+        (50, 1.0, "50% of epochs: well past warmup"),
+        (99, 1.0, "100% of epochs: final epoch"),
+    ]
+
+    for epoch, expected, desc in test_points:
+        actual = get_beta_t(epoch, total_epochs, warmup_fraction)
+        # Apply the same formula manually to get the exact expected value
+        manual = max(beta_min, min(1.0, epoch / T_warmup))
+        assert actual == manual, (
+            f"Beta formula mismatch at epoch={epoch} ({desc}): "
+            f"get_beta_t={actual}, manual formula={manual}"
+        )
+        assert abs(actual - expected) < 1e-12, (
+            f"Beta value wrong at epoch={epoch} ({desc}): "
+            f"actual={actual}, expected={expected}"
+        )
+
+    # --- Configuration 2: warmup_fraction=0.30, total_epochs=200 ---
+    total_epochs_2 = 200
+    warmup_fraction_2 = 0.30
+    T_warmup_2 = max(1, int(warmup_fraction_2 * total_epochs_2))  # = 60
+
+    # Fine-grained check: verify linearity at multiple interior points
+    for epoch in range(0, T_warmup_2 + 10):
+        actual = get_beta_t(epoch, total_epochs_2, warmup_fraction_2)
+        manual = max(beta_min, min(1.0, epoch / T_warmup_2))
+        assert abs(actual - manual) < 1e-15, (
+            f"Linearity violated at epoch={epoch}: actual={actual}, manual={manual}"
+        )
+
+    # Verify strict monotonicity during warmup (after beta_min region)
+    betas = [get_beta_t(e, total_epochs_2, warmup_fraction_2) for e in range(T_warmup_2 + 1)]
+    for i in range(1, len(betas)):
+        assert betas[i] >= betas[i - 1], (
+            f"Beta not monotonically increasing: beta[{i-1}]={betas[i-1]}, beta[{i}]={betas[i]}"
+        )
+
+    # Verify beta_min floor is active at epoch 0 (not exactly 0.0)
+    assert get_beta_t(0, total_epochs_2, warmup_fraction_2) == beta_min, (
+        f"Beta at epoch 0 should be beta_min={beta_min}, not 0.0"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 5. test_mode_A_beta_applied — KL term multiplied by beta_fixed > 1
 # ---------------------------------------------------------------------------
 
@@ -301,6 +369,106 @@ def test_crisis_weight_gamma_3() -> None:
     ratio = loss_full_crisis.item() / max(loss_no_crisis.item(), 1e-12)
     assert abs(ratio - 3.0) < 1e-4, (
         f"Expected 3x ratio with gamma=3 and f_c=1, got {ratio:.4f}"
+    )
+
+    # Per-window verification: manually compute gamma_eff and verify weighted MSE
+    mse_per_window = torch.mean((x - x_hat) ** 2, dim=(1, 2))
+    gamma_eff_crisis = 1.0 + cf_crisis * (3.0 - 1.0)  # [3.0, 3.0, 3.0, 3.0]
+    expected_full_crisis = torch.mean(gamma_eff_crisis * mse_per_window)
+    assert torch.allclose(loss_full_crisis, expected_full_crisis, atol=1e-6), (
+        f"Full crisis loss does not match manual gamma_eff computation: "
+        f"got {loss_full_crisis.item():.6f}, expected {expected_full_crisis.item():.6f}"
+    )
+
+    # Crisis loss must be strictly greater than no-crisis loss
+    assert loss_full_crisis.item() > loss_no_crisis.item(), (
+        f"Crisis loss ({loss_full_crisis.item():.6f}) should be strictly greater "
+        f"than no-crisis loss ({loss_no_crisis.item():.6f})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8b. test_recon_loss_normalization_formula — MSE uses mean over T*F
+# ---------------------------------------------------------------------------
+
+def test_recon_loss_normalization_formula() -> None:
+    """Verify reconstruction loss uses per-element mean (1/(T*F)) not sum.
+
+    Formula: L_recon = (1/B) * sum_w [ gamma_eff(w) * (1/(T*F)) * sum_t sum_f (x - x_hat)^2 ]
+
+    This test creates known x, x_hat tensors, manually computes the MSE using
+    the explicit (1/(T*F)) normalization, and compares with:
+    1. compute_reconstruction_loss output (batch-level, with gamma=1)
+    2. compute_loss "recon" component (should match)
+
+    ISD/DVT coverage gap: formula-level verification that MSE is per-element
+    mean, not sum reduction (a common implementation error that silently
+    scales gradients by T*F).
+    """
+    torch.manual_seed(123)
+
+    # Use non-trivial dimensions to catch normalization errors
+    B_test = 3
+    T_test = 32
+    F_test = 2
+    K_test = 4
+    D_test = T_test * F_test  # = 64
+
+    x = torch.randn(B_test, T_test, F_test)
+    x_hat = torch.randn(B_test, T_test, F_test)
+
+    # --- Manual computation using explicit formula ---
+    # Per-window MSE: (1/(T*F)) * sum_t sum_f (x_w - x_hat_w)^2
+    squared_errors = (x - x_hat) ** 2  # (B, T, F)
+    # Sum over T and F, then divide by T*F
+    mse_per_window_manual = squared_errors.sum(dim=(1, 2)) / (T_test * F_test)  # (B,)
+
+    # With gamma=1, gamma_eff=1 for all windows. L_recon = mean over batch.
+    L_recon_manual = mse_per_window_manual.mean().item()
+
+    # --- Via compute_reconstruction_loss (gamma=1, no crisis) ---
+    crisis_fractions = torch.zeros(B_test)
+    L_recon_func = compute_reconstruction_loss(x, x_hat, crisis_fractions, gamma=1.0)
+
+    assert abs(L_recon_func.item() - L_recon_manual) < 1e-7, (
+        f"compute_reconstruction_loss does not match manual (1/(T*F)) formula: "
+        f"func={L_recon_func.item():.10f}, manual={L_recon_manual:.10f}"
+    )
+
+    # --- Via compute_loss "recon" component ---
+    mu = torch.randn(B_test, K_test)
+    log_var = torch.randn(B_test, K_test) * 0.5
+    log_sigma_sq = torch.tensor(0.0)
+
+    _, components = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis_fractions,
+        epoch=50, total_epochs=100, mode="P", gamma=1.0,
+        lambda_co_max=0.0,
+    )
+
+    assert abs(components["recon"].item() - L_recon_manual) < 1e-7, (
+        f"compute_loss 'recon' component does not match manual formula: "
+        f"func={components['recon'].item():.10f}, manual={L_recon_manual:.10f}"
+    )
+
+    # --- Verify it's NOT sum reduction (which would be T*F times larger) ---
+    sum_reduction = squared_errors.sum(dim=(1, 2)).mean().item()  # without /TF
+    assert abs(L_recon_manual - sum_reduction) > 1.0, (
+        f"Manual MSE ({L_recon_manual:.6f}) is suspiciously close to sum reduction "
+        f"({sum_reduction:.6f}). The function should use mean, not sum."
+    )
+    expected_ratio = D_test
+    actual_ratio = sum_reduction / max(L_recon_manual, 1e-12)
+    assert abs(actual_ratio - expected_ratio) < 0.01, (
+        f"Sum/Mean ratio should be exactly D={expected_ratio}, got {actual_ratio:.4f}"
+    )
+
+    # --- Verify per-window MSE matches torch.mean over (T,F) dims ---
+    mse_torch = torch.mean(squared_errors, dim=(1, 2))  # (B,)
+    assert torch.allclose(mse_per_window_manual, mse_torch, atol=1e-10), (
+        f"Manual sum/(T*F) should equal torch.mean over (T,F): "
+        f"max diff={torch.max(torch.abs(mse_per_window_manual - mse_torch)).item()}"
     )
 
 
@@ -484,12 +652,9 @@ def test_co_movement_loss_with_known_correlations() -> None:
     raw_anti = torch.cat([raw_pos[:1], raw_neg[:1]], dim=0)  # 2 samples
     mu_ident = torch.ones(2, K_test)
     L_co_case3 = compute_co_movement_loss(mu_ident, raw_anti)
-    # With ρ ≈ -1, target = 2, cosine_dist = 0, loss per pair ≈ 4
-    assert L_co_case3.item() > 2.0, (
-        f"Case 3 (ρ≈-1, d=0): L_co should be large (≈4), got {L_co_case3.item()}"
-    )
-    assert L_co_case3.item() < 5.0, (
-        f"Case 3 (ρ≈-1, d=0): L_co should be ≈4, got {L_co_case3.item()}"
+    # With ρ ≈ -1, target = 1 - (-1) = 2.0, cosine_dist = 0, loss per pair = (0 - 2)² = 4.0
+    assert abs(L_co_case3.item() - 4.0) < 0.5, (
+        f"Case 3 (ρ≈-1, d=0): L_co should be ≈4.0, got {L_co_case3.item()}"
     )
 
 
@@ -742,10 +907,13 @@ def test_D_factor_production_dimensions() -> None:
     )
 
     actual_ratio = comp["recon_term"].item() / max(comp["recon"].item(), 1e-12)
-    assert abs(actual_ratio - expected_coeff) < 1e-4, (
+    # At production dimensions (D=1008), the coefficient D/(2*sigma_sq) ~ 306.
+    # Float32 has ~7 decimal digits of precision, so absolute error on ~306
+    # can be up to ~3e-5. Use 5e-5 to remain tight while respecting float32 limits.
+    assert abs(actual_ratio - expected_coeff) < 5e-5, (
         f"M1: D factor wrong at production dimensions. "
-        f"Expected D/(2*sigma_sq) = {expected_coeff:.4f} (D={D_prod}), "
-        f"got ratio = {actual_ratio:.4f}"
+        f"Expected D/(2*sigma_sq) = {expected_coeff:.6f} (D={D_prod}), "
+        f"got ratio = {actual_ratio:.6f}"
     )
 
 

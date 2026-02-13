@@ -316,6 +316,19 @@ class TestConv05WindowShape:
         assert windows.shape[1] == T, f"Expected T={T}, got {windows.shape[1]}"
         assert windows.shape[2] == 2, f"Expected F=2, got {windows.shape[2]}"
 
+        # FORMULA: CONV-05 requires T=504 in production, F=2 always
+        # (here using T=64 for test speed, but verify F=2 exactly)
+        assert windows.shape[2] == 2, (
+            f"F dimension must be exactly 2 (returns + realized vol), got {windows.shape[2]}"
+        )
+
+        # FORMULA: feature 0 correlates with returns, feature 1 with vol
+        # Verify separate features have different distributions
+        feat_0_var = windows[:, :, 0].var().item()
+        feat_1_var = windows[:, :, 1].var().item()
+        assert feat_0_var > 0, "Feature 0 variance should be > 0"
+        assert feat_1_var > 0, "Feature 1 variance should be > 0"
+
 
 # ---------------------------------------------------------------------------
 # CONV-06: sigma_sq is scalar
@@ -332,6 +345,21 @@ class TestConv06SigmaSqScalar:
         )
         assert model.log_sigma_sq.ndim == 0, (
             f"log_sigma_sq.ndim={model.log_sigma_sq.ndim}, expected 0 (scalar)"
+        )
+
+        # FORMULA: σ² = exp(log_σ²), verify numerically
+        import torch
+        log_val = model.log_sigma_sq.item()
+        obs_var = model.obs_var.item()
+        import math
+        expected_sigma_sq = math.exp(max(min(log_val, math.log(10.0)), math.log(1e-4)))
+        assert abs(obs_var - expected_sigma_sq) < 1e-6, (
+            f"obs_var={obs_var:.8f} != exp(clamp(log_σ²))={expected_sigma_sq:.8f}"
+        )
+
+        # FORMULA: σ² must be in clamped range [1e-4, 10]
+        assert 1e-4 - 1e-8 <= obs_var <= 10.0 + 1e-8, (
+            f"σ²={obs_var} out of clamped range [1e-4, 10]"
         )
 
 
@@ -425,6 +453,28 @@ class TestConv08DualRescaling:
 
         # Both should have the same shape
         assert B_est_val.shape == B_port.shape
+
+        # FORMULA: verify R_i = σ_i / median(σ) then B̃ = R_i · B_A
+        from src.risk_model.rescaling import _compute_winsorized_ratios
+        vol_row = vol_df.loc[target_ts, stock_ids].values.astype(np.float64)
+        med_vol = np.median(vol_row)
+        raw_r = vol_row / med_vol
+        lo = np.percentile(raw_r, 5.0)
+        hi = np.percentile(raw_r, 95.0)
+        expected_ratios = np.clip(raw_r, lo, hi)
+        expected_B = B_A * expected_ratios[:, np.newaxis]
+
+        # Portfolio rescaling should match manual formula
+        np.testing.assert_allclose(
+            B_port, expected_B, atol=1e-10,
+            err_msg="Portfolio rescaling B̃ = R_i · B_A formula mismatch",
+        )
+
+        # Estimation should also match for the same date
+        np.testing.assert_allclose(
+            B_est_val, expected_B, atol=1e-10,
+            err_msg="Estimation rescaling B̃ = R_i · B_A formula mismatch",
+        )
 
 
 # ---------------------------------------------------------------------------

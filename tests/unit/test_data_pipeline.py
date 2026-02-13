@@ -154,8 +154,9 @@ class TestWindowing:
             returns_df, vol_df, stock_ids, T=504, stride=252
         )
 
-        if windows.shape[0] == 0:
-            pytest.skip("No windows generated with this data size")
+        assert windows.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
 
         for i in range(min(windows.shape[0], 10)):
             for f in range(windows.shape[2]):
@@ -178,8 +179,9 @@ class TestWindowing:
             returns_df, vol_df, stock_ids, T=504, stride=252
         )
 
-        if windows.shape[0] == 0:
-            pytest.skip("No windows generated with this data size")
+        assert windows.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
 
         assert windows.ndim == 3
         assert windows.shape[1] == 504, f"Expected T=504, got {windows.shape[1]}"
@@ -220,6 +222,13 @@ class TestWindowing:
             assert torch.isfinite(windows).all(), (
                 "Inf found in windows — sigma_min clamp may be broken"
             )
+            # Formula verification: z-score of constant = (c - c) / sigma_min = 0
+            # Channel 0 (returns) must be all zeros since all returns are identical
+            ch0_max = windows[:, :, 0].abs().max().item()
+            assert ch0_max < 1e-3, (
+                f"Constant returns z-scored should be ~0, got max |z|={ch0_max:.6f}. "
+                "sigma_min clamp formula: (x - mean(x)) / max(std(x), sigma_min)"
+            )
 
     def test_zero_return_exclusion(self) -> None:
         """
@@ -227,6 +236,7 @@ class TestWindowing:
 
         Create data where a stock has many zero returns and verify that
         the resulting window count is reduced compared to normal data.
+        Also test near the 20% boundary: 19% zeros should pass, 21% should fail.
         """
         n_days = 600
         dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
@@ -258,6 +268,46 @@ class TestWindowing:
         assert windows_sparse.shape[0] < windows_normal.shape[0], (
             f"Sparse stock should have fewer windows: {windows_sparse.shape[0]} "
             f"vs normal {windows_normal.shape[0]}"
+        )
+
+        # Boundary test: exactly 19% zeros should pass, 21% should be excluded
+        T = 504
+        rng2 = np.random.RandomState(999)
+        base = rng2.normal(0.0005, 0.02, size=n_days)
+
+        # Stock with 19% zeros in every possible window (below threshold)
+        ret_19pct = base.copy()
+        n_zeros_19 = int(T * 0.19)
+        # Zero out the first n_zeros_19 positions in each window
+        ret_19pct[:n_zeros_19] = 0.0
+
+        # Stock with 21% zeros (above threshold)
+        ret_21pct = base.copy()
+        n_zeros_21 = int(T * 0.21) + 1
+        ret_21pct[:n_zeros_21] = 0.0
+
+        df_boundary = pd.DataFrame(
+            {10: ret_19pct, 11: ret_21pct},
+            index=dates,
+        )
+        vol_boundary = pd.DataFrame(
+            {10: np.full(n_days, 0.15), 11: np.full(n_days, 0.15)},
+            index=dates,
+        )
+
+        w_19, _, _ = create_windows(
+            df_boundary, vol_boundary, [10], T=T, stride=T,
+            max_zero_frac=0.20,
+        )
+        w_21, _, _ = create_windows(
+            df_boundary, vol_boundary, [11], T=T, stride=T,
+            max_zero_frac=0.20,
+        )
+
+        # 19% zeros should produce strictly more windows than 21%
+        assert w_19.shape[0] > w_21.shape[0], (
+            f"19% zeros should produce strictly more windows than 21%: "
+            f"{w_19.shape[0]} vs {w_21.shape[0]}"
         )
 
 
@@ -299,6 +349,29 @@ class TestMissingValues:
         assert np.isfinite(result.at[dates[4], 1]), (
             "Return after 2-day gap should be finite (gap was forward-filled)"
         )
+
+        # Formula verification: forward-filled prices are constant, so
+        # log return during filled gap = ln(P_filled / P_filled) = 0.0
+        for gap_idx in [2, 3]:
+            if dates[gap_idx] in result.index:
+                gap_ret = result.at[dates[gap_idx], 1]
+                if np.isfinite(gap_ret):
+                    assert abs(gap_ret) < 1e-10, (
+                        f"Forward-filled return at index {gap_idx} should be 0.0, "
+                        f"got {gap_ret:.10f}. Formula: ln(P_fill/P_fill) = 0"
+                    )
+
+        # After the gap, the return resumes from last real price (101.0) to 104.0
+        if dates[4] in result.index:
+            ret_after_gap = result.at[dates[4], 1]
+            expected_after_gap = np.log(104.0 / 101.0)
+            np.testing.assert_almost_equal(
+                ret_after_gap, expected_after_gap, decimal=8,
+                err_msg=(
+                    f"Return after 2-day gap should be log(104/101)="
+                    f"{expected_after_gap:.8f}, got {ret_after_gap:.8f}"
+                ),
+            )
 
         # The 6-day gap (indices 11-16) should NOT be filled -> NaN prices remain
         # Check returns at dates that exist in the result index
@@ -423,15 +496,36 @@ class TestCrisis:
         )
 
         # With different amounts of history, thresholds should generally differ
-        # (not guaranteed for all seeds, but very likely with synthetic VIX)
         assert isinstance(threshold_2005, float)
         assert isinstance(threshold_2015, float)
         assert threshold_2005 > 0
         assert threshold_2015 > 0
 
-        # The longer window includes more data -> threshold should differ
-        # (they could be equal in degenerate cases, so we only check types)
-        # At minimum, both should be computable without error.
+        # Formula verification: threshold = Percentile_80(VIX_{t0:t_train})
+        # Manually compute the expected threshold for 2005
+        vix_to_2005 = vix.loc[:end_2005]
+        expected_threshold_2005 = float(np.percentile(
+            np.asarray(vix_to_2005.dropna()), 80.0
+        ))
+        np.testing.assert_almost_equal(
+            threshold_2005, expected_threshold_2005, decimal=6,
+            err_msg="Threshold should equal P80(VIX up to training end)",
+        )
+
+        # Verify different windows produce different thresholds (no look-ahead)
+        assert threshold_2005 != threshold_2015, (
+            "Thresholds for 2005 and 2015 should differ — different VIX histories"
+        )
+
+        # No look-ahead: threshold_2005 must NOT use VIX data after 2005
+        vix_to_2015 = vix.loc[:end_2015]
+        expected_threshold_2015 = float(np.percentile(
+            np.asarray(vix_to_2015.dropna()), 80.0
+        ))
+        np.testing.assert_almost_equal(
+            threshold_2015, expected_threshold_2015, decimal=6,
+            err_msg="Threshold should equal P80(VIX up to training end)",
+        )
 
     def test_crisis_fraction_range(self) -> None:
         """
@@ -459,6 +553,17 @@ class TestCrisis:
         assert fractions.shape == (3,)
         assert (fractions >= 0.0).all(), f"Negative fraction found: {fractions}"
         assert (fractions <= 1.0).all(), f"Fraction > 1 found: {fractions}"
+
+        # Formula verification: manually count crisis days per window
+        threshold = compute_crisis_threshold(vix, training_end_date=end_2010)
+        for w_idx, (_, row) in enumerate(metadata.iterrows()):
+            window_vix = vix.loc[row["start_date"]:row["end_date"]]
+            expected_fc = float((window_vix > threshold).mean())
+            actual_fc = fractions[w_idx].item()
+            assert abs(actual_fc - expected_fc) < 1e-6, (
+                f"Window {w_idx}: f_c={actual_fc:.6f}, expected {expected_fc:.6f}. "
+                f"Formula: f_c = count(VIX > tau) / |window|"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +604,14 @@ class TestFeatures:
         val_252 = vol_df[1].iloc[251]
         assert pd.notna(val_252), (
             "Expected row 252 to be non-NaN, got NaN"
+        )
+
+        # Formula verification: trailing_vol = rolling_std * sqrt(252)
+        rolling_std_252 = float(clean_returns[1].iloc[:252].std())
+        expected_vol_252 = rolling_std_252 * np.sqrt(252)
+        np.testing.assert_allclose(
+            float(val_252), expected_vol_252, rtol=1e-8,
+            err_msg="Row 252 trailing vol must equal rolling_std * sqrt(252)",
         )
 
 
@@ -778,6 +891,21 @@ class TestRollingVol:
         # Row 20 (21st) should have at least one valid value
         assert vol_df.iloc[20].notna().any()
 
+        # Formula verification: rolling vol = std(r_{t-20}, ..., r_t)
+        # Manually compute for rows 20-25 and compare
+        for row_idx in range(20, min(26, n_days)):
+            for col in returns_df.columns:
+                window_data = returns_df[col].iloc[row_idx - 20:row_idx + 1].values
+                expected_std = float(np.std(window_data, ddof=1))
+                actual_val = float(vol_df[col].iloc[row_idx])
+                np.testing.assert_allclose(
+                    actual_val, expected_std, rtol=1e-8,
+                    err_msg=(
+                        f"Rolling vol at row {row_idx}, col {col}: "
+                        f"expected std={expected_std:.10f}, got {actual_val:.10f}"
+                    ),
+                )
+
     def test_feature_stacking_order(self) -> None:
         """Channel 0 is z-scored returns, channel 1 is z-scored vol (CONV-05)."""
         n_days = 600
@@ -786,8 +914,9 @@ class TestRollingVol:
         returns_df = pd.DataFrame({1: rng.normal(0.01, 0.02, n_days)}, index=dates)
         vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
         windows, _, raw = create_windows(returns_df, vol_df, [1], T=504, stride=1)
-        if windows.shape[0] == 0:
-            pytest.skip("No windows generated")
+        assert windows.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
 
         assert windows.shape[2] == 2, "Expected 2 features"
         assert raw.shape[1] == windows.shape[1], "raw_returns T mismatch"
@@ -822,8 +951,9 @@ class TestRollingVol:
         vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
         w1, _, _ = create_windows(returns_df, vol_df, [1], T=504, stride=252)
         w2, _, _ = create_windows(returns_df, vol_df, [2], T=504, stride=252)
-        if w1.shape[0] == 0:
-            pytest.skip("No windows")
+        assert w1.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
         assert torch.allclose(w1, w2, atol=1e-6), "Identical stocks should produce identical windows"
 
 
@@ -844,8 +974,9 @@ class TestRawReturns:
         windows, _, raw_returns = create_windows(
             returns_df, vol_df, [1], T=504, stride=252,
         )
-        if raw_returns.shape[0] == 0:
-            pytest.skip("No windows")
+        assert raw_returns.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
 
         # Z-scored windows have mean ≈ 0, std ≈ 1 per window per feature
         for i in range(raw_returns.shape[0]):
@@ -861,7 +992,7 @@ class TestRawReturns:
         # Raw returns should NOT be z-scored: mean should be close to 0.005
         raw_mean = raw_returns[0].mean().item()
         raw_std = raw_returns[0].std().item()
-        assert abs(raw_mean - 0.005) < 0.005, (
+        assert abs(raw_mean - 0.005) < 0.003, (
             f"Raw returns mean={raw_mean:.6f}, expected close to 0.005"
         )
         assert raw_std != pytest.approx(1.0, abs=0.1), (
@@ -889,16 +1020,14 @@ class TestZScoreFormulaVerification:
         windows, _, raw_returns = create_windows(
             returns_df, vol_df, [1], T=504, stride=252,
         )
-        if windows.shape[0] == 0:
-            pytest.skip("No windows generated")
+        assert windows.shape[0] > 0, (
+            "create_windows must produce at least one window for this test configuration"
+        )
 
-        # For each window, manually z-score the raw data and compare
+        # For each window, verify z-score properties and raw-to-zscore relationship
         for i in range(min(windows.shape[0], 5)):
             for f in range(windows.shape[2]):
                 w = windows[i, :, f].numpy()
-                # Reverse-engineer the raw feature from the z-scored result:
-                # z-scoring: w = (x - mean(x)) / std(x)
-                # By construction: mean(w) ≈ 0, std(w) ≈ 1
                 # Verify the z-score identity: (w - mean(w)) / std(w) ≈ w
                 mu = w.mean()
                 sigma = w.std()
@@ -908,6 +1037,23 @@ class TestZScoreFormulaVerification:
                         w_re_zscored, w, atol=1e-5,
                         err_msg=f"Z-score not idempotent for window {i}, feature {f}",
                     )
+
+        # Direct formula verification: z = (raw - mean(raw)) / std(raw)
+        # Use raw_returns (channel 0) to verify against the z-scored windows
+        for i in range(min(windows.shape[0], 3)):
+            raw = raw_returns[i].numpy()  # (T,) raw returns for this window
+            raw_mean = raw.mean()
+            raw_std = raw.std()
+            if raw_std > 1e-8:
+                expected_zscore = (raw - raw_mean) / raw_std
+                actual_zscore = windows[i, :, 0].numpy()
+                np.testing.assert_allclose(
+                    actual_zscore, expected_zscore, atol=1e-4,
+                    err_msg=(
+                        f"Window {i} channel 0: z-scored output does not match "
+                        f"manual (raw - mean) / std formula"
+                    ),
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -105,6 +105,18 @@ def test_data_to_windows_shapes(
     # Metadata length matches
     assert len(metadata) == windows.shape[0]
 
+    # FORMULA: CONV-02 — z-score per window per feature: mean≈0, std≈1
+    for feat_idx in range(windows.shape[2]):
+        feat = windows[:, :, feat_idx]  # (N, T)
+        means = feat.mean(dim=1)
+        stds = feat.std(dim=1)
+        assert torch.all(torch.abs(means) < 1e-4), (
+            f"Feature {feat_idx} not zero-mean: max|mean|={means.abs().max():.6f}"
+        )
+        assert torch.all(torch.abs(stds - 1.0) < 0.05), (
+            f"Feature {feat_idx} not unit-std: range [{stds.min():.4f}, {stds.max():.4f}]"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test 37: VAE forward+backward shapes
@@ -149,6 +161,14 @@ def test_vae_forward_backward_shapes(
     loss.backward()
     has_grad = any(p.grad is not None for p in model.parameters())
     assert has_grad, "No gradients after backward"
+
+    # FORMULA: INV-002 — log_sigma_sq scalar in [ln(1e-4), ln(10)]
+    lss = model.log_sigma_sq.detach()
+    assert lss.ndim == 0, f"log_sigma_sq not scalar: ndim={lss.ndim}"
+    sigma_sq = torch.exp(lss).item()
+    assert 1e-4 <= sigma_sq <= 10.0, (
+        f"σ²={sigma_sq} out of clamped range [1e-4, 10]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +278,18 @@ def test_B_to_risk_model_to_Sigma() -> None:
         f"Sigma_assets not PSD: min eigenvalue = {eig_assets.min():.2e}"
     )
 
+    # FORMULA: Σ_assets = BΣ_zB^T + diag(D_ε) — verify assembly numerically
+    Sigma_expected = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
+    assert np.allclose(Sigma_assets, Sigma_expected, atol=1e-10), (
+        f"Covariance assembly mismatch: max diff="
+        f"{np.abs(Sigma_assets - Sigma_expected).max():.2e}"
+    )
+
+    # FORMULA: D_ε ≥ 1e-6 (floor)
+    assert np.all(D_eps >= 1e-6 - 1e-12), (
+        f"D_eps floor violated: min={D_eps.min():.2e}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 40: Sigma → Portfolio weights
@@ -308,6 +340,22 @@ def test_Sigma_to_portfolio_weights() -> None:
     )
     assert np.all(np.isfinite(w_opt)), "Non-finite weights"
     assert np.isfinite(H_opt), "Non-finite entropy"
+
+    # FORMULA: H ∈ [0, ln(AU)] and constraints satisfied
+    from src.portfolio.entropy import compute_entropy_and_gradient
+    H_verify, grad_H = compute_entropy_and_gradient(w_opt, B_prime, eigenvalues)
+    assert abs(H_opt - H_verify) < 1e-6, (
+        f"Returned H={H_opt:.6f} != recomputed H={H_verify:.6f}"
+    )
+    assert H_opt >= -1e-10, f"Entropy H={H_opt} should be ≥ 0"
+    assert H_opt <= np.log(au) + 0.01, (
+        f"H={H_opt:.4f} exceeds ln(AU)={np.log(au):.4f}"
+    )
+
+    # FORMULA: INV-012 constraints — w_max check
+    assert np.all(w_opt <= 0.10 + 1e-6), (
+        f"Weight exceeds w_max=0.10: max w={w_opt.max():.4f}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -390,3 +438,18 @@ def test_risk_model_to_portfolio_chain() -> None:
     assert np.all(w_opt >= -1e-8)
     assert abs(np.sum(w_opt) - 1.0) < 1e-4
     assert np.all(np.isfinite(w_opt))
+
+    # FORMULA: Σ_assets = BΣ_zB^T + D_ε — verify in chain
+    Sigma_expected = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
+    assert np.allclose(
+        risk_model["Sigma_assets"], Sigma_expected, atol=1e-10,
+    ), "Covariance assembly mismatch in full chain"
+
+    # FORMULA: rotation preserves factor covariance
+    B_prime = risk_model["B_prime_port"]
+    eigenvalues = risk_model["eigenvalues"]
+    cov_original = B_A_port @ Sigma_z @ B_A_port.T
+    cov_rotated = B_prime @ np.diag(eigenvalues) @ B_prime.T
+    assert np.allclose(cov_original, cov_rotated, atol=1e-10), (
+        "Rotation should preserve factor covariance structure"
+    )

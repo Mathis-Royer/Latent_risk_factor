@@ -134,6 +134,22 @@ def test_B_shape(
         f"Expected {N_STOCKS} stock_ids, got {len(stock_ids)}"
     )
 
+    # Formula verification: B[i] = mean(mu_j for all windows j of stock i)
+    model.eval()
+    with torch.no_grad():
+        all_mu = model.encode(windows.to(DEVICE))
+    all_mu_np = all_mu.cpu().numpy()
+
+    stock_id_arr = np.asarray(metadata["stock_id"].values)
+    for idx, sid in enumerate(stock_ids):
+        stock_mask = stock_id_arr == sid
+        if stock_mask.sum() > 0:
+            expected_B_row = all_mu_np[stock_mask].mean(axis=0)
+            np.testing.assert_allclose(
+                B[idx], expected_B_row, atol=1e-5,
+                err_msg=f"B[{idx}] should be mean of encoded mu for stock {sid}",
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. test_AU_measurement — AU count is correct (>0 after training)
@@ -165,6 +181,19 @@ def test_AU_measurement(
     # Verify AU matches the count of dimensions above threshold
     expected_au = int(np.sum(kl_per_dim > 0.01))
     assert AU == expected_au, f"AU={AU} should match count of KL > 0.01: {expected_au}"
+
+    # Independent KL formula verification: KL_k = 0.5 * mean(exp(lv_k) + mu_k^2 - 1 - lv_k)
+    model.eval()
+    with torch.no_grad():
+        x_enc = windows.to(DEVICE).transpose(1, 2)  # (N, F, T)
+        mu_all, log_var_all = model.encoder(x_enc)
+    mu_np = mu_all.cpu().numpy()
+    lv_np = log_var_all.cpu().numpy()
+    kl_manual = 0.5 * np.mean(np.exp(lv_np) + mu_np ** 2 - 1.0 - lv_np, axis=0)
+    np.testing.assert_allclose(
+        kl_per_dim, kl_manual, atol=1e-5,
+        err_msg="KL per dim should match manual formula",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +240,14 @@ def test_AU_truncation() -> None:
     B_A = filter_exposure_matrix(B, dims_trunc)
     assert B_A.shape == (20, au_max_stat), (
         f"B_A.shape should be (20, {au_max_stat}), got {B_A.shape}"
+    )
+
+    # Verify filter_exposure_matrix selects correct columns
+    B_filtered = filter_exposure_matrix(B, dims_trunc)
+    B_expected = B[:, dims_trunc]
+    np.testing.assert_array_equal(
+        B_filtered, B_expected,
+        err_msg="filter_exposure_matrix should select columns by index",
     )
 
 
@@ -263,6 +300,19 @@ def test_active_dims_ordering(
                 f"AU={AU} even with threshold=1e-10: model did not learn "
                 f"enough structure to produce >=2 active dims for ordering test"
             )
+
+    # Independent KL formula verification: KL_k = 0.5 * mean(exp(lv_k) + mu_k^2 - 1 - lv_k)
+    model.eval()
+    with torch.no_grad():
+        x_enc = windows.to(DEVICE).transpose(1, 2)  # (N, F, T)
+        mu_all, log_var_all = model.encoder(x_enc)
+    mu_np = mu_all.cpu().numpy()
+    lv_np = log_var_all.cpu().numpy()
+    kl_manual = 0.5 * np.mean(np.exp(lv_np) + mu_np ** 2 - 1.0 - lv_np, axis=0)
+    np.testing.assert_allclose(
+        kl_per_dim, kl_manual, atol=1e-5,
+        err_msg="KL per dim should match manual formula",
+    )
 
 
 # ---------------------------------------------------------------------------
