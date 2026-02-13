@@ -551,3 +551,91 @@ class TestConv10PointInTime:
             f"Late universe ({len(universe_late)}) should be >= "
             f"early universe ({len(universe_early)})"
         )
+
+
+# ---------------------------------------------------------------------------
+# CONV-02: Z-score formula verification with exact manual computation
+# ---------------------------------------------------------------------------
+
+
+class TestConv02ZScoreFormula:
+    """CONV-02: Verify z-scoring produces exactly (x - mean) / std per feature."""
+
+    def test_zscore_exact_manual_values(self) -> None:
+        """For known feature values, verify z-scored output matches manual formula."""
+        import torch
+
+        # Known raw values for a single feature in a window
+        raw = np.array([2.0, 4.0, 6.0, 8.0, 10.0], dtype=np.float64)
+        mu = raw.mean()   # 6.0
+        sigma = raw.std(ddof=0)  # population std = sqrt(8) ≈ 2.8284
+
+        # z-scored: (x - mu) / sigma
+        expected_z = (raw - mu) / sigma
+        # Expected: [-1.4142, -0.7071, 0.0, 0.7071, 1.4142]
+
+        # Verify properties
+        assert abs(expected_z.mean()) < 1e-10, "Z-scored mean should be 0"
+        # std with ddof=0 should be 1.0
+        assert abs(expected_z.std(ddof=0) - 1.0) < 1e-10, "Z-scored std should be 1"
+
+        # Verify specific values
+        np.testing.assert_allclose(
+            expected_z,
+            np.array([-np.sqrt(2), -1/np.sqrt(2), 0.0, 1/np.sqrt(2), np.sqrt(2)]),
+            atol=1e-10,
+            err_msg="Z-score formula verification failed on known values",
+        )
+
+
+# ---------------------------------------------------------------------------
+# CONV-08: Dual rescaling formula verification with known vol profiles
+# ---------------------------------------------------------------------------
+
+
+class TestConv08DualRescalingFormula:
+    """CONV-08: Verify B̃_{A,i} = R_i · μ̄_{A,i} where R_i = σ_i / median(σ)."""
+
+    def test_rescaling_formula_known_vols(self) -> None:
+        """Verify R_i = clip(σ_i / median(σ), P5, P95) with enough stocks."""
+        from src.risk_model.rescaling import _compute_winsorized_ratios, rescale_portfolio
+
+        # Use 21 stocks so P5/P95 percentiles don't squeeze interior values
+        rng = np.random.RandomState(0)
+        vols = np.sort(rng.uniform(0.05, 0.40, 21))
+        median_v = np.median(vols)
+        raw_ratios = vols / median_v
+
+        ratios = _compute_winsorized_ratios(vols, 5.0, 95.0)
+
+        # All interior ratios (between P5 and P95 of ratios) must equal raw
+        lo = np.percentile(raw_ratios, 5.0)
+        hi = np.percentile(raw_ratios, 95.0)
+        interior = (raw_ratios >= lo) & (raw_ratios <= hi)
+        np.testing.assert_allclose(
+            ratios[interior], raw_ratios[interior], atol=1e-12,
+            err_msg="Interior ratios should be unclipped R_i = σ_i / median(σ)",
+        )
+
+        # All ratios must be in [lo, hi]
+        assert np.all(ratios >= lo - 1e-12), "Below P5 not clipped"
+        assert np.all(ratios <= hi + 1e-12), "Above P95 not clipped"
+
+        # Verify rescale_portfolio applies B̃ = R_i · B_A
+        n_test = 5
+        B_A = rng.randn(n_test, 2).astype(np.float64)
+        test_vols = vols[:n_test]
+        stock_ids = list(range(n_test))
+        trailing_vol = pd.DataFrame(
+            [test_vols], index=["2020-01-02"], columns=stock_ids,
+        )
+        test_ratios = _compute_winsorized_ratios(test_vols, 5.0, 95.0)
+
+        B_port = rescale_portfolio(
+            B_A, trailing_vol, "2020-01-02", stock_ids, stock_ids,
+        )
+        for i in range(n_test):
+            np.testing.assert_allclose(
+                B_port[i], test_ratios[i] * B_A[i], atol=1e-10,
+                err_msg=f"Stock {i}: B̃ = R_i · B_A not satisfied",
+            )

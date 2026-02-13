@@ -1346,3 +1346,106 @@ class TestModePBetaAnnealingForbidden:
             f"Mode P recon_term changed between epoch 0 and final epoch. "
             f"Beta annealing must NOT affect Mode P."
         )
+
+
+# ---------------------------------------------------------------------------
+# INV-007: Manual entropy computation with exact known contributions
+# ---------------------------------------------------------------------------
+
+
+class TestINV007ManualEntropyComputation:
+    """INV-007: Verify H(w) = -Σ ĉ'_k · ln(ĉ'_k) with manually traced values."""
+
+    def test_entropy_manual_two_factor(self) -> None:
+        """With 2 factors and known β', λ, compute H step by step."""
+        from tests.fixtures.known_solutions import two_factor_solution
+
+        sol = two_factor_solution()
+        w = sol["w_equal"]
+        B_prime = sol["B_prime"]
+        eigenvalues = sol["eigenvalues"]
+        AU = sol["AU"]
+
+        # Step 1: β'_k = B_prime^T @ w
+        beta_prime = B_prime.T @ w
+        assert beta_prime.shape == (AU,)
+
+        # Step 2: c'_k = λ_k · (β'_k)²
+        c_prime = eigenvalues * beta_prime ** 2
+        assert np.all(c_prime >= 0), "Risk contributions must be non-negative"
+
+        # Step 3: C = Σ c'_k (total contributing risk)
+        C_total = c_prime.sum()
+        assert C_total > 0, "Total contribution must be positive"
+
+        # Step 4: ĉ'_k = c'_k / C
+        c_hat = c_prime / C_total
+        assert abs(c_hat.sum() - 1.0) < 1e-14, "Normalized contributions must sum to 1"
+
+        # Step 5: H = -Σ ĉ'_k · ln(ĉ'_k)
+        H_manual = -np.sum(c_hat * np.log(np.maximum(c_hat, 1e-30)))
+
+        # Compare with compute_entropy_and_gradient
+        H, _ = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+
+        assert abs(H - H_manual) < 1e-10, (
+            f"H from function ({H:.10f}) doesn't match manual ({H_manual:.10f})"
+        )
+        assert abs(H - sol["H_equal"]) < 1e-10, (
+            f"H from function ({H:.10f}) doesn't match fixture ({sol['H_equal']:.10f})"
+        )
+
+    def test_entropy_bounds_ln_au(self) -> None:
+        """H must be in [0, ln(AU)] for any valid input."""
+        rng = np.random.RandomState(42)
+        for au in [2, 5, 10]:
+            n = au + 5
+            B_prime = rng.randn(n, au)
+            eigenvalues = np.abs(rng.randn(au)) + 0.01
+            w = np.abs(rng.randn(n))
+            w = w / w.sum()
+
+            H, _ = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+            assert 0 <= H <= np.log(au) + 1e-10, (
+                f"AU={au}: H={H:.6f} not in [0, ln({au})={np.log(au):.6f}]"
+            )
+
+
+# ---------------------------------------------------------------------------
+# INV-008: Exact percentile verification for winsorization
+# ---------------------------------------------------------------------------
+
+
+class TestINV008ExactPercentile:
+    """INV-008: Verify P5/P95 computation matches numpy exactly."""
+
+    def test_percentile_matches_numpy(self) -> None:
+        """_compute_winsorized_ratios must use P5/P95 from numpy percentile."""
+        rng = np.random.RandomState(42)
+        for n in [10, 20, 50]:
+            vols = rng.uniform(0.05, 0.50, n)
+            # Add outlier
+            vols[0] = 5.0
+
+            ratios = _compute_winsorized_ratios(vols, 5.0, 95.0)
+
+            # Manual check: compute median, ratios, percentiles
+            median_v = np.median(vols)
+            raw_ratios = vols / median_v
+            p5 = np.percentile(raw_ratios, 5.0)
+            p95 = np.percentile(raw_ratios, 95.0)
+
+            # All winsorized ratios must be in [p5, p95]
+            assert np.all(ratios >= p5 - 1e-10), (
+                f"n={n}: min ratio {ratios.min():.6f} < P5={p5:.6f}"
+            )
+            assert np.all(ratios <= p95 + 1e-10), (
+                f"n={n}: max ratio {ratios.max():.6f} > P95={p95:.6f}"
+            )
+
+            # Non-outlier stocks should have unchanged ratios
+            for i in range(1, n):
+                if p5 <= raw_ratios[i] <= p95:
+                    assert abs(ratios[i] - raw_ratios[i]) < 1e-12, (
+                        f"Stock {i}: ratio was clipped despite being in [P5, P95]"
+                    )

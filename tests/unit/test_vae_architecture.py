@@ -713,3 +713,110 @@ class TestDecoderOutputShape:
         # We just verify no NaN and shapes match
         assert not torch.isnan(x_hat1).any(), "NaN in output with dropout=0"
         assert x_hat1.shape == x.shape
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: temporal dimension t_{l+1} = floor((t_l - 1) / 2) + 1
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalDimensionFormula:
+    """Verify the temporal dimension reduction formula at each encoder layer."""
+
+    def test_temporal_sizes_match_formula(self) -> None:
+        """compute_temporal_sizes must produce t_{l+1} = floor((t_l - 1)/2) + 1."""
+        for T in [64, 252, 504, 756]:
+            L = compute_depth(T)
+            temporal_sizes = compute_temporal_sizes(T, L)
+
+            assert len(temporal_sizes) == L + 1, (
+                f"T={T}: expected {L+1} temporal sizes, got {len(temporal_sizes)}"
+            )
+            assert temporal_sizes[0] == T, (
+                f"T={T}: first temporal size should be T={T}, got {temporal_sizes[0]}"
+            )
+
+            # Verify each reduction step follows the formula
+            for l in range(L):
+                t_curr = temporal_sizes[l]
+                t_next = temporal_sizes[l + 1]
+                expected = (t_curr - 1) // 2 + 1  # floor((t-1)/2) + 1
+                assert t_next == expected, (
+                    f"T={T}, layer {l}: t_{l+1}={t_next}, "
+                    f"expected floor(({t_curr}-1)/2)+1={expected}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: capacity-data constraint r = P_total / N_capacity <= r_max
+# ---------------------------------------------------------------------------
+
+
+class TestCapacityDataConstraint:
+    """Verify build_vae enforces r = P_total / N_capacity <= r_max."""
+
+    def test_capacity_ratio_formula_verified(self) -> None:
+        """build_vae info['r'] must equal P_total / N_capacity exactly."""
+        model, info = build_vae(
+            n=50, T=64, T_annee=3, F=2, K=10, r_max=200.0, c_min=144,
+        )
+        # Use formula-derived P_total from info (not model.parameters count
+        # which may include a single learned σ² param not in P_enc/P_dec)
+        ratio_expected = info["P_total"] / info["N"]
+        assert abs(info["r"] - ratio_expected) < 1e-10, (
+            f"info['r']={info['r']:.6f} != P_total/N={ratio_expected:.6f}"
+        )
+
+    def test_capacity_violation_raises(self) -> None:
+        """build_vae must raise ValueError when r > r_max."""
+        import pytest
+        with pytest.raises(ValueError, match="Capacity-data constraint violated"):
+            build_vae(n=10, T=504, T_annee=3, F=2, K=50, r_max=0.5, c_min=144)
+
+    def test_capacity_ratio_recorded_in_info(self) -> None:
+        """build_vae info dict should contain the ratio under key 'r'."""
+        model, info = build_vae(
+            n=50, T=64, T_annee=3, F=2, K=10, r_max=200.0, c_min=144,
+        )
+        assert "r" in info, "info must include 'r' (capacity ratio)"
+        assert "r_max" in info, "info must include 'r_max'"
+        assert info["r"] <= info["r_max"] + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: channel progression exact values
+# ---------------------------------------------------------------------------
+
+
+class TestChannelProgressionExactFormula:
+    """Verify C_l = round_16(C_HEAD * (C_L / C_HEAD)^(l/L)) exactly."""
+
+    def test_exact_channel_values(self) -> None:
+        """Every channel must be exactly round_16(C_HEAD * ratio^(l/L))."""
+        C_HEAD = 144
+        for K in [10, 50, 100, 200]:
+            L = compute_depth(504)  # = 5
+            C_L = compute_final_width(K)
+            channels = compute_channel_progression(L, C_L)
+
+            assert channels[0] == C_HEAD, (
+                f"K={K}: C_0 should be {C_HEAD}, got {channels[0]}"
+            )
+            assert channels[-1] == C_L, (
+                f"K={K}: C_L should be {C_L}, got {channels[-1]}"
+            )
+
+            ratio = C_L / C_HEAD
+            for l in range(1, L + 1):
+                expected = round_16(C_HEAD * (ratio ** (l / L)))
+                assert channels[l] == expected, (
+                    f"K={K}, l={l}: channel={channels[l]}, "
+                    f"expected round_16({C_HEAD}*({ratio:.4f})^({l}/{L}))={expected}"
+                )
+
+            # Monotonicity: each channel >= previous
+            for l in range(1, len(channels)):
+                assert channels[l] >= channels[l - 1], (
+                    f"K={K}: channels not monotonic at layer {l}: "
+                    f"{channels[l]} < {channels[l-1]}"
+                )

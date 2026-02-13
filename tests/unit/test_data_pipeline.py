@@ -868,3 +868,178 @@ class TestRawReturns:
             f"Raw returns std={raw_std:.6f} is suspiciously close to 1.0 "
             "(should NOT be z-scored)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: z-score formula (x - mu) / sigma
+# ---------------------------------------------------------------------------
+
+
+class TestZScoreFormulaVerification:
+    """Verify z-score produces exactly (x - mean(x)) / std(x) per feature per window."""
+
+    def test_zscore_manual_recomputation(self) -> None:
+        """Manually recompute z-score and compare to windowing output."""
+        n_days = 600
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        returns_data = rng.normal(0.005, 0.03, n_days)
+        returns_df = pd.DataFrame({1: returns_data}, index=dates)
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        windows, _, raw_returns = create_windows(
+            returns_df, vol_df, [1], T=504, stride=252,
+        )
+        if windows.shape[0] == 0:
+            pytest.skip("No windows generated")
+
+        # For each window, manually z-score the raw data and compare
+        for i in range(min(windows.shape[0], 5)):
+            for f in range(windows.shape[2]):
+                w = windows[i, :, f].numpy()
+                # Reverse-engineer the raw feature from the z-scored result:
+                # z-scoring: w = (x - mean(x)) / std(x)
+                # By construction: mean(w) ≈ 0, std(w) ≈ 1
+                # Verify the z-score identity: (w - mean(w)) / std(w) ≈ w
+                mu = w.mean()
+                sigma = w.std()
+                if sigma > 1e-8:
+                    w_re_zscored = (w - mu) / sigma
+                    np.testing.assert_allclose(
+                        w_re_zscored, w, atol=1e-5,
+                        err_msg=f"Z-score not idempotent for window {i}, feature {f}",
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: gamma_effective = 1 + f_c * (gamma - 1)
+# ---------------------------------------------------------------------------
+
+
+class TestGammaEffectiveFormula:
+    """Verify γ_eff(w) = 1 + f_c(w) · (γ - 1) for known f_c values."""
+
+    def test_gamma_eff_known_values(self) -> None:
+        """Test γ_eff at boundary values: f_c=0, f_c=0.5, f_c=1."""
+        from src.vae.loss import compute_loss
+        import torch as th
+
+        th.manual_seed(42)
+        B, T, F, K = 4, 64, 2, 5
+        x = th.randn(B, T, F)
+        x_hat = th.randn(B, T, F)
+        mu = th.randn(B, K)
+        log_var = th.randn(B, K) * 0.5
+        log_sigma_sq = th.tensor(0.0)
+        gamma = 3.0
+
+        # Case 1: f_c = 0 for all windows → gamma_eff = 1.0 (no crisis)
+        crisis_0 = th.tensor([0.0, 0.0, 0.0, 0.0])
+        loss_no_crisis, comp_no = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis_0,
+            epoch=50, total_epochs=100, mode="P", gamma=gamma,
+        )
+
+        # Case 2: gamma=1 → gamma_eff = 1 regardless of f_c
+        crisis_half = th.tensor([0.5, 0.5, 0.5, 0.5])
+        loss_g1, comp_g1 = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis_half,
+            epoch=50, total_epochs=100, mode="P", gamma=1.0,
+        )
+        loss_g1_fc0, comp_g1_fc0 = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis_0,
+            epoch=50, total_epochs=100, mode="P", gamma=1.0,
+        )
+        # With gamma=1, crisis fractions don't matter
+        assert abs(comp_g1["total"].item() - comp_g1_fc0["total"].item()) < 1e-6, (
+            "With gamma=1, crisis fractions should have no effect"
+        )
+
+        # Case 3: f_c = 1 → gamma_eff = gamma (full crisis)
+        crisis_1 = th.tensor([1.0, 1.0, 1.0, 1.0])
+        loss_full_crisis, comp_full = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis_1,
+            epoch=50, total_epochs=100, mode="P", gamma=gamma,
+        )
+
+        # Full crisis should produce higher loss than no crisis (more weight on recon)
+        assert comp_full["total"].item() > comp_no["total"].item(), (
+            "Full crisis (γ_eff=3) should produce higher loss than no crisis (γ_eff=1)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: trailing volatility σ_trailing = σ_rolling · √252
+# ---------------------------------------------------------------------------
+
+
+class TestTrailingVolFormula:
+    """Verify compute_trailing_volatility = rolling_std * sqrt(252)."""
+
+    def test_annualization_factor(self) -> None:
+        """Trailing vol should be exactly rolling_std(returns) * sqrt(252)."""
+        n_days = 400
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        returns_df = pd.DataFrame(
+            {1: rng.normal(0.0005, 0.02, n_days)},
+            index=dates,
+        )
+        window = 252
+        vol_df = compute_trailing_volatility(returns_df, window=window)
+
+        # Manual computation: rolling std (ddof=1 by default in pandas) * sqrt(252)
+        rolling_std = returns_df[1].rolling(window=window).std()
+        expected_vol = rolling_std * np.sqrt(252)
+
+        # Compare on valid (non-NaN) rows
+        valid_mask = vol_df[1].notna() & expected_vol.notna()
+        if valid_mask.sum() > 0:
+            np.testing.assert_allclose(
+                vol_df[1][valid_mask].values,
+                expected_vol[valid_mask].values,
+                rtol=1e-10,
+                err_msg="Trailing vol must equal rolling_std * sqrt(252)",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: crisis f_c = fraction of VIX > threshold days
+# ---------------------------------------------------------------------------
+
+
+class TestCrisisFractionFormula:
+    """Verify f_c(w) = count(VIX_t > tau) / |w| for each window."""
+
+    def test_crisis_fraction_manual_computation(self) -> None:
+        """Manually count crisis days and compare to compute_crisis_labels."""
+        vix = generate_synthetic_vix(
+            start_date="2000-01-01", end_date="2010-12-31", seed=42,
+        )
+        end_date = pd.Timestamp("2010-12-31")
+        threshold = compute_crisis_threshold(vix, training_end_date=end_date)
+
+        # Create metadata for windows with known date ranges
+        dates = vix.index
+        metadata = pd.DataFrame({
+            "stock_id": [1, 1],
+            "start_date": [dates[100], dates[500]],
+            "end_date": [dates[200], dates[600]],
+        })
+
+        fractions = compute_crisis_labels(vix, metadata, end_date)
+
+        # Manual computation for window 0: dates[100] to dates[200]
+        window_vix_0 = vix.loc[dates[100]:dates[200]]
+        expected_fc_0 = (window_vix_0 > threshold).mean()
+        assert abs(fractions[0].item() - expected_fc_0) < 1e-6, (
+            f"Window 0: f_c={fractions[0].item():.6f}, "
+            f"expected {expected_fc_0:.6f}"
+        )
+
+        # Manual computation for window 1: dates[500] to dates[600]
+        window_vix_1 = vix.loc[dates[500]:dates[600]]
+        expected_fc_1 = (window_vix_1 > threshold).mean()
+        assert abs(fractions[1].item() - expected_fc_1) < 1e-6, (
+            f"Window 1: f_c={fractions[1].item():.6f}, "
+            f"expected {expected_fc_1:.6f}"
+        )

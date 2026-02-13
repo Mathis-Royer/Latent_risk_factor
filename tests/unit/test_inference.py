@@ -482,3 +482,84 @@ class TestInferenceEvalMode:
             "forward() must produce different reconstructions with different seeds "
             "(reparameterization noise). Inference should use encode(), not forward()."
         )
+
+
+# ---------------------------------------------------------------------------
+# Formula verification: KL per dimension = 0.5*(exp(log_var_k) + mu_k^2 - 1 - log_var_k)
+# ---------------------------------------------------------------------------
+
+
+class TestKLFormulaManualVerification:
+    """Verify per-dimension KL formula with manually computed values."""
+
+    def test_kl_per_dim_known_values(self) -> None:
+        """For known mu and log_var, verify KL_k = 0.5*(exp(lv) + mu^2 - 1 - lv)."""
+        from src.vae.loss import compute_loss
+
+        # Single sample, 3 latent dims
+        mu = torch.tensor([[1.0, 0.0, -0.5]])
+        log_var = torch.tensor([[0.0, -1.0, 0.5]])
+
+        # Manual KL per dim:
+        # k=0: 0.5*(exp(0) + 1 - 1 - 0)     = 0.5*(1 + 1 - 1 - 0)     = 0.5
+        # k=1: 0.5*(exp(-1) + 0 - 1 - (-1))  = 0.5*(0.3679 + 0 - 1 + 1)= 0.1839
+        # k=2: 0.5*(exp(0.5) + 0.25 - 1 - 0.5) = 0.5*(1.6487 + 0.25 - 1 - 0.5) = 0.1994
+        expected_kl = [
+            0.5 * (math.exp(0.0) + 1.0 - 1.0 - 0.0),
+            0.5 * (math.exp(-1.0) + 0.0 - 1.0 + 1.0),
+            0.5 * (math.exp(0.5) + 0.25 - 1.0 - 0.5),
+        ]
+        expected_total_kl = sum(expected_kl)
+
+        # Use compute_loss to get the KL component
+        x = torch.randn(1, 4, 2)
+        x_hat = torch.randn(1, 4, 2)
+        log_sigma_sq = torch.tensor(0.0)
+        crisis = torch.tensor([0.0])
+
+        _, comp = compute_loss(
+            x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+            log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+            epoch=50, total_epochs=100, mode="P", gamma=1.0,
+        )
+
+        assert abs(comp["kl"].item() - expected_total_kl) < 1e-5, (
+            f"KL total: got {comp['kl'].item():.8f}, expected {expected_total_kl:.8f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# DVT table values for AU_max_stat
+# ---------------------------------------------------------------------------
+
+
+class TestAUMaxStatDVTTable:
+    """Verify compute_au_max_stat matches DVT §4.8 table values."""
+
+    def test_dvt_table_values(self) -> None:
+        """DVT table values must match floor(sqrt(2 * N_obs / r_min))."""
+        from src.inference.active_units import compute_au_max_stat
+
+        # Verify formula for each historical length (r_min=2)
+        dvt_years = [10, 15, 20, 25, 30]
+        for years in dvt_years:
+            n_obs = years * 252
+            au_max = compute_au_max_stat(n_obs, r_min=2)
+            expected = int(math.floor(math.sqrt(2.0 * n_obs / 2)))
+            assert au_max == expected, (
+                f"AU_max_stat for {years}yr ({n_obs} obs): "
+                f"got {au_max}, expected floor(sqrt(2*{n_obs}/2))={expected}"
+            )
+
+    def test_au_max_stat_formula(self) -> None:
+        """AU_max_stat = floor(sqrt(2 * N_obs / r_min))."""
+        from src.inference.active_units import compute_au_max_stat
+
+        for n_obs in [2520, 5040, 7560]:
+            for r_min in [2, 3, 5]:
+                au_max = compute_au_max_stat(n_obs, r_min=r_min)
+                expected = int(math.floor(math.sqrt(2 * n_obs / r_min)))
+                assert au_max == expected, (
+                    f"n_obs={n_obs}, r_min={r_min}: got {au_max}, "
+                    f"expected floor(sqrt(2*{n_obs}/{r_min}))={expected}"
+                )

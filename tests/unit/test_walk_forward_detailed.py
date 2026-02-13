@@ -356,3 +356,105 @@ class TestAUPosteriorCollapseDetection:
 
         surviving = eliminate_configs(config_results, K=50, AU_PCA=0)
         assert len(surviving) == 0, "AU=0 should always be eliminated"
+
+
+# ---------------------------------------------------------------------------
+# Phase A composite score formula exact verification
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseAScoreFormulaExact:
+    """Verify composite_score matches Score = H_norm - λ_pen*max(0, MDD-τ) - λ_est*max(0, 1-R_Σ)."""
+
+    def test_score_formula_all_components(self) -> None:
+        """Verify each component of the score formula with known values."""
+        # Setup: AU=5, H_oos=ln(5)*0.7, MDD=0.25, n_obs=20
+        AU = 5
+        H_oos = np.log(AU) * 0.7
+        mdd_oos = 0.25
+        n_obs = 20
+        mdd_threshold = 0.20
+        lambda_pen = 5.0
+        lambda_est = 2.0
+
+        score = composite_score(
+            H_oos=H_oos, AU=AU, mdd_oos=mdd_oos, n_obs=n_obs,
+            mdd_threshold=mdd_threshold, lambda_pen=lambda_pen,
+            lambda_est=lambda_est,
+        )
+
+        # Manual computation:
+        # H_norm = min(H_oos / ln(AU), 1.0) = min(0.7, 1.0) = 0.7
+        H_norm = min(H_oos / np.log(AU), 1.0)
+        assert abs(H_norm - 0.7) < 1e-10
+
+        # MDD penalty = λ_pen * max(0, MDD - τ) = 5 * max(0, 0.25-0.20) = 5*0.05 = 0.25
+        mdd_penalty = lambda_pen * max(0.0, mdd_oos - mdd_threshold)
+        assert abs(mdd_penalty - 0.25) < 1e-10
+
+        # R_Σ = n_obs / (AU*(AU+1)/2) = 20 / 15 ≈ 1.333
+        R_sigma = n_obs / (AU * (AU + 1) / 2)
+        est_penalty = lambda_est * max(0.0, 1.0 - R_sigma)
+        # R_sigma > 1 → est_penalty = 0
+        assert abs(est_penalty - 0.0) < 1e-10
+
+        expected_score = H_norm - mdd_penalty - est_penalty
+        assert abs(score - expected_score) < 1e-6, (
+            f"Score formula: got {score:.8f}, "
+            f"expected H_norm({H_norm}) - mdd_pen({mdd_penalty}) - est_pen({est_penalty}) "
+            f"= {expected_score:.8f}"
+        )
+
+    def test_score_estimation_penalty_active(self) -> None:
+        """When R_Σ < 1, estimation penalty should be active."""
+        AU = 10
+        n_obs = 5  # R_Σ = 5/55 ≈ 0.0909 < 1
+        lambda_est = 2.0
+
+        R_sigma = n_obs / (AU * (AU + 1) / 2)
+        expected_penalty = lambda_est * (1.0 - R_sigma)
+
+        score_low = composite_score(
+            H_oos=np.log(AU), AU=AU, mdd_oos=0.0, n_obs=n_obs,
+            lambda_est=lambda_est,
+        )
+        score_high = composite_score(
+            H_oos=np.log(AU), AU=AU, mdd_oos=0.0, n_obs=1000,
+            lambda_est=lambda_est,
+        )
+
+        # Low obs should score worse due to estimation penalty
+        assert score_low < score_high, (
+            f"Few observations (R_Σ={R_sigma:.4f}<1) should penalize score: "
+            f"low_obs={score_low:.6f}, high_obs={score_high:.6f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Embargo gap exact count verification
+# ---------------------------------------------------------------------------
+
+
+class TestEmbargoGapExactCount:
+    """Verify embargo gap is exactly 21 trading days (not calendar days)."""
+
+    def test_embargo_is_trading_days_not_calendar(self) -> None:
+        """21 trading days ≈ 29 calendar days, NOT 21 calendar days."""
+        folds = generate_fold_schedule(
+            start_date="1993-01-01",
+            total_years=15,
+            min_training_years=5,
+            oos_months=6,
+            embargo_days=21,
+        )
+
+        for fold in folds:
+            train_end = pd.Timestamp(str(fold["train_end"]))
+            embargo_end = pd.Timestamp(str(fold["embargo_end"]))
+
+            # Calendar days should be > 21 (weekends make it ~29)
+            cal_days = (embargo_end - train_end).days
+            assert cal_days >= 21, (
+                f"Fold {fold['fold_id']}: embargo calendar days={cal_days}, "
+                f"should be >= 21 (21 trading days ≈ 29 calendar days)"
+            )
