@@ -190,13 +190,14 @@ class TestWindowing:
         """
         Window with near-zero std does not produce NaN.
 
-        Create constant returns so that std = 0 within the window; the
-        sigma_min clamp should prevent NaN in z-scoring.
+        Uses non-zero constant returns (std=0 within window) that pass
+        the zero-return filter naturally, without bypassing max_zero_frac.
+        The sigma_min clamp must prevent division-by-zero NaN in z-scoring.
         """
         n_days = 600
         dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
 
-        # Constant returns -> std = 0 within window
+        # Non-zero constant returns → passes zero-frac filter, but std = 0
         returns_df = pd.DataFrame(
             {1: np.full(n_days, 0.001)},
             index=dates,
@@ -207,13 +208,18 @@ class TestWindowing:
         )
 
         windows, _, _ = create_windows(
-            returns_df, vol_df, [1], T=504, stride=1, max_zero_frac=1.0
+            returns_df, vol_df, [1], T=504, stride=1,
         )
 
-        # With constant returns the zero-return filter would normally exclude
-        # these windows, but we set max_zero_frac=1.0 to bypass that.
-        # The sigma_min clamp must prevent NaN.
-        assert not torch.isnan(windows).any(), "NaN found in windows with constant returns"
+        # Constant non-zero returns pass zero-frac filter (0.001 != 0),
+        # but have zero std. sigma_min clamp must prevent NaN.
+        if windows.shape[0] > 0:
+            assert not torch.isnan(windows).any(), (
+                "NaN found in windows with constant (near-zero std) returns"
+            )
+            assert torch.isfinite(windows).all(), (
+                "Inf found in windows — sigma_min clamp may be broken"
+            )
 
     def test_zero_return_exclusion(self) -> None:
         """
@@ -596,6 +602,83 @@ class TestDelistingImputation:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Tests: Log returns dtype and no Inf
+# ---------------------------------------------------------------------------
+
+
+class TestLogReturnsDtype:
+    """Tests for log return output quality."""
+
+    def test_log_returns_dtype_and_no_inf(
+        self, returns_df: pd.DataFrame,
+    ) -> None:
+        """
+        Log returns must be float64, contain no Inf, and have shape (dates, stocks).
+        """
+        assert returns_df.dtypes.apply(
+            lambda d: np.issubdtype(d, np.floating)
+        ).all(), "Not all columns are float"
+
+        values = returns_df.values
+        assert not np.isinf(values).any(), "Inf found in log returns"
+        assert returns_df.ndim == 2, "Expected 2D DataFrame (dates x stocks)"
+        assert returns_df.shape[0] > 0, "No dates in returns"
+        assert returns_df.shape[1] > 0, "No stocks in returns"
+
+
+# ---------------------------------------------------------------------------
+# Test: create_windows returns 3-tuple
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsOutputTriple:
+    """Tests for create_windows 3-tuple return (Divergence #9)."""
+
+    def test_windows_output_triple(
+        self, returns_df: pd.DataFrame,
+    ) -> None:
+        """
+        create_windows() returns (windows, metadata, raw_returns) —
+        3 elements, not 2.
+        """
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        stock_ids = list(returns_df.columns[:5])
+
+        result = create_windows(
+            returns_df, vol_df, stock_ids, T=504, stride=252,
+        )
+
+        assert isinstance(result, tuple), "create_windows must return a tuple"
+        assert len(result) == 3, (
+            f"create_windows must return 3 elements, got {len(result)}"
+        )
+
+        windows, metadata, raw_returns = result
+
+        # windows: (N, T, F)
+        assert isinstance(windows, torch.Tensor)
+        if windows.shape[0] > 0:
+            assert windows.ndim == 3
+            assert windows.shape[1] == 504
+            assert windows.shape[2] == 2
+
+        # metadata: DataFrame
+        assert isinstance(metadata, pd.DataFrame)
+
+        # raw_returns: (N, T) — for co-movement Spearman
+        assert isinstance(raw_returns, torch.Tensor)
+        if raw_returns.shape[0] > 0:
+            assert raw_returns.ndim == 2
+            assert raw_returns.shape[0] == windows.shape[0]
+            assert raw_returns.shape[1] == windows.shape[1]
+
+
+# ---------------------------------------------------------------------------
+# Tests 13-15: Tiingo data loader (data_loader.py)
+# ---------------------------------------------------------------------------
+
+
 class TestTiingoLoader:
     """Tests for load_tiingo_data and Tiingo Parquet schema."""
 
@@ -670,3 +753,118 @@ class TestTiingoLoader:
         assert len(result) > 0
         assert result["date"].min() >= pd.Timestamp("2020-01-10")
         assert result["date"].max() <= pd.Timestamp("2020-01-20")
+
+
+# ---------------------------------------------------------------------------
+# Tests: Rolling realized vol (features.py)
+# ---------------------------------------------------------------------------
+
+
+class TestRollingVol:
+    def test_rolling_realized_vol_shape_and_dtype(self) -> None:
+        """Rolling vol output has same shape as input; dtype float; first rows NaN."""
+        n_days = 100
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        returns_df = pd.DataFrame(
+            {1: rng.normal(0, 0.02, n_days), 2: rng.normal(0, 0.02, n_days)},
+            index=dates,
+        )
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        assert vol_df.shape == returns_df.shape
+        assert vol_df.dtypes.apply(lambda d: np.issubdtype(d, np.floating)).all()
+        # First 20 rows should be NaN (need 21 for rolling)
+        assert vol_df.iloc[:20].isna().all().all()
+        # Row 20 (21st) should have at least one valid value
+        assert vol_df.iloc[20].notna().any()
+
+    def test_feature_stacking_order(self) -> None:
+        """Channel 0 is z-scored returns, channel 1 is z-scored vol (CONV-05)."""
+        n_days = 600
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        returns_df = pd.DataFrame({1: rng.normal(0.01, 0.02, n_days)}, index=dates)
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        windows, _, raw = create_windows(returns_df, vol_df, [1], T=504, stride=1)
+        if windows.shape[0] == 0:
+            pytest.skip("No windows generated")
+
+        assert windows.shape[2] == 2, "Expected 2 features"
+        assert raw.shape[1] == windows.shape[1], "raw_returns T mismatch"
+
+        # Channel 0 (z-scored returns) should correlate with raw returns
+        # Channel 1 (z-scored vol) should NOT correlate strongly with raw returns
+        ch0 = windows[0, :, 0].numpy()
+        ch1 = windows[0, :, 1].numpy()
+        raw_np = raw[0].numpy()
+
+        corr_ch0_raw = float(np.corrcoef(ch0, raw_np)[0, 1])
+        corr_ch1_raw = float(np.corrcoef(ch1, raw_np)[0, 1])
+
+        # Z-scoring preserves rank order, so ch0 should strongly correlate
+        # with raw returns (both are returns-derived)
+        assert abs(corr_ch0_raw) > 0.9, (
+            f"Channel 0 should correlate with raw returns: r={corr_ch0_raw:.4f}"
+        )
+        # Channel 1 (vol) should be less correlated with raw returns
+        assert abs(corr_ch1_raw) < abs(corr_ch0_raw), (
+            f"Channel 1 (vol) should be less correlated with raw returns than "
+            f"channel 0: |r_ch1|={abs(corr_ch1_raw):.4f} vs |r_ch0|={abs(corr_ch0_raw):.4f}"
+        )
+
+    def test_multiple_stocks_identical_windows(self) -> None:
+        """Two stocks with identical prices produce identical windows."""
+        n_days = 600
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        shared = rng.normal(0.0005, 0.02, n_days)
+        returns_df = pd.DataFrame({1: shared, 2: shared.copy()}, index=dates)
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        w1, _, _ = create_windows(returns_df, vol_df, [1], T=504, stride=252)
+        w2, _, _ = create_windows(returns_df, vol_df, [2], T=504, stride=252)
+        if w1.shape[0] == 0:
+            pytest.skip("No windows")
+        assert torch.allclose(w1, w2, atol=1e-6), "Identical stocks should produce identical windows"
+
+
+class TestRawReturns:
+    def test_raw_returns_not_zscored(self) -> None:
+        """Third return from create_windows (raw_returns) is NOT z-scored.
+
+        ISD MOD-004: Co-movement Spearman uses raw (not z-scored) returns.
+        Verify: z-scored windows have mean ≈ 0, std ≈ 1; raw returns retain
+        their original distribution (non-zero mean, non-unit std).
+        """
+        n_days = 600
+        dates = pd.bdate_range("2000-01-01", periods=n_days, freq="B")
+        rng = np.random.RandomState(42)
+        # Returns with noticeable positive mean (0.005 daily)
+        returns_df = pd.DataFrame({1: rng.normal(0.005, 0.02, n_days)}, index=dates)
+        vol_df = compute_rolling_realized_vol(returns_df, rolling_window=21)
+        windows, _, raw_returns = create_windows(
+            returns_df, vol_df, [1], T=504, stride=252,
+        )
+        if raw_returns.shape[0] == 0:
+            pytest.skip("No windows")
+
+        # Z-scored windows have mean ≈ 0, std ≈ 1 per window per feature
+        for i in range(raw_returns.shape[0]):
+            w_mean = windows[i, :, 0].mean().item()
+            w_std = windows[i, :, 0].std().item()
+            assert abs(w_mean) < 1e-4, (
+                f"Z-scored window {i} mean={w_mean:.6f}, expected ≈ 0"
+            )
+            assert abs(w_std - 1.0) < 1e-2, (
+                f"Z-scored window {i} std={w_std:.6f}, expected ≈ 1"
+            )
+
+        # Raw returns should NOT be z-scored: mean should be close to 0.005
+        raw_mean = raw_returns[0].mean().item()
+        raw_std = raw_returns[0].std().item()
+        assert abs(raw_mean - 0.005) < 0.005, (
+            f"Raw returns mean={raw_mean:.6f}, expected close to 0.005"
+        )
+        assert raw_std != pytest.approx(1.0, abs=0.1), (
+            f"Raw returns std={raw_std:.6f} is suspiciously close to 1.0 "
+            "(should NOT be z-scored)"
+        )

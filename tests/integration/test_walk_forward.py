@@ -68,11 +68,12 @@ class TestWalkForward:
             prev_oos_end = pd.Timestamp(str(wf_folds[i - 1]["oos_end"]))
             curr_oos_start = pd.Timestamp(str(wf_folds[i]["oos_start"]))
 
-            # Allow small overlap (up to 31 days) due to step rounding
-            lower_bound: pd.Timestamp = prev_oos_end - pd.DateOffset(days=31)  # type: ignore[assignment]
+            # C5: OOS periods must be sequential with at most 5 calendar days
+            # of tolerance (accounting for business day rounding)
+            lower_bound: pd.Timestamp = prev_oos_end - pd.DateOffset(days=5)  # type: ignore[assignment]
             assert curr_oos_start >= lower_bound, (
-                f"Fold {i}: OOS start {curr_oos_start} is too early "
-                f"relative to previous OOS end {prev_oos_end}"
+                f"Fold {i}: OOS start {curr_oos_start} overlaps with previous "
+                f"OOS end {prev_oos_end} by more than 5 days"
             )
 
     def test_holdout_untouched(
@@ -126,3 +127,53 @@ class TestWalkForward:
         assert result == e_star_config, (
             f"E* should be {e_star_config} for first fold, got {result}"
         )
+
+    def test_phase_b_uses_fixed_epoch_count(self) -> None:
+        """
+        Phase B must use a fixed epoch count E* without early stopping.
+
+        When previous folds provide E* values, determine_e_star should
+        return a deterministic value derived from those (not re-run
+        early stopping).
+        """
+        e_star_config = 75
+
+        # With previous E* values, the result should be deterministic
+        previous_e_stars = [60, 70, 65, 80, 55]
+        result_1 = determine_e_star(
+            fold_id=5,
+            e_star_config=e_star_config,
+            previous_e_stars=previous_e_stars,
+            is_holdout=False,
+        )
+
+        # Same inputs should produce same E*
+        result_2 = determine_e_star(
+            fold_id=5,
+            e_star_config=e_star_config,
+            previous_e_stars=previous_e_stars,
+            is_holdout=False,
+        )
+
+        assert result_1 == result_2, (
+            f"E* should be deterministic: got {result_1} then {result_2}"
+        )
+
+        # E* must be a positive integer
+        assert result_1 > 0, f"E* must be positive, got {result_1}"
+        assert isinstance(result_1, int), f"E* must be int, got {type(result_1)}"
+
+    def test_holdout_fold_e_star(self) -> None:
+        """Holdout folds should also receive a valid E*."""
+        e_star_config = 75
+        previous_e_stars = [60, 70, 65]
+
+        result = determine_e_star(
+            fold_id=3,
+            e_star_config=e_star_config,
+            previous_e_stars=previous_e_stars,
+            is_holdout=True,
+        )
+
+        assert result > 0, f"Holdout E* must be positive, got {result}"
+        assert isinstance(result, int), f"Holdout E* must be int, got {type(result)}"

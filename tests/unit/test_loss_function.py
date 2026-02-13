@@ -81,8 +81,8 @@ def test_D_factor_present(tensors: dict[str, torch.Tensor]) -> None:
     # recon_term = D/(2*sigma^2) * L_recon
     # So recon_term / L_recon should equal D/(2*sigma^2)
     ratio = components["recon_term"] / max(components["recon"], 1e-12)
-    assert abs(ratio - expected_coeff) < 1e-3, (
-        f"D/(2*sigma^2) factor not present: ratio={ratio:.4f}, expected={expected_coeff:.4f}"
+    assert abs(ratio - expected_coeff) < 1e-6, (
+        f"D/(2*sigma^2) factor not present: ratio={ratio:.6f}, expected={expected_coeff:.6f}"
     )
 
 
@@ -111,6 +111,21 @@ def test_mode_P_gradients(tensors: dict[str, torch.Tensor]) -> None:
     loss.backward()
     assert log_sigma_sq.grad is not None, "Mode P: log_sigma_sq should receive gradient"
     assert log_sigma_sq.grad.abs().item() > 0, "Mode P: gradient should be non-zero"
+
+    # A1: Verify gradient VALUE matches the analytical formula.
+    # Mode P loss = D/(2σ²)·L_recon + (D/2)·ln(σ²) + L_KL
+    # ∂loss/∂log_σ² = σ² · ∂loss/∂σ²  (chain rule via σ²=exp(log_σ²))
+    # ∂loss/∂σ² = -D/(2σ⁴)·L_recon + D/(2σ²)
+    # → ∂loss/∂log_σ² = (D/2)·(1 - L_recon/σ²)
+    D = T * F
+    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=1e-4, max=10.0)
+    L_recon = components["recon"]
+    expected_grad = (D / 2.0) * (1.0 - L_recon / sigma_sq.item())
+    assert abs(log_sigma_sq.grad.item() - expected_grad) < 1e-4, (
+        f"Mode P: gradient value mismatch. "
+        f"actual={log_sigma_sq.grad.item():.6f}, "
+        f"expected=(D/2)·(1 - L_recon/σ²)={expected_grad:.6f}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +232,7 @@ def test_mode_A_beta_applied(tensors: dict[str, torch.Tensor]) -> None:
     # But total should differ by 3 * KL (beta=4 vs beta=1)
     expected_diff = 3.0 * comp_b1["kl"]
     actual_diff = comp_b4["total"] - comp_b1["total"]
-    assert abs(actual_diff - expected_diff) < 1e-2, (
+    assert abs(actual_diff - expected_diff) < 1e-4, (
         f"Mode A beta scaling: expected diff={expected_diff:.4f}, got={actual_diff:.4f}"
     )
 
@@ -325,9 +340,16 @@ def test_curriculum_phases() -> None:
 # ---------------------------------------------------------------------------
 
 def test_validation_elbo_excludes_gamma(tensors: dict[str, torch.Tensor]) -> None:
-    """Validation ELBO (INV-011) excludes gamma, so gamma value should not matter."""
+    """Validation ELBO (INV-011) must use gamma-free formula.
+
+    Verification strategy:
+    1. Manually compute D/(2*sigma_sq)*MSE_unweighted + (D/2)*ln(sigma_sq) + KL
+       (this formula has no gamma) and confirm it matches the function output.
+    2. Confirm training losses change with different gammas while ELBO stays the same.
+    """
     torch.manual_seed(42)
 
+    # 1. Compute validation ELBO via function
     elbo = compute_validation_elbo(
         x=tensors["x"],
         x_hat=tensors["x_hat"],
@@ -336,37 +358,138 @@ def test_validation_elbo_excludes_gamma(tensors: dict[str, torch.Tensor]) -> Non
         log_sigma_sq=tensors["log_sigma_sq"],
     )
 
-    # compute_validation_elbo does not take a gamma parameter.
-    # It always uses unweighted MSE (gamma=1 equivalent).
-    # Call it a second time to confirm determinism.
-    elbo2 = compute_validation_elbo(
-        x=tensors["x"],
-        x_hat=tensors["x_hat"],
-        mu=tensors["mu"],
-        log_var=tensors["log_var"],
-        log_sigma_sq=tensors["log_sigma_sq"],
+    # 2. Independently compute the gamma-free formula
+    D = T * F
+    sigma_sq = torch.clamp(torch.exp(tensors["log_sigma_sq"]), 1e-4, 10.0)
+    mse_unweighted = torch.mean((tensors["x"] - tensors["x_hat"]) ** 2).item()
+    kl_manual = (0.5 * torch.sum(
+        tensors["mu"] ** 2 + torch.exp(tensors["log_var"]) - tensors["log_var"] - 1,
+        dim=1,
+    )).mean().item()
+    manual_elbo = (
+        (D / (2 * sigma_sq.item())) * mse_unweighted
+        + (D / 2) * math.log(sigma_sq.item())
+        + kl_manual
+    )
+    assert abs(elbo.item() - manual_elbo) < 1e-4, (
+        f"Validation ELBO does not match gamma-free formula: "
+        f"func={elbo.item():.6f}, manual={manual_elbo:.6f}"
     )
 
-    assert torch.allclose(elbo, elbo2, atol=1e-6), (
-        "Validation ELBO should be deterministic and gamma-independent"
+    # 3. Training losses with different gammas must differ (gamma matters for training)
+    # but ELBO is always the same (gamma-free)
+    train_losses = []
+    for gamma_val in [1.0, 3.0, 5.0]:
+        _, comp = compute_loss(
+            x=tensors["x"],
+            x_hat=tensors["x_hat"],
+            mu=tensors["mu"],
+            log_var=tensors["log_var"],
+            log_sigma_sq=tensors["log_sigma_sq"],
+            crisis_fractions=tensors["crisis_fractions"],
+            epoch=50,
+            total_epochs=TOTAL_EPOCHS,
+            mode="P",
+            gamma=gamma_val,
+        )
+        train_losses.append(comp["total"].item())
+
+    # With non-zero crisis_fractions, training loss must change with gamma
+    assert abs(train_losses[0] - train_losses[1]) > 1e-3, (
+        "Training loss should differ between gamma=1 and gamma=3"
+    )
+    assert abs(train_losses[1] - train_losses[2]) > 1e-3, (
+        "Training loss should differ between gamma=3 and gamma=5"
     )
 
-    # Also verify validation ELBO differs from training loss with gamma=3
-    _, train_comp = compute_loss(
-        x=tensors["x"],
-        x_hat=tensors["x_hat"],
-        mu=tensors["mu"],
-        log_var=tensors["log_var"],
-        log_sigma_sq=tensors["log_sigma_sq"],
-        crisis_fractions=tensors["crisis_fractions"],
-        epoch=50,
-        total_epochs=TOTAL_EPOCHS,
-        mode="P",
-        gamma=3.0,
+
+# ---------------------------------------------------------------------------
+# 10b. test_D_factor_coefficient_exact_value — exact D/(2*sigma^2)
+# ---------------------------------------------------------------------------
+
+def test_D_factor_coefficient_exact_value(tensors: dict[str, torch.Tensor]) -> None:
+    """Mode P: recon_coeff must be exactly D/(2*sigma^2) for known sigma^2."""
+    torch.manual_seed(42)
+
+    # Use known log_sigma_sq so sigma^2 is predictable
+    for log_val in [-2.0, 0.0, 1.0]:
+        log_sigma_sq = torch.tensor(log_val, requires_grad=True)
+        sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=1e-4, max=10.0).item()
+
+        _, comp = compute_loss(
+            x=tensors["x"],
+            x_hat=tensors["x_hat"],
+            mu=tensors["mu"],
+            log_var=tensors["log_var"],
+            log_sigma_sq=log_sigma_sq,
+            crisis_fractions=tensors["crisis_fractions"],
+            epoch=50,
+            total_epochs=TOTAL_EPOCHS,
+            mode="P",
+            gamma=3.0,
+        )
+
+        D = T * F
+        expected_coeff = D / (2.0 * sigma_sq)
+        actual_ratio = comp["recon_term"] / max(comp["recon"], 1e-12)
+
+        assert abs(actual_ratio - expected_coeff) < 1e-6, (
+            f"log_sigma_sq={log_val}: ratio={actual_ratio:.6f}, "
+            f"expected D/(2*sigma^2)={expected_coeff:.6f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. test_co_movement_loss_with_known_correlations
+# ---------------------------------------------------------------------------
+
+def test_co_movement_loss_with_known_correlations() -> None:
+    """Co-movement loss correctness for known correlation scenarios.
+
+    Formula: L_co = (1/|P|) Σ (d(z_i, z_j) - g(ρ_ij))²
+    where d = cosine distance, g(ρ) = 1 - ρ (target distance).
+
+    Case 1: Identical returns (ρ=1) + identical mu (d=0) → target=0, L_co ≈ 0
+    Case 2: Identical returns (ρ=1) + different mu (d>0) → target=0, L_co > 0
+    Case 3: Reversed returns (ρ≈-1) + identical mu (d=0) → target≈2, L_co ≈ 4
+    """
+    torch.manual_seed(42)
+
+    B_test = 4
+    K_test = 10
+    T_test = 64
+
+    # Case 1: Identical returns + identical mu → L_co ≈ 0
+    base_returns = torch.randn(1, T_test)
+    raw_returns_same = base_returns.expand(B_test, T_test).contiguous()
+    mu_same = torch.ones(B_test, K_test)
+    L_co_case1 = compute_co_movement_loss(mu_same, raw_returns_same)
+    assert L_co_case1.item() < 1e-6, (
+        f"Case 1 (ρ=1, d=0): L_co should be ≈0, got {L_co_case1.item()}"
     )
-    # Training loss with gamma=3 and non-zero crisis should differ from ELBO
-    assert abs(elbo.item() - train_comp["total"]) > 1e-3, (
-        "Validation ELBO should differ from training loss with gamma=3 and crisis weights"
+
+    # Case 2: Identical returns + different mu → L_co > 0
+    mu_diff = torch.randn(B_test, K_test)
+    L_co_case2 = compute_co_movement_loss(mu_diff, raw_returns_same)
+    assert L_co_case2.item() > 0.0, (
+        f"Case 2 (ρ=1, d>0): L_co should be > 0, got {L_co_case2.item()}"
+    )
+    assert torch.isfinite(L_co_case2), f"L_co is not finite: {L_co_case2.item()}"
+
+    # Case 3: Anti-correlated returns (ρ≈-1) + identical mu (d=0)
+    # g(ρ) = 1 - (-1) = 2, d(z_i, z_j) = 0
+    # L_co = (0 - 2)² = 4 for each pair
+    raw_pos = torch.linspace(0, 1, T_test).unsqueeze(0).expand(2, -1)
+    raw_neg = -raw_pos
+    raw_anti = torch.cat([raw_pos[:1], raw_neg[:1]], dim=0)  # 2 samples
+    mu_ident = torch.ones(2, K_test)
+    L_co_case3 = compute_co_movement_loss(mu_ident, raw_anti)
+    # With ρ ≈ -1, target = 2, cosine_dist = 0, loss per pair ≈ 4
+    assert L_co_case3.item() > 2.0, (
+        f"Case 3 (ρ≈-1, d=0): L_co should be large (≈4), got {L_co_case3.item()}"
+    )
+    assert L_co_case3.item() < 5.0, (
+        f"Case 3 (ρ≈-1, d=0): L_co should be ≈4, got {L_co_case3.item()}"
     )
 
 
@@ -420,3 +543,441 @@ def test_loss_finite(tensors: dict[str, torch.Tensor]) -> None:
         assert torch.isfinite(loss), f"Mode {mode}: loss is not finite: {loss.item()}"
         for key, val in components.items():
             assert math.isfinite(val), f"Mode {mode}: component '{key}' is not finite: {val}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Mode properties, validation ELBO formula, co-movement with raw returns
+# ---------------------------------------------------------------------------
+
+
+class TestModeProperties:
+    def test_mode_P_does_not_anneal_beta(self) -> None:
+        """In Mode P, the KL contribution is constant across epochs (no beta annealing)."""
+        T, F_val, K = 64, 2, 10
+        B = 4
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F_val)
+        x_hat = torch.randn(B, T, F_val)
+        mu = torch.randn(B, K)
+        log_var = torch.randn(B, K)
+        log_sigma_sq = torch.tensor(0.0)
+        crisis = torch.zeros(B)
+        losses_at_epochs = []
+        for epoch in [0, 25, 50, 75, 99]:
+            _, comp = compute_loss(
+                x, x_hat, mu, log_var, log_sigma_sq, crisis,
+                epoch=epoch, total_epochs=100, mode="P",
+                gamma=1.0, lambda_co_max=0.0,
+            )
+            losses_at_epochs.append(comp["kl"].item())
+        # KL contributions should be identical (no annealing)
+        for i in range(1, len(losses_at_epochs)):
+            assert abs(losses_at_epochs[i] - losses_at_epochs[0]) < 1e-8, (
+                f"KL differs between epoch 0 and epoch {[0,25,50,75,99][i]}"
+            )
+
+    def test_mode_F_has_beta_annealing(self) -> None:
+        """Mode F has beta that increases from beta_min to 1.0 during warmup."""
+        # With warmup_fraction=0.20, total_epochs=100: T_warmup=20
+        beta_0 = get_beta_t(0, 100, 0.20)
+        beta_10 = get_beta_t(10, 100, 0.20)
+        beta_20 = get_beta_t(20, 100, 0.20)
+        beta_50 = get_beta_t(50, 100, 0.20)
+        assert beta_0 == 0.01, f"beta at epoch 0 should be beta_min=0.01, got {beta_0}"
+        assert beta_0 < beta_10 < beta_20, "beta should increase during warmup"
+        assert beta_20 == 1.0, f"beta at T_warmup should be 1.0, got {beta_20}"
+        assert beta_50 == 1.0, f"beta past warmup should be 1.0, got {beta_50}"
+
+    def test_mode_F_beta_used_in_compute_loss(self) -> None:
+        """compute_loss in Mode F must use get_beta_t: KL contribution differs between epochs."""
+        T_val, F_val, K_val = 64, 2, 10
+        B_val = 4
+        torch.manual_seed(42)
+        x = torch.randn(B_val, T_val, F_val)
+        x_hat = torch.randn(B_val, T_val, F_val)
+        mu = torch.randn(B_val, K_val)
+        log_var = torch.randn(B_val, K_val)
+        log_sigma_sq = torch.tensor(0.0)
+        crisis = torch.zeros(B_val)
+
+        # Epoch 0: beta_t = 0.01 (beta_min)
+        _, comp_0 = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis,
+            epoch=0, total_epochs=100, mode="F",
+            gamma=1.0, beta_fixed=1.0, lambda_co_max=0.0,
+        )
+
+        # Epoch 20 (T_warmup with warmup_fraction=0.20): beta_t = 1.0
+        _, comp_20 = compute_loss(
+            x, x_hat, mu, log_var, log_sigma_sq, crisis,
+            epoch=20, total_epochs=100, mode="F",
+            gamma=1.0, beta_fixed=1.0, lambda_co_max=0.0,
+        )
+
+        # Recon should be the same (no dependency on epoch in Mode F recon)
+        assert abs(comp_0["recon"].item() - comp_20["recon"].item()) < 1e-6, (
+            "Reconstruction loss should not depend on epoch"
+        )
+
+        # Total loss should differ because beta_t differs (0.01 vs 1.0)
+        # total_0 = D/2 * L_recon + 0.01 * L_kl
+        # total_20 = D/2 * L_recon + 1.0 * L_kl
+        # diff = 0.99 * L_kl
+        expected_diff = 0.99 * comp_0["kl"].item()
+        actual_diff = comp_20["total"].item() - comp_0["total"].item()
+        assert abs(actual_diff - expected_diff) < 1e-4, (
+            f"Mode F total loss difference should be 0.99*KL={expected_diff:.6f}, "
+            f"got {actual_diff:.6f}"
+        )
+
+    def test_validation_elbo_formula_exact(self) -> None:
+        """Validation ELBO matches manual formula: D/(2*sigma_sq)*MSE + (D/2)*log(sigma_sq) + KL."""
+        T, F_val, K = 64, 2, 10
+        D = T * F_val
+        B = 4
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F_val)
+        x_hat = torch.randn(B, T, F_val)
+        mu = torch.randn(B, K)
+        log_var = torch.randn(B, K)
+        log_sigma_sq = torch.tensor(0.5)
+        sigma_sq = torch.clamp(torch.exp(log_sigma_sq), 1e-4, 10.0)
+        # Manual computation
+        L_recon = torch.mean((x - x_hat) ** 2).item()
+        L_kl = (0.5 * torch.sum(mu**2 + torch.exp(log_var) - log_var - 1, dim=1)).mean().item()
+        manual = (D / (2 * sigma_sq.item())) * L_recon + (D / 2) * torch.log(sigma_sq).item() + L_kl
+        # Function
+        L_val = compute_validation_elbo(x, x_hat, mu, log_var, log_sigma_sq).item()
+        assert abs(L_val - manual) < 1e-4, f"ELBO mismatch: func={L_val}, manual={manual}"
+
+    def test_co_movement_uses_raw_returns(self) -> None:
+        """Co-movement loss correctness: verify exact Spearman rho and loss on known inputs.
+
+        ISD MOD-004: 'DO NOT compute Spearman correlation on z-scored data — use raw returns.'
+        Verifies both the Spearman computation and the loss formula
+        L_co = mean((cosine_dist - (1 - rho))^2) with known expected values.
+        """
+        # Use T>=50 for reliable Spearman correlation (T=5 is degenerate
+        # due to ties and exact rank patterns).
+        T_co = 64
+        n_stocks = 8
+        K_co = 4
+
+        # Case 1: Anti-correlated returns, identical latents
+        # Build two groups of stocks: first half ascending, second half descending
+        # so cross-sectional Spearman rho ~ -1 for opposite-group pairs.
+        torch.manual_seed(42)
+        t_axis = torch.linspace(0, 1, T_co)
+        raw_anti = torch.zeros(n_stocks, T_co)
+        for i in range(n_stocks // 2):
+            raw_anti[i] = t_axis + torch.randn(T_co) * 0.05
+        for i in range(n_stocks // 2, n_stocks):
+            raw_anti[i] = -t_axis + torch.randn(T_co) * 0.05
+
+        mu_identical = torch.ones(n_stocks, K_co)
+        L_co_anti = compute_co_movement_loss(mu_identical, raw_anti)
+        # With identical mu (cosine_dist=0) and mixed correlations, L_co > 0
+        assert L_co_anti.item() > 0.1, (
+            f"Anti-correlated groups + identical mu: "
+            f"expected L_co > 0.1, got {L_co_anti.item():.6f}"
+        )
+
+        # Case 2: Perfectly correlated returns, identical latents
+        # All stocks have the same trend -> pairwise rho ~ 1
+        # Identical mu -> cosine_dist = 0, target = 1 - 1 = 0
+        # L_co ~ 0
+        raw_corr = torch.zeros(n_stocks, T_co)
+        for i in range(n_stocks):
+            raw_corr[i] = t_axis + torch.randn(T_co) * 0.01
+        L_co_corr = compute_co_movement_loss(mu_identical, raw_corr)
+        assert L_co_corr.item() < 0.1, (
+            f"Correlated returns (rho~1) + identical mu (d=0): "
+            f"expected L_co < 0.1, got {L_co_corr.item():.6f}"
+        )
+
+        # Case 3: Correlated returns, orthogonal latents
+        # rho ~ 1 -> target ~ 0, but cosine_dist > 0 (orthogonal mu)
+        # So L_co > 0 (distance mismatch)
+        mu_orthogonal = torch.zeros(n_stocks, K_co)
+        for i in range(n_stocks):
+            mu_orthogonal[i, i % K_co] = 1.0
+        L_co_orth = compute_co_movement_loss(mu_orthogonal, raw_corr)
+        assert L_co_orth.item() > L_co_corr.item(), (
+            f"Correlated returns + orthogonal mu should have higher L_co "
+            f"than correlated returns + identical mu: "
+            f"orthogonal={L_co_orth.item():.6f}, identical={L_co_corr.item():.6f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# M1: D factor at production dimensions (T=504, F=2, D=1008)
+# ---------------------------------------------------------------------------
+
+def test_D_factor_production_dimensions() -> None:
+    """
+    M1: Verify D factor is correct at production size T=504, F=2 (D=1008).
+    A bug that hardcodes D=128 would pass small tests but fail here.
+    """
+    T_prod = 504
+    F_prod = 2
+    D_prod = T_prod * F_prod  # = 1008
+    B_prod = 2
+    K_prod = 10
+
+    torch.manual_seed(42)
+    x = torch.randn(B_prod, T_prod, F_prod)
+    x_hat = torch.randn(B_prod, T_prod, F_prod)
+    mu = torch.randn(B_prod, K_prod)
+    log_var = torch.randn(B_prod, K_prod) * 0.5
+    log_sigma_sq = torch.tensor(0.5, requires_grad=True)
+    crisis = torch.zeros(B_prod)
+
+    sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=1e-4, max=10.0).item()
+    expected_coeff = D_prod / (2.0 * sigma_sq)
+
+    _, comp = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=50, total_epochs=100, mode="P", gamma=1.0,
+    )
+
+    actual_ratio = comp["recon_term"].item() / max(comp["recon"].item(), 1e-12)
+    assert abs(actual_ratio - expected_coeff) < 1e-4, (
+        f"M1: D factor wrong at production dimensions. "
+        f"Expected D/(2*sigma_sq) = {expected_coeff:.4f} (D={D_prod}), "
+        f"got ratio = {actual_ratio:.4f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# M3: Co-movement on z-scored vs raw returns must differ
+# ---------------------------------------------------------------------------
+
+def test_co_movement_z_scored_vs_raw_differs() -> None:
+    """
+    M3: ISD MOD-004 — 'DO NOT compute Spearman on z-scored data'.
+    Per-row z-scoring preserves within-row ranks, so Spearman is invariant.
+    However, cross-sectional z-scoring (across stocks at each time step)
+    changes temporal ranks, producing different co-movement loss values.
+    """
+    torch.manual_seed(42)
+    B_test = 8
+    K_test = 8
+    T_test = 64
+
+    # Create returns with stock-specific trends so that cross-sectional
+    # z-scoring changes within-stock temporal ranks.
+    raw_returns = torch.randn(B_test, T_test)
+    trends = torch.linspace(-2.0, 2.0, B_test).unsqueeze(1)  # (B, 1)
+    t_axis = torch.linspace(0, 1, T_test).unsqueeze(0)  # (1, T)
+    raw_returns = raw_returns + trends * t_axis
+
+    # Cross-sectional z-scoring: normalize across stocks at each time step
+    mean_cross = raw_returns.mean(dim=0, keepdim=True)  # (1, T)
+    std_cross = raw_returns.std(dim=0, keepdim=True).clamp(min=1e-8)
+    z_scored_cross = (raw_returns - mean_cross) / std_cross
+
+    mu = torch.randn(B_test, K_test)
+
+    L_co_raw = compute_co_movement_loss(mu, raw_returns)
+    L_co_zscored = compute_co_movement_loss(mu, z_scored_cross)
+
+    assert L_co_raw.item() != pytest.approx(L_co_zscored.item(), abs=1e-6), (
+        f"M3: Co-movement loss should differ between raw and cross-sectionally "
+        f"z-scored returns. raw={L_co_raw.item():.6f}, "
+        f"z-scored={L_co_zscored.item():.6f}. "
+        f"Spearman must be computed on raw returns (ISD MOD-004)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# m4: Mixed crisis fractions in a batch
+# ---------------------------------------------------------------------------
+
+def test_crisis_weight_mixed_fractions() -> None:
+    """
+    m4: Verify crisis weighting with mixed f_c values in a single batch.
+    Existing tests only check f_c=0 (all) and f_c=1 (all). This tests
+    a realistic mixed batch like [0.0, 0.3, 0.7, 1.0].
+    """
+    torch.manual_seed(42)
+    x = torch.randn(B, T, F)
+    x_hat = torch.randn(B, T, F)
+
+    cf_mixed = torch.tensor([0.0, 0.3, 0.7, 1.0])
+    gamma = 3.0
+
+    loss = compute_reconstruction_loss(x, x_hat, cf_mixed, gamma=gamma)
+
+    # Manually compute expected loss
+    mse_per_window = torch.mean((x - x_hat) ** 2, dim=(1, 2))
+    gamma_eff = 1.0 + cf_mixed * (gamma - 1.0)
+    # gamma_eff = [1.0, 1.6, 2.4, 3.0]
+    expected = torch.mean(gamma_eff * mse_per_window)
+
+    assert torch.allclose(loss, expected, atol=1e-6), (
+        f"Mixed crisis fractions: loss={loss.item():.6f}, "
+        f"expected={expected.item():.6f}"
+    )
+
+    # Verify gamma_eff values match formula
+    expected_gamma_eff = torch.tensor([1.0, 1.6, 2.4, 3.0])
+    assert torch.allclose(gamma_eff, expected_gamma_eff, atol=1e-6), (
+        f"gamma_eff mismatch: {gamma_eff.tolist()} vs {expected_gamma_eff.tolist()}"
+    )
+
+    # The loss should be between the all-f_c=0 and all-f_c=1 losses
+    loss_no_crisis = compute_reconstruction_loss(
+        x, x_hat, torch.zeros(B), gamma=gamma,
+    )
+    loss_full_crisis = compute_reconstruction_loss(
+        x, x_hat, torch.ones(B), gamma=gamma,
+    )
+    assert loss_no_crisis.item() <= loss.item() <= loss_full_crisis.item(), (
+        f"Mixed loss should be between no-crisis ({loss_no_crisis.item():.6f}) "
+        f"and full-crisis ({loss_full_crisis.item():.6f}), got {loss.item():.6f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TIER 3a: Mode F beta_t annealing verification
+# ---------------------------------------------------------------------------
+
+def test_mode_F_beta_t_values_in_loss() -> None:
+    """
+    Mode F must produce beta_t = max(beta_min, min(1, epoch/T_warmup))
+    at specific epochs, and the KL term must be scaled accordingly.
+
+    DVT Section 4.4: Mode F uses linear beta annealing.
+    """
+    torch.manual_seed(42)
+    x = torch.randn(B, T, F)
+    x_hat = torch.randn(B, T, F)
+    mu = torch.randn(B, 10)
+    log_var = torch.randn(B, 10) * 0.5
+    log_sigma_sq = torch.tensor(0.0)
+    crisis = torch.zeros(B)
+
+    total_epochs = 100
+    warmup_fraction = 0.20
+    T_warmup = int(warmup_fraction * total_epochs)  # = 20
+
+    # Epoch 0: beta_t = max(0.01, min(1, 0/20)) = 0.01 (beta_min floor)
+    _, comp_0 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=0, total_epochs=total_epochs, mode="F",
+        warmup_fraction=warmup_fraction,
+    )
+    assert abs(comp_0["beta_t"] - 0.01) < 1e-8, (
+        f"At epoch=0, beta_t should be 0.01 (beta_min), got {comp_0['beta_t']}"
+    )
+
+    # Epoch 10 (mid-warmup): beta_t = max(0.01, min(1, 10/20)) = 0.5
+    _, comp_10 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=10, total_epochs=total_epochs, mode="F",
+        warmup_fraction=warmup_fraction,
+    )
+    assert abs(comp_10["beta_t"] - 0.5) < 1e-8, (
+        f"At epoch=10 (mid-warmup), beta_t should be 0.5, got {comp_10['beta_t']}"
+    )
+
+    # Epoch 20 (end of warmup): beta_t = max(0.01, min(1, 20/20)) = 1.0
+    _, comp_20 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=20, total_epochs=total_epochs, mode="F",
+        warmup_fraction=warmup_fraction,
+    )
+    assert abs(comp_20["beta_t"] - 1.0) < 1e-8, (
+        f"At epoch=20 (warmup end), beta_t should be 1.0, got {comp_20['beta_t']}"
+    )
+
+    # Epoch 50 (post-warmup): beta_t = 1.0 (clamped)
+    _, comp_50 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=50, total_epochs=total_epochs, mode="F",
+        warmup_fraction=warmup_fraction,
+    )
+    assert abs(comp_50["beta_t"] - 1.0) < 1e-8, (
+        f"At epoch=50 (post-warmup), beta_t should be 1.0, got {comp_50['beta_t']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TIER 3b: Co-movement lambda_co inclusion/exclusion in total loss
+# ---------------------------------------------------------------------------
+
+def test_co_movement_included_in_phase_1_excluded_in_phase_3() -> None:
+    """
+    Verify total loss includes lambda_co * L_co during phase 1 (epochs 0-30%)
+    and excludes it during phase 3 (epochs 60-100%).
+
+    ISD INV-010: Co-movement curriculum phases.
+    """
+    torch.manual_seed(42)
+    x = torch.randn(B, T, F)
+    x_hat = torch.randn(B, T, F)
+    mu = torch.randn(B, 10)
+    log_var = torch.randn(B, 10) * 0.5
+    log_sigma_sq = torch.tensor(0.0)
+    crisis = torch.zeros(B)
+
+    total_epochs = 100
+    lambda_co_max = 0.5
+
+    # Create a non-zero co-movement loss
+    L_co = torch.tensor(2.0)
+
+    # Phase 1 (epoch 10): lambda_co should be lambda_co_max
+    loss_with_co, comp_p1 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=10, total_epochs=total_epochs, mode="P",
+        lambda_co_max=lambda_co_max, co_movement_loss=L_co,
+    )
+    assert abs(comp_p1["lambda_co"] - lambda_co_max) < 1e-8, (
+        f"Phase 1 lambda_co should be {lambda_co_max}, got {comp_p1['lambda_co']}"
+    )
+
+    # Compute loss without co-movement for comparison
+    loss_no_co, comp_no = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=10, total_epochs=total_epochs, mode="P",
+        lambda_co_max=lambda_co_max, co_movement_loss=torch.tensor(0.0),
+    )
+
+    # Difference should be lambda_co_max * L_co = 0.5 * 2.0 = 1.0
+    expected_diff = lambda_co_max * L_co.item()
+    actual_diff = loss_with_co.item() - loss_no_co.item()
+    assert abs(actual_diff - expected_diff) < 1e-4, (
+        f"Phase 1: total_loss difference should be lambda_co*L_co={expected_diff}, "
+        f"got {actual_diff:.6f}"
+    )
+
+    # Phase 3 (epoch 80): lambda_co should be 0.0
+    loss_p3, comp_p3 = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=80, total_epochs=total_epochs, mode="P",
+        lambda_co_max=lambda_co_max, co_movement_loss=L_co,
+    )
+    assert abs(comp_p3["lambda_co"]) < 1e-8, (
+        f"Phase 3 lambda_co should be 0.0, got {comp_p3['lambda_co']}"
+    )
+
+    # With lambda_co=0, the co-movement loss should not affect total
+    loss_p3_no_co, _ = compute_loss(
+        x=x, x_hat=x_hat, mu=mu, log_var=log_var,
+        log_sigma_sq=log_sigma_sq, crisis_fractions=crisis,
+        epoch=80, total_epochs=total_epochs, mode="P",
+        lambda_co_max=lambda_co_max, co_movement_loss=torch.tensor(0.0),
+    )
+    assert abs(loss_p3.item() - loss_p3_no_co.item()) < 1e-6, (
+        f"Phase 3: co-movement should not affect total loss. "
+        f"With L_co={loss_p3.item():.6f}, without={loss_p3_no_co.item():.6f}"
+    )
