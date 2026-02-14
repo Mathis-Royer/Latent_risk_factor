@@ -110,6 +110,20 @@ class BenchmarkModel(ABC):
 
         return w
 
+    def get_oos_returns(self, returns_oos: pd.DataFrame) -> np.ndarray | None:
+        """
+        Return daily portfolio log-returns for the OOS period.
+
+        Default implementation returns None, meaning the caller should
+        compute returns as ``R_oos @ w``.  Index benchmarks (e.g. S&P 500)
+        override this to return their own return series.
+
+        :param returns_oos (pd.DataFrame): OOS returns (dates x stocks)
+
+        :return daily_returns (np.ndarray | None): Portfolio daily returns
+        """
+        return None
+
     def evaluate(
         self,
         w: np.ndarray,

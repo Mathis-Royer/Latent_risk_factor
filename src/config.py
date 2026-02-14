@@ -479,7 +479,7 @@ class PortfolioConfig:
     entropy_eps: float = 1e-30
     cardinality_method: str = "auto"
     alpha_grid: list[float] = field(
-        default_factory=lambda: [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+        default_factory=lambda: [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 50.0]
     )
 
     def __post_init__(self) -> None:

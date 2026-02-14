@@ -49,6 +49,23 @@ def _fmt(val: object, precision: int = 4) -> str:
     return str(val)
 
 
+def _extract_ew_mdd(bench: dict[str, Any]) -> float | None:
+    """
+    Extract equal-weight benchmark MDD as market proxy.
+
+    :param bench (dict): Benchmark comparison diagnostics
+
+    :return ew_mdd (float | None): EW max drawdown, or None if unavailable
+    """
+    per_bench = bench.get("per_benchmark", {})
+    ew_data = per_bench.get("equal_weight", {})
+    ew_metrics = ew_data.get("bench_metrics", {})
+    val = ew_metrics.get("max_drawdown_oos", None)
+    if val is not None and np.isfinite(val):
+        return float(val)
+    return None
+
+
 def generate_diagnostic_markdown(
     diagnostics: dict[str, Any],
 ) -> str:
@@ -314,7 +331,12 @@ def generate_diagnostic_markdown(
     lines.append(f"- **Sharpe ratio**: {_fmt(portfolio.get('sharpe', 0), 3)}")
     lines.append(f"- **Sortino ratio**: {_fmt(portfolio.get('sortino', 0), 3)}")
     lines.append(f"- **Calmar ratio**: {_fmt(portfolio.get('calmar', 0), 3)}")
-    lines.append(f"- **Max drawdown**: {portfolio.get('max_drawdown', 0):.2%}")
+    # MDD with benchmark context
+    mdd_line = f"- **Max drawdown**: {portfolio.get('max_drawdown', 0):.2%}"
+    ew_mdd = _extract_ew_mdd(bench)
+    if ew_mdd is not None:
+        mdd_line += f" (EW benchmark: {ew_mdd:.2%})"
+    lines.append(mdd_line)
     lines.append(
         f"- **Normalized entropy (H_norm)**: {_fmt(portfolio.get('H_norm_oos', 0))}"
     )
