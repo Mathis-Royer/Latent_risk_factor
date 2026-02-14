@@ -206,8 +206,8 @@ def generate_diagnostic_markdown(
     )
     lines.append(f"- **KL total**: {_fmt(latent.get('kl_total', 0))}")
     lines.append(
-        f"- **KL concentration (active dims)**: "
-        f"{latent.get('kl_concentration', 0):.1%}"
+        f"- **KL top-3 fraction**: "
+        f"{latent.get('kl_top3_fraction', 0):.1%}"
     )
 
     b_stats = latent.get("B_stats", {})

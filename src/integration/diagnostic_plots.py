@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Any
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 import numpy as np
 import pandas as pd
@@ -97,22 +98,31 @@ def plot_training_convergence(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # --- [0,1] Reconstruction + KL ---
+    # --- [0,1] Reconstruction (left) + KL (right, separate scale) ---
     ax = axes[0][1]
     if train_recon:
         ax.plot(
             epochs[:len(train_recon)], train_recon,
             color=_COLORS["recon"], linewidth=1.5, label="Reconstruction",
         )
+    ax.set_ylabel("Reconstruction", fontsize=9, color=_COLORS["recon"])
+    ax.tick_params(axis="y", labelcolor=_COLORS["recon"])
+    ax.grid(True, alpha=0.3)
+
+    ax_kl = ax.twinx()
     if train_kl:
-        ax.plot(
+        ax_kl.plot(
             epochs[:len(train_kl)], train_kl,
             color=_COLORS["kl"], linewidth=1.5, label="KL Divergence",
         )
+    ax_kl.set_ylabel("KL Divergence", fontsize=9, color=_COLORS["kl"])
+    ax_kl.tick_params(axis="y", labelcolor=_COLORS["kl"])
+
     _add_best_line(ax)
     ax.set_title("Loss Components", fontsize=11, fontweight="bold")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax_kl.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
 
     # --- [1,0] Co-movement loss ---
     ax = axes[1][0]
@@ -564,9 +574,8 @@ def plot_health_summary(
     ax.set_title("Health Check Summary", fontsize=12, fontweight="bold")
 
     # Legend
-    for status, color in status_colors.items():
-        ax.barh([], 0, color=color, label=status)
-    ax.legend(fontsize=9, loc="lower right")
+    handles = [mpatches.Patch(facecolor=c, label=s) for s, c in status_colors.items()]
+    ax.legend(handles=handles, fontsize=9, loc="lower right")
 
     fig.tight_layout()
     return fig

@@ -66,7 +66,7 @@ def compute_variance_entropy_frontier(
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
     """
     if alpha_grid is None:
-        alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 50.0]
+        alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
 
     results: list[dict[str, float]] = []
     n_alphas = len(alpha_grid)
@@ -111,42 +111,86 @@ def compute_variance_entropy_frontier(
 
 def select_operating_alpha(
     frontier: pd.DataFrame,
-    delta_H_threshold: float = 0.1,
 ) -> float:
     """
-    Automatic selection of α at the elbow of the variance-entropy frontier.
+    Select α at the elbow of the variance-entropy frontier (Kneedle method).
 
-    Select α where ΔH/ΔVar < threshold (diminishing entropy returns).
+    Normalizes both axes to [0, 1], then finds the frontier point with maximum
+    perpendicular distance from the chord connecting the first (min-var) and
+    last (max-entropy) points. This is scale-invariant and requires no
+    arbitrary threshold.
+
+    Fallback: if the frontier is degenerate (flat or single-point), returns
+    the α that achieves maximum entropy.
+
+    Reference: Satopaa et al. (2011), "Finding a 'Kneedle' in a Haystack".
+    DVT §4.7: "The elbow of the variance-entropy frontier is the natural
+    operating point."
 
     :param frontier (pd.DataFrame): Frontier with columns alpha, variance, entropy
-    :param delta_H_threshold (float): Threshold for ΔH/ΔVar
 
     :return alpha_opt (float): Selected operating α
     """
     if len(frontier) < 2:
-        return frontier["alpha"].iloc[0] if len(frontier) > 0 else 0.1
+        return float(frontier["alpha"].iloc[0]) if len(frontier) > 0 else 0.1
 
-    # Sort by alpha
     df = frontier.sort_values("alpha").reset_index(drop=True)
 
-    for i in range(1, len(df)):
-        dH = df["entropy"].iloc[i] - df["entropy"].iloc[i - 1]
-        dVar = df["variance"].iloc[i] - df["variance"].iloc[i - 1]
+    H = np.asarray(df["entropy"], dtype=np.float64)
+    V = np.asarray(df["variance"], dtype=np.float64)
 
-        if dVar == 0:
-            continue
+    H_range = float(H.max() - H.min())
+    V_range = float(V.max() - V.min())
 
-        ratio = abs(dH / dVar)
-        if ratio < delta_H_threshold:
-            return float(df["alpha"].iloc[i - 1])
+    # Degenerate: flat frontier (all points have same H or same Var)
+    if H_range < 1e-15 or V_range < 1e-15:
+        best_idx = int(np.argmax(H))
+        alpha_sel = float(df["alpha"].iloc[best_idx])
+        logger.info(
+            "select_operating_alpha: degenerate frontier, selecting α=%.4g "
+            "(max entropy).", alpha_sel,
+        )
+        return alpha_sel
 
-    # Default: last alpha in grid — WARNING: may indicate degenerate risk model
-    alpha_max = float(df["alpha"].iloc[-1])
-    logger.warning(
-        "select_operating_alpha: no elbow found (ΔH/ΔVar never < %.3f). "
-        "Returning α*=%.4g (max of grid). This may indicate the risk model "
-        "lacks exploitable factor structure — consider checking σ² convergence "
-        "and active units.",
-        delta_H_threshold, alpha_max,
+    # Normalize both axes to [0, 1]
+    H_n = (H - H.min()) / H_range
+    V_n = (V - V.min()) / V_range
+
+    # Chord from first to last point in normalized space
+    dx = V_n[-1] - V_n[0]
+    dy = H_n[-1] - H_n[0]
+    chord_len = float(np.sqrt(dx * dx + dy * dy))
+
+    if chord_len < 1e-15:
+        best_idx = int(np.argmax(H))
+        return float(df["alpha"].iloc[best_idx])
+
+    # Signed perpendicular distance from each point to the chord.
+    # Positive = above the chord (more entropy per unit variance).
+    # cross = (P1 - P0) × (P - P0) / |P1 - P0|
+    signed_dist = (dx * (H_n - H_n[0]) - dy * (V_n - V_n[0])) / chord_len
+
+    best_idx = int(np.argmax(signed_dist))
+    alpha_sel = float(df["alpha"].iloc[best_idx])
+
+    logger.info(
+        "select_operating_alpha (Kneedle): α*=%.4g "
+        "(dist=%.4f, H=%.4f, Var=%.4e).",
+        alpha_sel, float(signed_dist[best_idx]),
+        float(H[best_idx]), float(V[best_idx]),
     )
-    return alpha_max
+
+    # Warn if frontier is non-monotonic (SCA found different local optima)
+    H_diff = np.diff(H)
+    if np.any(H_diff < -1e-6):
+        drops = np.where(H_diff < -1e-6)[0]
+        for d in drops:
+            logger.warning(
+                "  Non-monotonic frontier: H dropped from %.4f (α=%.4g) "
+                "to %.4f (α=%.4g) — SCA may have found a different local "
+                "optimum at higher α.",
+                float(H[d]), float(df["alpha"].iloc[d]),
+                float(H[d + 1]), float(df["alpha"].iloc[d + 1]),
+            )
+
+    return alpha_sel

@@ -686,28 +686,39 @@ class VAETrainer:
         if not self.early_stopping.stopped:
             self.early_stopping.restore_best(self.model)
 
-        # Overfit diagnostic: generalization gap AT best epoch (E*)
+        # Overfit diagnostic: symmetric ELBO comparison at best epoch (E*)
+        # Compute train_elbo using the same formula as val_elbo (excludes γ, λ_co)
+        # to ensure the ratio compares like-for-like quantities.
         best_val = self.early_stopping.best_loss
         best_epoch = self.early_stopping.best_epoch
-        if history and 0 <= best_epoch < len(history):
-            best_train = history[best_epoch]["train_loss"]
-        else:
-            best_train = history[-1]["train_loss"] if history else 1.0
-        overfit_ratio = best_val / max(best_train, 1e-8) if best_train > 0 else 0.0
-        overfit_flag = overfit_ratio < 0.85 or overfit_ratio > 1.5
+
+        train_eval_dataset = TensorDataset(train_windows)
+        train_eval_loader = DataLoader(
+            train_eval_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            **dl_kwargs,  # type: ignore[arg-type]
+        )
+        train_elbo = self.validate(train_eval_loader)
+
+        overfit_ratio = best_val / max(train_elbo, 1e-8) if train_elbo > 0 else 0.0
+        # Thresholds aligned with diagnostics.py health checks (warn=1.3, crit=1.8)
+        overfit_flag = overfit_ratio < 0.85 or overfit_ratio > 1.3
 
         if overfit_flag:
             logger.warning(
-                "Overfitting detected: val/train ratio=%.2f at best epoch %d "
-                "(best_val=%.1f, best_train=%.1f). "
+                "Overfitting detected: val_elbo/train_elbo ratio=%.2f at best epoch %d "
+                "(best_val=%.1f, train_elbo=%.1f). "
                 "Consider: increase weight_decay, add dropout, "
                 "reduce max_epochs, or try Mode P (learnable sigma_sq).",
-                overfit_ratio, best_epoch, best_val, best_train,
+                overfit_ratio, best_epoch, best_val, train_elbo,
             )
 
         return {
             "best_epoch": self.early_stopping.best_epoch,
             "best_val_elbo": self.early_stopping.best_loss,
+            "train_elbo": train_elbo,
             "history": history,
             "overfit_flag": overfit_flag,
             "overfit_ratio": overfit_ratio,

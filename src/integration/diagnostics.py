@@ -28,19 +28,24 @@ logger = logging.getLogger(__name__)
 # Health check thresholds
 # ---------------------------------------------------------------------------
 
+from src.config import VAEArchitectureConfig as _VAEArchConfig
+
+_default_vae = _VAEArchConfig()
+
 _THRESHOLDS = {
     "var_ratio_lo": 0.5,
     "var_ratio_hi": 2.0,
     "overfit_ratio_warn": 1.3,
     "overfit_ratio_crit": 1.8,
+    "overfit_ratio_underfit": 0.85,
     "au_min_warn": 5,
     "au_min_crit": 2,
     "h_norm_min": 0.3,
     "ep_min_warn": 0.05,
     "ep_min_crit": 0.01,
     "sharpe_min": 0.0,
-    "sigma_sq_min_default": 1e-4,
-    "sigma_sq_max_default": 10.0,
+    "sigma_sq_min_default": _default_vae.sigma_sq_min,
+    "sigma_sq_max_default": _default_vae.sigma_sq_max,
     "condition_number_warn": 1e6,
     "condition_number_crit": 1e8,
     "best_epoch_frac_lo": 0.15,
@@ -89,9 +94,11 @@ def training_diagnostics(fit_result: dict[str, Any] | None) -> dict[str, Any]:
     # insufficient training.
     elbo_last_10 = val_elbo[-min(10, n_epochs):]
     still_decreasing = False
-    if len(elbo_last_10) >= 5:
-        _x = list(range(len(elbo_last_10)))
-        _y = list(elbo_last_10)
+    # Filter NaN/Inf before regression (can occur if all batches fail)
+    finite_pairs = [(i, v) for i, v in enumerate(elbo_last_10) if np.isfinite(v)]
+    if len(finite_pairs) >= 5:
+        _x = [p[0] for p in finite_pairs]
+        _y = [p[1] for p in finite_pairs]
         regress_result = sp_stats.linregress(_x, _y)
         slope = float(regress_result[0])  # type: ignore[arg-type]
         p_value = float(regress_result[3])  # type: ignore[arg-type]
@@ -182,9 +189,13 @@ def latent_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
     kl_sorted = np.sort(kl_per_dim)[::-1] if len(kl_per_dim) > 0 else np.array([])
     kl_total = float(np.sum(kl_per_dim)) if len(kl_per_dim) > 0 else 0.0
 
-    # KL concentration: fraction of total KL in active dims
-    kl_active_total = float(np.sum(kl_per_dim[active_dims])) if active_dims else 0.0
-    kl_concentration = kl_active_total / max(kl_total, 1e-10)
+    # Top-3 KL fraction: how much the 3 strongest dims dominate.
+    # Replaces kl_concentration (sum(kl_active)/sum(kl_all)) which was always
+    # ~1.0 by construction — active dims capture nearly all KL mass.
+    kl_top3_fraction = (
+        float(np.sum(kl_sorted[:3]) / max(kl_total, 1e-10))
+        if len(kl_sorted) >= 3 else 1.0
+    )
 
     # Effective number of latent dims (exponential entropy of KL distribution)
     if kl_total > 0:
@@ -217,8 +228,7 @@ def latent_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
         "active_dims": active_dims,
         "kl_per_dim_sorted": kl_sorted.tolist(),
         "kl_total": kl_total,
-        "kl_active_total": kl_active_total,
-        "kl_concentration": kl_concentration,
+        "kl_top3_fraction": kl_top3_fraction,
         "kl_entropy": kl_entropy,
         "eff_latent_dims": eff_latent_dims,
         "B_shape": list(B.shape) if B.ndim >= 2 else [],
@@ -281,8 +291,8 @@ def risk_model_diagnostics(
         diag["condition_number"] = cond
 
     # Variance ratio and correlation
-    # IMPORTANT: only use stocks present in both the risk model and OOS returns
-    # to avoid filling missing returns with 0.0 (which biases variance down).
+    # Use only stocks present in both the risk model and OOS returns, and
+    # drop dates where any of these stocks have NaN (avoid fillna(0) bias).
     n_port = Sigma_assets.shape[0] if Sigma_assets.ndim == 2 else 0
     if n_port > 0 and returns_oos.shape[0] > 10:
         all_ids = inferred_stock_ids[:n_port]
@@ -290,18 +300,20 @@ def risk_model_diagnostics(
         avail_idx = np.where(avail_mask)[0]
         if len(avail_idx) > 2:
             avail_ids = [all_ids[i] for i in avail_idx]
-            oos_vals = np.asarray(returns_oos[avail_ids].fillna(0.0).values)
-            w_sub = w_vae[avail_idx]
-            # Re-normalize weights to sum to 1 on the available subset
-            w_sum = w_sub.sum()
-            if w_sum > 1e-10:
-                w_sub = w_sub / w_sum
-            Sigma_sub = Sigma_assets[np.ix_(avail_idx, avail_idx)]
+            oos_sub = returns_oos[avail_ids].dropna(how="any")
+            if len(oos_sub) > 10:
+                oos_vals = np.asarray(oos_sub.values)
+                w_sub = w_vae[avail_idx]
+                # Re-normalize weights to sum to 1 on the available subset
+                w_sum = w_sub.sum()
+                if w_sum > 1e-10:
+                    w_sub = w_sub / w_sum
+                Sigma_sub = Sigma_assets[np.ix_(avail_idx, avail_idx)]
 
-            var_ratio = realized_vs_predicted_variance(w_sub, Sigma_sub, oos_vals)
-            corr_rank = realized_vs_predicted_correlation(Sigma_sub, oos_vals)
-            diag["var_ratio_oos"] = var_ratio
-            diag["corr_rank_oos"] = corr_rank
+                var_ratio = realized_vs_predicted_variance(w_sub, Sigma_sub, oos_vals)
+                corr_rank = realized_vs_predicted_correlation(Sigma_sub, oos_vals)
+                diag["var_ratio_oos"] = var_ratio
+                diag["corr_rank_oos"] = corr_rank
 
     # In-sample explanatory power — uses estimation-rescaled B_A_by_date and
     # z_hat from training (matches the OLS that produced z_hat). This is
@@ -505,7 +517,12 @@ def benchmark_comparison(
     for bench_name, bench_results in benchmark_results.items():
         if not bench_results:
             continue
-        bench_m = bench_results[0]
+        # Aggregate across all folds using median (consistent with selection.py)
+        bench_m: dict[str, float] = {}
+        for m in compare_metrics:
+            values = [r.get(m, float("nan")) for r in bench_results]
+            valid = [v for v in values if np.isfinite(v)]
+            bench_m[m] = float(np.median(valid)) if valid else float("nan")
         wins = 0
         losses = 0
         deltas: dict[str, float] = {}
@@ -515,6 +532,12 @@ def benchmark_comparison(
             vae_val = vae_metrics.get(metric, float("nan"))
             bench_val = bench_m.get(metric, float("nan"))
             if np.isnan(vae_val) or np.isnan(bench_val):
+                logger.debug(
+                    "Skipping %s comparison for %s (vae=%s, bench=%s)",
+                    metric, bench_name,
+                    "NaN" if np.isnan(vae_val) else f"{vae_val:.4f}",
+                    "NaN" if np.isnan(bench_val) else f"{bench_val:.4f}",
+                )
                 continue
             delta = vae_val - bench_val
             deltas[metric] = delta
@@ -653,7 +676,7 @@ def run_health_checks(
 
     # --- Training checks ---
     if training.get("available", False):
-        # Overfit
+        # Overfit / underfit
         or_val = training.get("overfit_ratio", 1.0)
         if or_val > _THRESHOLDS["overfit_ratio_crit"]:
             _add("Training", "Overfit ratio", "CRITICAL",
@@ -661,6 +684,10 @@ def run_health_checks(
         elif or_val > _THRESHOLDS["overfit_ratio_warn"]:
             _add("Training", "Overfit ratio", "WARNING",
                  f"Overfit ratio = {or_val:.2f} > {_THRESHOLDS['overfit_ratio_warn']}")
+        elif or_val < _THRESHOLDS["overfit_ratio_underfit"]:
+            _add("Training", "Overfit ratio", "WARNING",
+                 f"Overfit ratio = {or_val:.2f} < {_THRESHOLDS['overfit_ratio_underfit']}"
+                 " — possible underfitting")
         else:
             _add("Training", "Overfit ratio", "OK",
                  f"Overfit ratio = {or_val:.2f}")

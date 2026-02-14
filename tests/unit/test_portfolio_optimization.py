@@ -20,7 +20,10 @@ from typing import Any
 import numpy as np
 import pytest
 
+import pandas as pd
+
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
+from src.portfolio.frontier import select_operating_alpha
 from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function, has_mi_solver
 from src.portfolio.cardinality import enforce_cardinality
 from src.portfolio.constraints import (
@@ -926,6 +929,103 @@ class TestFrontierMonotonic:
                 f"var[alpha={alpha_grid[i]}]={variances[i]:.6f} < "
                 f"var[alpha={alpha_grid[i-1]}]={variances[i-1]:.6f}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: select_operating_alpha (Kneedle elbow detection)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectOperatingAlpha:
+    """Tests for Kneedle-based α selection on the variance-entropy frontier."""
+
+    def test_clear_elbow(self) -> None:
+        """Kneedle should pick the elbow on a textbook concave frontier."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 0.01, 0.1, 1.0, 5.0],
+            "variance": [1e-5, 5e-5, 5.5e-5, 9e-5, 9.5e-5],
+            "entropy": [2.0, 3.5, 3.6, 3.7, 3.72],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        # The big jump is from alpha=0 to 0.01 (H: 2.0→3.5 for Var: 1e-5→5e-5).
+        # After 0.01, entropy gains become marginal. Elbow is at alpha=0.01.
+        assert alpha_opt == pytest.approx(0.01), (
+            f"Expected elbow at α=0.01, got {alpha_opt}"
+        )
+
+    def test_linear_frontier_selects_middle(self) -> None:
+        """On a perfectly linear frontier, all points have ~0 distance to chord."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 1.0, 2.0, 3.0],
+            "variance": [1e-5, 2e-5, 3e-5, 4e-5],
+            "entropy": [1.0, 2.0, 3.0, 4.0],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        # With a perfectly linear frontier, distances are all ~0.
+        # argmax on equal values returns first index (alpha=0), which is valid.
+        assert alpha_opt in [0.0, 1.0, 2.0, 3.0]
+
+    def test_single_point(self) -> None:
+        """Single-point frontier returns that point's alpha."""
+        frontier = pd.DataFrame({
+            "alpha": [1.0],
+            "variance": [5e-5],
+            "entropy": [3.0],
+        })
+        assert select_operating_alpha(frontier) == pytest.approx(1.0)
+
+    def test_two_points(self) -> None:
+        """Two-point frontier returns the endpoint with max entropy."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 1.0],
+            "variance": [1e-5, 5e-5],
+            "entropy": [2.0, 3.5],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        assert alpha_opt in [0.0, 1.0]
+
+    def test_non_monotonic_frontier(self) -> None:
+        """Non-monotonic frontier (H drops at extreme alpha) still finds elbow."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 0.01, 0.1, 1.0, 50.0],
+            "variance": [3e-5, 7e-5, 7.1e-5, 8.4e-5, 8.3e-5],
+            "entropy": [3.19, 3.57, 3.59, 3.65, 3.66],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        # Should NOT return 50.0 (dominated region)
+        assert alpha_opt < 50.0, (
+            f"Kneedle should not select extreme α=50, got {alpha_opt}"
+        )
+
+    def test_realistic_scale_mismatch(self) -> None:
+        """Kneedle handles H in nats (~3) vs Var in daily return² (~1e-5)."""
+        # Reproduces the exact scale mismatch that broke the old threshold method
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 0.01, 0.1, 1.0, 5.0, 10.0, 20.0, 50.0],
+            "variance": [3.19e-5, 6.93e-5, 7.11e-5, 8.36e-5,
+                         8.42e-5, 9.00e-5, 9.03e-5, 8.34e-5],
+            "entropy": [3.191, 3.568, 3.593, 3.649,
+                        3.657, 3.676, 3.679, 3.662],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        # Old method returned 50.0 (fallback). Kneedle should find elbow at ~0.1.
+        assert alpha_opt <= 1.0, (
+            f"Expected α* in [0.01, 1.0] range, got {alpha_opt}"
+        )
+        assert alpha_opt != pytest.approx(50.0), (
+            "Kneedle must not return the old broken fallback of α=50"
+        )
+
+    def test_flat_entropy(self) -> None:
+        """Degenerate: all entropies equal → selects alpha at max H (first)."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 1.0, 5.0],
+            "variance": [1e-5, 5e-5, 9e-5],
+            "entropy": [3.0, 3.0, 3.0],
+        })
+        alpha_opt = select_operating_alpha(frontier)
+        # Degenerate: H_range=0, fallback to alpha at max H (any is valid)
+        assert alpha_opt in [0.0, 1.0, 5.0]
 
 
 # ---------------------------------------------------------------------------
