@@ -1,0 +1,4634 @@
+{
+  "-P-H": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "-P-HIZ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "-P-S": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "0001753539": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "A": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AA-W": {
+    "status": "complete",
+    "last_date": "2016-11-08"
+  },
+  "AAAB": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAAC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAAP": {
+    "status": "complete",
+    "last_date": "2018-02-20"
+  },
+  "AABA": {
+    "status": "complete",
+    "last_date": "2019-11-06"
+  },
+  "AAC": {
+    "status": "complete",
+    "last_date": "2023-11-06"
+  },
+  "AAC-U": {
+    "status": "complete",
+    "last_date": "2023-11-06"
+  },
+  "AAC-WS": {
+    "status": "complete",
+    "last_date": "2023-11-06"
+  },
+  "AAC1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AACBR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AACBU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AACC": {
+    "status": "complete",
+    "last_date": "2013-10-17"
+  },
+  "AACE": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AACEU": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AACG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AACI": {
+    "status": "complete",
+    "last_date": "2024-08-15"
+  },
+  "AACIU": {
+    "status": "complete",
+    "last_date": "2024-08-15"
+  },
+  "AACIW": {
+    "status": "complete",
+    "last_date": "2024-08-15"
+  },
+  "AACOU": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AACPU": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AACQU": {
+    "status": "complete",
+    "last_date": "2021-06-24"
+  },
+  "AACT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AACT-U": {
+    "status": "complete",
+    "last_date": "2025-09-24"
+  },
+  "AACTWS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AADV": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAGR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAGRW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAH": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAI": {
+    "status": "complete",
+    "last_date": "2011-11-30"
+  },
+  "AAIC": {
+    "status": "complete",
+    "last_date": "2023-12-14"
+  },
+  "AAIC-P-B": {
+    "status": "complete",
+    "last_date": "2023-12-14"
+  },
+  "AAIC-P-C": {
+    "status": "complete",
+    "last_date": "2023-12-14"
+  },
+  "AAII": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAIN": {
+    "status": "complete",
+    "last_date": "2024-01-30"
+  },
+  "AAL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAM": {
+    "status": "complete",
+    "last_date": "2026-02-02"
+  },
+  "AAM-P-A": {
+    "status": "complete",
+    "last_date": "2023-09-21"
+  },
+  "AAM-P-B": {
+    "status": "complete",
+    "last_date": "2023-09-21"
+  },
+  "AAM-U": {
+    "status": "complete",
+    "last_date": "2026-02-02"
+  },
+  "AAM-WS": {
+    "status": "complete",
+    "last_date": "2026-02-02"
+  },
+  "AAMC": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAME": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAMI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAMRQ": {
+    "status": "complete",
+    "last_date": "2013-12-17"
+  },
+  "AAMWS": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAN": {
+    "status": "complete",
+    "last_date": "2024-10-03"
+  },
+  "AAN-W": {
+    "status": "complete",
+    "last_date": "2020-11-30"
+  },
+  "AANB": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAOI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAPC": {
+    "status": "complete",
+    "last_date": "2017-10-04"
+  },
+  "AAPG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAPGV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAPL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAQC": {
+    "status": "complete",
+    "last_date": "2022-12-15"
+  },
+  "AAQC-U": {
+    "status": "complete",
+    "last_date": "2022-12-15"
+  },
+  "AARD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AATI": {
+    "status": "complete",
+    "last_date": "2012-01-27"
+  },
+  "AAUC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AAV": {
+    "status": "complete",
+    "last_date": "2018-12-14"
+  },
+  "AAVL": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "AAWW": {
+    "status": "complete",
+    "last_date": "2023-04-03"
+  },
+  "AB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABACF": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABACQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABAN": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABAT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABAX": {
+    "status": "complete",
+    "last_date": "2018-08-01"
+  },
+  "ABBC": {
+    "status": "complete",
+    "last_date": "2011-10-10"
+  },
+  "ABBK": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABBV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABBV-27": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABBV-31": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABCB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABCD": {
+    "status": "complete",
+    "last_date": "2018-12-18"
+  },
+  "ABCL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABCM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABCO": {
+    "status": "complete",
+    "last_date": "2017-11-17"
+  },
+  "ABCO1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABCOU": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABCRQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABCW": {
+    "status": "complete",
+    "last_date": "2016-05-09"
+  },
+  "ABCWQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABD": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABDC": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABDR1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABDS": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABEO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABEOW": {
+    "status": "complete",
+    "last_date": "2019-12-20"
+  },
+  "ABEV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABFIQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABFS": {
+    "status": "complete",
+    "last_date": "2014-05-13"
+  },
+  "ABG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABGB": {
+    "status": "complete",
+    "last_date": "2016-05-05"
+  },
+  "ABGBY": {
+    "status": "complete",
+    "last_date": "2016-05-13"
+  },
+  "ABGI": {
+    "status": "complete",
+    "last_date": "2023-02-27"
+  },
+  "ABHH": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABII": {
+    "status": "complete",
+    "last_date": "2010-10-25"
+  },
+  "ABILW": {
+    "status": "complete",
+    "last_date": "2016-04-07"
+  },
+  "ABIO": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABIO1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABIX": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABIZQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABLLW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABLSQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABLV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABLVW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABLX": {
+    "status": "complete",
+    "last_date": "2018-06-22"
+  },
+  "ABM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABMD": {
+    "status": "complete",
+    "last_date": "2023-01-03"
+  },
+  "ABNB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABNG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABNJ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABNK1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABNTQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABOS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABOV": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABPI": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABPWW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABR-P-A": {
+    "status": "complete",
+    "last_date": "2021-06-23"
+  },
+  "ABR-P-B": {
+    "status": "complete",
+    "last_date": "2021-06-23"
+  },
+  "ABR-P-C": {
+    "status": "complete",
+    "last_date": "2021-06-23"
+  },
+  "ABR-P-D": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABR-P-E": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABR-P-F": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABR1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABRN": {
+    "status": "complete",
+    "last_date": "2018-04-26"
+  },
+  "ABS": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABSC": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABSI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABST": {
+    "status": "complete",
+    "last_date": "2023-07-27"
+  },
+  "ABT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABTE": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABTL": {
+    "status": "complete",
+    "last_date": "2017-10-06"
+  },
+  "ABTS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABTX": {
+    "status": "complete",
+    "last_date": "2022-09-30"
+  },
+  "ABTX1": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABTXQ": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABUS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABVA": {
+    "status": "complete",
+    "last_date": "2013-01-07"
+  },
+  "ABVC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABVE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABVEW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABVT": {
+    "status": "complete",
+    "last_date": "2013-07-10"
+  },
+  "ABVX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABWG": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ABXL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ABY": {
+    "status": "complete",
+    "last_date": "2017-11-13"
+  },
+  "ACA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACAB": {
+    "status": "complete",
+    "last_date": "2024-11-12"
+  },
+  "ACABU": {
+    "status": "complete",
+    "last_date": "2024-11-12"
+  },
+  "ACAC": {
+    "status": "complete",
+    "last_date": "2024-09-26"
+  },
+  "ACACU": {
+    "status": "complete",
+    "last_date": "2024-09-26"
+  },
+  "ACACW": {
+    "status": "complete",
+    "last_date": "2024-10-04"
+  },
+  "ACAD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACAH": {
+    "status": "complete",
+    "last_date": "2024-03-05"
+  },
+  "ACAHU": {
+    "status": "complete",
+    "last_date": "2024-03-05"
+  },
+  "ACAHW": {
+    "status": "complete",
+    "last_date": "2024-02-23"
+  },
+  "ACAMU": {
+    "status": "complete",
+    "last_date": "2026-02-07"
+  },
+  "ACGL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADBE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADSK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AES": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AFL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AIG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AIZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AJG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AKAM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ALB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ALGN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ALL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ALLE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMAT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMCR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AME": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMGN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AMZN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ANET": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AOS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "APTV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ARE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ARES": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ATO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AVB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AVGO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AVY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AWK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AXON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AXP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AZO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BAC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BALL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BAX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BBY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BDX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BEN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BF-B": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BIIB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BKNG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BKR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BLDR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BLK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BMY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BRK-B": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BRO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BSX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "BXP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "C": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CAG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CAH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CARR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CAT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CBOE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CBRE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CCI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CCL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CDNS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CDW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CEG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CFG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CHD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CHRW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CHTR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CINF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CLX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CMCSA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CME": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CMG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CMI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CMS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CNC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CNP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COIN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "COST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CPAY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CPB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CPRT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CPT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CRH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CRL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CRM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CRWD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CSCO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CSGP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CSX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CTAS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CTRA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CTSH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CTVA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CVNA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CVS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CVX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "D": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DAL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DASH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DDOG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DECK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DELL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DGX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DHI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DHR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DIS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DLR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DLTR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DOC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DOV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DOW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DPZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DRI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DTE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DUK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DVA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DVN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "DXCM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EBAY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ECL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ED": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EFX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EIX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ELV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EME": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EMR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EOG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EPAM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EQIX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EQR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EQT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ERIE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ES": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ESS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ETN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ETR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EVRG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EXC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EXE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EXPD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EXPE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "EXR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "F": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FANG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FAST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FCX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FDS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FDX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FFIV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FICO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FIS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FISV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FITB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FIX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FOX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FOXA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FRT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FSLR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FTNT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "FTV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GDDY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GEHC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GEN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GEV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GILD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GIS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GLW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GNRC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GOOG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GOOGL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GPC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GPN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GRMN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "GWW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HAL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HAS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HBAN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HCA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HIG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HII": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HLT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HOLX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HOOD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HPE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HPQ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HRL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HSIC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HSY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HUBB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HUM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "HWM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IBKR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IBM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ICE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IDXX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IEX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IFF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "INCY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "INTC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "INTU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "INVH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IQV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IRM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ISRG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ITW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "IVZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "J": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JBHT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JBL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JCI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JKHY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JNJ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "JPM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KDP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KEY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KEYS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KHC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KIM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KKR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KLAC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KMB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KMI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "KVUE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "L": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LDOS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LEN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LHX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LII": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LIN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LLY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LMT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LNT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LOW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LRCX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LULU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LUV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LVS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LYB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "LYV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MAA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MAR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MAS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MCD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MCHP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MCK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MCO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MDLZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MDT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MET": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "META": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MGM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MKC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MLM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MMM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MNST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MOH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MOS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MPC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MPWR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MRK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MRNA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MRSH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MSCI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MSFT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MSI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MTB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MTCH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MTD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "MU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NCLH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NDAQ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NDSN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NEE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NEM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NFLX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NKE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NOC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NOW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NRG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NSC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NTAP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NTRS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NUE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NVDA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NVR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NWS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NWSA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "NXPI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "O": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ODFL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "OKE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "OMC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ORCL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ORLY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "OTIS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "OXY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PANW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PAYC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PAYX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PCAR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PCG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PEG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PEP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PFE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PFG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PGR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PHM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PKG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PLD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PLTR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PNC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PNR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PNW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PODD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "POOL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PPG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PPL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PRU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PSA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PSKY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PSX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PTC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PWR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "PYPL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "Q": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "QCOM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RCL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "REG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "REGN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RJF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RMD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ROK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ROL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ROP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ROST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RSG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RTX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "RVTY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SBAC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SBUX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SCHW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SHW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SJM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SLB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SMCI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SNA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SNDK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SNPS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SOLV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SPG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SPGI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SRE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "STE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "STLD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "STT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "STX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "STZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "CIEN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SWK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SWKS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SYF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SYK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "SYY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "T": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TAP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TDG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TDY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TECH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TEL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TER": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TFC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TGT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TJX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TKO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TMO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TMUS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TPL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TPR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TRGP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TRMB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TROW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TRV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TSCO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TSLA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TSN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TTD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TTWO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TXN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TXT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "TYL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UAL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UBER": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UDR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UHS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ULTA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UNH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UNP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "UPS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "URI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "USB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "V": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VICI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VLO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VLTO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VMC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VRSK": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VRSN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VRTX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VTR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VTRS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "VZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WAB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WAT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WBD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WDAY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WDC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WEC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WELL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WFC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WMB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WMT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WRB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WSM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WST": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WTW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WY": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "WYNN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "XEL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "XOM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "XYL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "XYZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "YUM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ZBH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ZBRA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ZTS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACAP": {
+    "status": "complete",
+    "last_date": "2010-11-01"
+  },
+  "ACAQ": {
+    "status": "complete",
+    "last_date": "2023-10-19"
+  },
+  "ACAQ-U": {
+    "status": "complete",
+    "last_date": "2023-10-19"
+  },
+  "ACAQ-WS": {
+    "status": "complete",
+    "last_date": "2023-10-19"
+  },
+  "ACAS": {
+    "status": "complete",
+    "last_date": "2017-01-11"
+  },
+  "ACAT": {
+    "status": "complete",
+    "last_date": "2017-03-07"
+  },
+  "ACAX": {
+    "status": "complete",
+    "last_date": "2024-01-08"
+  },
+  "ACAXR": {
+    "status": "complete",
+    "last_date": "2024-01-08"
+  },
+  "ACAXU": {
+    "status": "complete",
+    "last_date": "2024-01-08"
+  },
+  "ACAXW": {
+    "status": "complete",
+    "last_date": "2024-01-08"
+  },
+  "ACB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACBA": {
+    "status": "complete",
+    "last_date": "2024-05-30"
+  },
+  "ACBAU": {
+    "status": "complete",
+    "last_date": "2024-05-30"
+  },
+  "ACBAW": {
+    "status": "complete",
+    "last_date": "2024-05-23"
+  },
+  "ACBI": {
+    "status": "complete",
+    "last_date": "2022-02-28"
+  },
+  "ACC": {
+    "status": "complete",
+    "last_date": "2022-08-09"
+  },
+  "ACCC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACCCU": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACCD": {
+    "status": "complete",
+    "last_date": "2025-04-08"
+  },
+  "ACCL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACCO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACCS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACCT": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACCUF": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACCVU": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACDC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACDCW": {
+    "status": "complete",
+    "last_date": "2023-11-07"
+  },
+  "ACDI": {
+    "status": "complete",
+    "last_date": "2023-02-15"
+  },
+  "ACDI-U": {
+    "status": "complete",
+    "last_date": "2023-02-15"
+  },
+  "ACEE": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACEI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACEL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACEL-WS": {
+    "status": "complete",
+    "last_date": "2020-07-15"
+  },
+  "ACEP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACER": {
+    "status": "complete",
+    "last_date": "2023-11-20"
+  },
+  "ACERW": {
+    "status": "complete",
+    "last_date": "2018-04-05"
+  },
+  "ACET": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACETQ": {
+    "status": "complete",
+    "last_date": "2019-10-01"
+  },
+  "ACEVU": {
+    "status": "complete",
+    "last_date": "2022-11-22"
+  },
+  "ACF": {
+    "status": "complete",
+    "last_date": "2011-10-10"
+  },
+  "ACFC": {
+    "status": "complete",
+    "last_date": "2018-05-29"
+  },
+  "ACGLN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACGLO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACGLP": {
+    "status": "complete",
+    "last_date": "2021-09-29"
+  },
+  "ACGN": {
+    "status": "complete",
+    "last_date": "2023-09-01"
+  },
+  "ACH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACHC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACHI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACHL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACHN": {
+    "status": "complete",
+    "last_date": "2020-01-28"
+  },
+  "ACHR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACHR-WS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACHV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACIA": {
+    "status": "complete",
+    "last_date": "2021-03-01"
+  },
+  "ACIC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACIC-U": {
+    "status": "complete",
+    "last_date": "2021-09-16"
+  },
+  "ACII": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACII-U": {
+    "status": "complete",
+    "last_date": "2022-12-01"
+  },
+  "ACIU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACIVU": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACIW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACKHQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACKI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACKIT": {
+    "status": "complete",
+    "last_date": "2022-08-31"
+  },
+  "ACKIU": {
+    "status": "complete",
+    "last_date": "2022-08-31"
+  },
+  "ACKIW": {
+    "status": "complete",
+    "last_date": "2022-08-31"
+  },
+  "ACLI": {
+    "status": "complete",
+    "last_date": "2010-12-31"
+  },
+  "ACLL": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACLNF": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACLO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACLS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACLX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACME": {
+    "status": "complete",
+    "last_date": "2017-01-11"
+  },
+  "ACMI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACMM": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACMP": {
+    "status": "complete",
+    "last_date": "2015-02-02"
+  },
+  "ACMR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACN1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACNB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACND": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACND-U": {
+    "status": "complete",
+    "last_date": "2021-07-21"
+  },
+  "ACND-WS": {
+    "status": "complete",
+    "last_date": "2021-07-21"
+  },
+  "ACNDWS": {
+    "status": "complete",
+    "last_date": "2022-09-29"
+  },
+  "ACNT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACO": {
+    "status": "complete",
+    "last_date": "2014-05-12"
+  },
+  "ACOG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACOM": {
+    "status": "complete",
+    "last_date": "2013-01-14"
+  },
+  "ACOM1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACONW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACOR": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACP-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACP-R": {
+    "status": "complete",
+    "last_date": "2021-06-15"
+  },
+  "ACP-R-W": {
+    "status": "complete",
+    "last_date": "2021-05-20"
+  },
+  "ACPC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACPRT": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACPRT-WI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACPW": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACQR": {
+    "status": "complete",
+    "last_date": "2023-03-10"
+  },
+  "ACQRU": {
+    "status": "complete",
+    "last_date": "2023-03-10"
+  },
+  "ACQRW": {
+    "status": "complete",
+    "last_date": "2023-03-10"
+  },
+  "ACR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACR-P-C": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACR-P-D": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACRE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACRO": {
+    "status": "complete",
+    "last_date": "2023-12-18"
+  },
+  "ACRO-U": {
+    "status": "complete",
+    "last_date": "2023-12-18"
+  },
+  "ACRO-WS": {
+    "status": "complete",
+    "last_date": "2023-12-18"
+  },
+  "ACRS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACRTQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACRU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACRUQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACRV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACRX": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACS": {
+    "status": "complete",
+    "last_date": "2011-02-14"
+  },
+  "ACSB": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACSC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACSF": {
+    "status": "complete",
+    "last_date": "2018-09-19"
+  },
+  "ACST": {
+    "status": "complete",
+    "last_date": "2024-10-07"
+  },
+  "ACT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACTA": {
+    "status": "complete",
+    "last_date": "2018-04-20"
+  },
+  "ACTC": {
+    "status": "complete",
+    "last_date": "2021-06-14"
+  },
+  "ACTCU": {
+    "status": "complete",
+    "last_date": "2021-06-14"
+  },
+  "ACTD": {
+    "status": "complete",
+    "last_date": "2022-07-21"
+  },
+  "ACTDU": {
+    "status": "complete",
+    "last_date": "2022-07-21"
+  },
+  "ACTDW": {
+    "status": "complete",
+    "last_date": "2022-07-21"
+  },
+  "ACTG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACTI": {
+    "status": "complete",
+    "last_date": "2011-02-17"
+  },
+  "ACTI1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACTI2": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACTMQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACTS": {
+    "status": "complete",
+    "last_date": "2016-12-20"
+  },
+  "ACTT": {
+    "status": "complete",
+    "last_date": "2020-06-24"
+  },
+  "ACTT1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACTTU": {
+    "status": "complete",
+    "last_date": "2020-06-24"
+  },
+  "ACTTW": {
+    "status": "complete",
+    "last_date": "2020-06-24"
+  },
+  "ACTU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACTV": {
+    "status": "complete",
+    "last_date": "2025-10-24"
+  },
+  "ACTV1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACV-A": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACV.A": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACV1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACVA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACVC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ACW": {
+    "status": "complete",
+    "last_date": "2016-11-28"
+  },
+  "ACXM": {
+    "status": "complete",
+    "last_date": "2018-10-01"
+  },
+  "ACXP": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ACY": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAC1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADACU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAL": {
+    "status": "complete",
+    "last_date": "2023-05-02"
+  },
+  "ADALU": {
+    "status": "complete",
+    "last_date": "2023-05-02"
+  },
+  "ADALW": {
+    "status": "complete",
+    "last_date": "2023-05-02"
+  },
+  "ADAM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMH": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAML": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAMZ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADAPQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADAX": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADC-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADCC": {
+    "status": "complete",
+    "last_date": "2018-12-12"
+  },
+  "ADCT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADEA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADEA-V": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADEP": {
+    "status": "complete",
+    "last_date": "2015-10-26"
+  },
+  "ADER": {
+    "status": "complete",
+    "last_date": "2023-09-25"
+  },
+  "ADERU": {
+    "status": "complete",
+    "last_date": "2023-09-25"
+  },
+  "ADERW": {
+    "status": "complete",
+    "last_date": "2023-09-25"
+  },
+  "ADES": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADEX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADEX-U": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADF-U": {
+    "status": "complete",
+    "last_date": "2021-12-02"
+  },
+  "ADFC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADGE": {
+    "status": "complete",
+    "last_date": "2017-07-14"
+  },
+  "ADGF": {
+    "status": "complete",
+    "last_date": "2012-06-11"
+  },
+  "ADGI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADGM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADHD": {
+    "status": "complete",
+    "last_date": "2017-11-15"
+  },
+  "ADIL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADILW": {
+    "status": "complete",
+    "last_date": "2023-07-27"
+  },
+  "ADK": {
+    "status": "complete",
+    "last_date": "2017-10-02"
+  },
+  "ADK-P-A": {
+    "status": "complete",
+    "last_date": "2017-09-29"
+  },
+  "ADLR": {
+    "status": "complete",
+    "last_date": "2011-12-22"
+  },
+  "ADLTQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADMA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADMGQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADMP": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADMS": {
+    "status": "complete",
+    "last_date": "2021-11-24"
+  },
+  "ADMYU": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADN": {
+    "status": "complete",
+    "last_date": "2025-10-29"
+  },
+  "ADNC": {
+    "status": "complete",
+    "last_date": "2015-07-09"
+  },
+  "ADNT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADNT-W": {
+    "status": "complete",
+    "last_date": "2016-10-28"
+  },
+  "ADO": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADOC": {
+    "status": "complete",
+    "last_date": "2024-03-21"
+  },
+  "ADOCR": {
+    "status": "complete",
+    "last_date": "2024-03-21"
+  },
+  "ADOCU": {
+    "status": "complete",
+    "last_date": "2020-12-09"
+  },
+  "ADPC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADPI": {
+    "status": "complete",
+    "last_date": "2012-02-28"
+  },
+  "ADPT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADPTQ": {
+    "status": "complete",
+    "last_date": "2017-11-01"
+  },
+  "ADRAU": {
+    "status": "complete",
+    "last_date": "2023-03-17"
+  },
+  "ADRO": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADRT": {
+    "status": "complete",
+    "last_date": "2024-10-10"
+  },
+  "ADRT-U": {
+    "status": "complete",
+    "last_date": "2024-10-10"
+  },
+  "ADS-W": {
+    "status": "complete",
+    "last_date": "2021-11-05"
+  },
+  "ADS-WI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADSC": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADSE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADSEW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADSI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADSP": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADSPQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADSW": {
+    "status": "complete",
+    "last_date": "2021-11-05"
+  },
+  "ADT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADTCQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADTH": {
+    "status": "complete",
+    "last_date": "2024-06-21"
+  },
+  "ADTHW": {
+    "status": "complete",
+    "last_date": "2024-06-21"
+  },
+  "ADTN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADTX": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADUS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADV": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADVB": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADVM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADVNQ": {
+    "status": "complete",
+    "last_date": "2012-03-14"
+  },
+  "ADVS": {
+    "status": "complete",
+    "last_date": "2015-07-16"
+  },
+  "ADXN": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "ADXSW": {
+    "status": "complete",
+    "last_date": "2018-10-18"
+  },
+  "ADY": {
+    "status": "complete",
+    "last_date": "2013-10-17"
+  },
+  "ADYN": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "ADZA": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AE": {
+    "status": "complete",
+    "last_date": "2025-02-04"
+  },
+  "AEA": {
+    "status": "complete",
+    "last_date": "2013-05-01"
+  },
+  "AEAC": {
+    "status": "complete",
+    "last_date": "2023-01-20"
+  },
+  "AEACU": {
+    "status": "complete",
+    "last_date": "2023-01-20"
+  },
+  "AEACW": {
+    "status": "complete",
+    "last_date": "2023-01-20"
+  },
+  "AEAE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEAEU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEAEW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEAQ": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEAQU": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEAQW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEB": {
+    "status": "complete",
+    "last_date": "2021-09-14"
+  },
+  "AEBI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEBIV": {
+    "status": "complete",
+    "last_date": "2025-07-01"
+  },
+  "AEC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AED": {
+    "status": "complete",
+    "last_date": "2019-06-14"
+  },
+  "AED-CL": {
+    "status": "complete",
+    "last_date": "2019-06-14"
+  },
+  "AEFC": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEG": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEGN": {
+    "status": "complete",
+    "last_date": "2021-05-17"
+  },
+  "AEGN1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AEGR": {
+    "status": "complete",
+    "last_date": "2016-12-07"
+  },
+  "AEH": {
+    "status": "complete",
+    "last_date": "2019-12-13"
+  },
+  "AEH-CL": {
+    "status": "complete",
+    "last_date": "2019-12-13"
+  },
+  "AEH1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AEHA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEHAU": {
+    "status": "complete",
+    "last_date": "2023-02-14"
+  },
+  "AEHL": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEHR": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEIBU": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AEIS": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEK": {
+    "status": "complete",
+    "last_date": "2018-05-14"
+  },
+  "AEL": {
+    "status": "complete",
+    "last_date": "2024-05-02"
+  },
+  "AEM": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEMD": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEMI": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AENT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AENTW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AENZ": {
+    "status": "complete",
+    "last_date": "2023-12-14"
+  },
+  "AEO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEON": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEON-WS": {
+    "status": "complete",
+    "last_date": "2023-07-31"
+  },
+  "AEP-P-C": {
+    "status": "complete",
+    "last_date": "2020-09-30"
+  },
+  "AEPI": {
+    "status": "complete",
+    "last_date": "2017-01-30"
+  },
+  "AEPPL": {
+    "status": "complete",
+    "last_date": "2022-03-14"
+  },
+  "AEPPZ": {
+    "status": "complete",
+    "last_date": "2023-08-24"
+  },
+  "AER": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AER-79": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AER1": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AERAY": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AERI": {
+    "status": "complete",
+    "last_date": "2023-01-03"
+  },
+  "AERL": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AERO": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AERT": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AERTW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AES-P-C": {
+    "status": "complete",
+    "last_date": "2017-05-24"
+  },
+  "AES-P-C-CL": {
+    "status": "complete",
+    "last_date": "2017-06-22"
+  },
+  "AESC": {
+    "status": "complete",
+    "last_date": "2024-02-14"
+  },
+  "AESI": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AESK": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AESP": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AET": {
+    "status": "complete",
+    "last_date": "2018-11-28"
+  },
+  "AETCQ": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AEUA": {
+    "status": "complete",
+    "last_date": "2018-06-07"
+  },
+  "AEVA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEVAW": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEXA": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEY": {
+    "status": "complete",
+    "last_date": "2026-02-08"
+  },
+  "AEYE": {
+    "status": "complete",
+    "last_date": "2026-02-06"
+  },
+  "AEZ": {
+    "status": "complete",
+    "last_date": "2010-12-30"
+  },
+  "AF": {
+    "status": "complete",
+    "last_date": "2017-10-02"
+  },
+  "AF-P-C": {
+    "status": "complete",
+    "last_date": "2017-09-29"
+  },
+  "AFA": {
+    "status": "complete",
+    "last_date": "2017-08-24"
+  },
+  "AFAC": {
+    "status": "complete",
+    "last_date": "2022-12-08"
+  },
+  "AFACU": {
+    "status": "complete",
+    "last_date": "2022-12-08"
+  },
+  "AFACW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "ADACW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFAM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFAQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFAQU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFAQW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFAR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFARU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFARW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFBC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFBI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCG-V": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFCX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFFI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFFIQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFFMQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFFX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGC": {
+    "status": "complete",
+    "last_date": "2026-02-12"
+  },
+  "AFGD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGE-CL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFGL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFI-W": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFIN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFIS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFJK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFJKR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFJKU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFLX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFMD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFOP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFRI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFRIW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFRM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFRPP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFS-A": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFSC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFSD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFSI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFTR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFTR-U": {
+    "status": "complete",
+    "last_date": "2023-08-15"
+  },
+  "AFTR-WS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFTX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFW-CL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AFYA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGA1": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGAC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGAE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGAM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGAM1": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGATQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGBA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGBAR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGBAU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGBK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCUU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGCX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGEN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGFS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGFSW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGGR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGGRU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGGRW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGIG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGII": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGIIL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGIL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGIO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AGIQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "AESPU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGIS": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGIXQ": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGL": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGLE": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGLFQ": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-A": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-B": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-B-CL": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-C": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-D": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-E": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-F": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-G": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGM-P-H": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGMB": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGMH": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGN": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGN-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGN1": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNC": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCB": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCL": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCM": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCN": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCO": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNCP": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGNT": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGO": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGO-P-E": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGO-P-F": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGP": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGPU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGR": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRI": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRIU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRIW": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRO": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRPA": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRX": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGRZ": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGS": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGS1": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGTC": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGTI": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGTO": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGX": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGY": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AGYS": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHAC": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHACU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHCI": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHCI1": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHCO": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHE": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHG": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHGP": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHH": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHH-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHI": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHIZQ": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL-P-B": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL-P-B-CL": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL-P-C": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL-P-D": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL-P-E": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHL1": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHLS": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHM": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHMA": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHNCQ": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHOM": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHP": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHP-P-B": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHPA": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHPAU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHR": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHRN": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHRNU": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHRNW": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  },
+  "AHS": {
+    "status": "complete",
+    "last_date": "2026-02-14"
+  }
+}

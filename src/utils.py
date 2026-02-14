@@ -134,8 +134,10 @@ def get_amp_config(device: torch.device) -> dict[str, object]:
     """
     Determine Automatic Mixed Precision (AMP) configuration for the given device.
 
-    - MPS (Apple Silicon): autocast float16, GradScaler enabled
     - CUDA (NVIDIA GPU): autocast float16, GradScaler enabled
+    - MPS (Apple Silicon): AMP disabled — MPS float16 autocast is unreliable
+      and causes NaN in intermediate computations (reductions, exp, log).
+      Apple Silicon unified memory makes AMP less beneficial anyway.
     - CPU: AMP disabled (full float32)
 
     :param device (torch.device): Target compute device
@@ -144,7 +146,7 @@ def get_amp_config(device: torch.device) -> dict[str, object]:
     """
     device_type = device.type
 
-    if device_type in ("mps", "cuda"):
+    if device_type == "cuda":
         return {
             "use_amp": True,
             "device_type": device_type,
@@ -152,9 +154,10 @@ def get_amp_config(device: torch.device) -> dict[str, object]:
             "use_scaler": True,
         }
 
+    # MPS and CPU: full float32 (MPS float16 autocast causes NaN)
     return {
         "use_amp": False,
-        "device_type": "cpu",
+        "device_type": device_type if device_type == "mps" else "cpu",
         "dtype": torch.float32,
         "use_scaler": False,
     }

@@ -176,17 +176,17 @@ class VAEArchitectureConfig:
     :param r_max (float): Maximum parameter/data ratio for capacity guard
     """
 
-    K: int = 200
+    K: int = 50
     sigma_sq_init: float = 1.0
     sigma_sq_min: float = 1e-4
     sigma_sq_max: float = 10.0
     window_length: int = 504
     n_features: int = 2
     r_max: float = 5.0
-    dropout: float = 0.1
+    dropout: float = 0.2
 
     def __post_init__(self) -> None:
-        _validate_range("K", self.K, default=200, lo=1)
+        _validate_range("K", self.K, default=50, lo=1)
         _validate_range("window_length", self.window_length, default=504, lo=63)
         _validate_range("n_features", self.n_features, default=2, lo=1)
         _validate_range("sigma_sq_min", self.sigma_sq_min, default=1e-4,
@@ -194,7 +194,7 @@ class VAEArchitectureConfig:
         _validate_range("sigma_sq_max", self.sigma_sq_max, default=10.0,
                         lo=0, lo_exclusive=True)
         _validate_range("r_max", self.r_max, default=5.0, lo=0, lo_exclusive=True)
-        _validate_range("dropout", self.dropout, default=0.1, lo=0.0, hi=0.5)
+        _validate_range("dropout", self.dropout, default=0.2, lo=0.0, hi=0.5)
         _validate_pair("sigma_sq_min", self.sigma_sq_min,
                        "sigma_sq_max", self.sigma_sq_max, strict=True)
 
@@ -283,15 +283,15 @@ class TrainingConfig:
         CUDA/MPS (15-30% speedup). Initial compilation takes ~30-60s.
     """
 
-    max_epochs: int = 100
+    max_epochs: int = 250
     batch_size: int = 512
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-3
     weight_decay: float = 1e-5
     adam_betas: tuple[float, float] = (0.9, 0.999)
     adam_eps: float = 1e-8
-    patience: int = 10
-    lr_patience: int = 5
-    lr_factor: float = 0.5
+    patience: int = 20
+    lr_patience: int = 10
+    lr_factor: float = 0.75
     n_strata: int = 15
     curriculum_phase1_frac: float = 0.30
     curriculum_phase2_frac: float = 0.30
@@ -300,13 +300,13 @@ class TrainingConfig:
     compile_model: bool = True
 
     def __post_init__(self) -> None:
-        _validate_range("max_epochs", self.max_epochs, default=100, lo=1)
+        _validate_range("max_epochs", self.max_epochs, default=250, lo=1)
         _validate_range("batch_size", self.batch_size, default=512, lo=1)
-        _validate_range("learning_rate", self.learning_rate, default=1e-4,
+        _validate_range("learning_rate", self.learning_rate, default=5e-3,
                         lo=0, lo_exclusive=True)
-        _validate_range("patience", self.patience, default=10, lo=1)
-        _validate_range("lr_patience", self.lr_patience, default=5, lo=1)
-        _validate_range("lr_factor", self.lr_factor, default=0.5,
+        _validate_range("patience", self.patience, default=20, lo=1)
+        _validate_range("lr_patience", self.lr_patience, default=10, lo=1)
+        _validate_range("lr_factor", self.lr_factor, default=0.75,
                         lo=0, hi=1, lo_exclusive=True, hi_exclusive=True)
         _validate_range("n_strata", self.n_strata, default=15, lo=1)
         _validate_range("curriculum_phase1_frac", self.curriculum_phase1_frac,
@@ -436,7 +436,7 @@ class PortfolioConfig:
     kappa_2: float = 7.5
     delta_bar: float = 0.01
     tau_max: float = 0.30
-    n_starts: int = 5
+    n_starts: int = 3
     sca_max_iter: int = 100
     sca_tol: float = 1e-8
     armijo_c: float = 1e-4
@@ -461,7 +461,7 @@ class PortfolioConfig:
         _validate_range("phi", self.phi, default=25.0, lo=0)
         _validate_range("kappa_1", self.kappa_1, default=0.1, lo=0)
         _validate_range("kappa_2", self.kappa_2, default=7.5, lo=0)
-        _validate_range("n_starts", self.n_starts, default=5, lo=1)
+        _validate_range("n_starts", self.n_starts, default=3, lo=1)
         _validate_range("sca_max_iter", self.sca_max_iter, default=100, lo=1)
         _validate_range("sca_tol", self.sca_tol, default=1e-8,
                         lo=0, lo_exclusive=True)

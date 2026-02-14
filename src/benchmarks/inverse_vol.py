@@ -48,6 +48,14 @@ class InverseVolatility(BenchmarkModel):
             R = returns[universe].dropna()
             self.sigma = np.asarray(R.std(axis=0)) * np.sqrt(252)
 
+        # Replace NaN with median of valid values (stocks missing 252-day
+        # warm-up get the typical universe volatility instead of poisoning
+        # the entire weight vector via NaN propagation).
+        valid_mask = np.isfinite(self.sigma) & (self.sigma > 0)
+        if valid_mask.any() and not valid_mask.all():
+            median_vol = float(np.median(self.sigma[valid_mask]))
+            self.sigma[~valid_mask] = median_vol
+
         # Ensure positive
         self.sigma = np.maximum(self.sigma, 1e-10)
 
