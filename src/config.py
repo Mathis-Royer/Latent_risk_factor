@@ -345,12 +345,18 @@ class InferenceConfig:
     :param au_threshold (float): KL threshold for active unit detection (nats)
     :param r_min (int): Minimum observations-per-parameter ratio for AU_max_stat
     :param aggregation_method (str): Method for aggregating profiles ('mean')
+    :param aggregation_half_life (int): Exponential decay half-life in
+        windows for profile aggregation.  0 = uniform mean (original
+        behavior).  Typical: 60 (≈ 1260 trading days at stride=21,
+        i.e. ~5 years).  Larger values give more weight to recent
+        windows, making B_A reflect the current factor structure.
     """
 
     batch_size: int = 512
     au_threshold: float = 0.01
     r_min: int = 2
     aggregation_method: str = "mean"
+    aggregation_half_life: int = 0
 
     def __post_init__(self) -> None:
         _validate_range("batch_size", self.batch_size, default=512, lo=1)
@@ -359,6 +365,8 @@ class InferenceConfig:
         _validate_range("r_min", self.r_min, default=2, lo=1)
         _validate_in("aggregation_method", self.aggregation_method,
                      {"mean"}, default="mean")
+        _validate_range("aggregation_half_life", self.aggregation_half_life,
+                        default=0, lo=0)
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +383,11 @@ class RiskModelConfig:
     :param d_eps_floor (float): Floor for idiosyncratic variance
     :param conditioning_threshold (float): Condition number threshold for ridge
     :param ridge_scale (float): Scale factor for minimal ridge regularization
+    :param sigma_z_eigenvalue_pct (float): Fraction of total Σ_z variance
+        retained after eigenvalue truncation.  1.0 = keep all eigenvalues
+        (no truncation, original behavior).  0.95 = discard eigenvalues
+        contributing less than 5% of total variance — removes noisy
+        factor dimensions.  Range: (0, 1].
     """
 
     winsorize_lo: float = 5.0
@@ -382,6 +395,7 @@ class RiskModelConfig:
     d_eps_floor: float = 1e-6
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
+    sigma_z_eigenvalue_pct: float = 1.0
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
@@ -396,6 +410,10 @@ class RiskModelConfig:
                         lo=0, lo_exclusive=True)
         _validate_pair("winsorize_lo", self.winsorize_lo,
                        "winsorize_hi", self.winsorize_hi, strict=True)
+        _validate_range("sigma_z_eigenvalue_pct",
+                        self.sigma_z_eigenvalue_pct,
+                        default=1.0, lo=0, hi=1,
+                        lo_exclusive=True)
 
 
 # ---------------------------------------------------------------------------

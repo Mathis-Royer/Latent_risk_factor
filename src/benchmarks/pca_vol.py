@@ -92,22 +92,25 @@ class PCAVolRiskParity(PCAFactorRiskParity):
         self.k = k_star
 
         # Extract loadings for the original n stocks only (first n columns)
+        # Unscaled eigenvectors in z-scored space, then rescale to original
+        # return space by multiplying each row i by the stock's std.
+        # This ensures B @ diag(eigenvalues) @ B^T is in original variance units.
         n_orig = len(available)
-        B_full = Vt[:k_star].T * S[:k_star]  # (2n, k)
-        self.B_PCA = B_full[:n_orig]  # (n, k) — only return-dimension loadings
+        B_z = Vt[:k_star, :n_orig].T  # (n, k) — z-scored-space eigenvectors
+        self.B_PCA = B_z * R_std.reshape(-1, 1)  # (n, k) — original-scale loadings
 
-        # Eigenvalues
+        # Eigenvalues: S²/T (variance carried here, NOT in B)
         self.eigenvalues = (S[:k_star] ** 2) / T_est
 
         # B_prime = B_PCA (Σ_z already diagonal)
         self.B_prime = self.B_PCA.copy()
 
-        # Idiosyncratic variances (on original returns)
-        # Project factor returns onto original return space
-        F_k = U[:, :k_star] @ np.diag(S[:k_star])
-        R_approx = F_k @ Vt[:k_star, :n_orig]
-        R_orig_centered = R_mat - R_mat.mean(axis=0, keepdims=True)
-        residuals = R_orig_centered - R_approx
+        # Idiosyncratic variances in original return space
+        # Reconstruct z-scored returns, then convert to original scale
+        R_z_approx = U[:, :k_star] @ np.diag(S[:k_star]) @ Vt[:k_star, :n_orig]
+        R_orig_approx = R_z_approx * R_std  # back to original scale
+        R_orig_centered = R_mat - R_mean
+        residuals = R_orig_centered - R_orig_approx
 
         self.D_eps = np.maximum(
             np.var(residuals, axis=0, ddof=1),

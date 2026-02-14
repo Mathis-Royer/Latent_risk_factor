@@ -147,7 +147,7 @@ def generate_diagnostic_markdown(
         lines.append(f"- **Overfit flag**: {training.get('overfit_flag', False)}")
         lines.append(f"- **Overfit ratio**: {_fmt(training.get('overfit_ratio', 1.0))}")
         lines.append(
-            f"- **Still decreasing at end**: {training.get('still_decreasing_at_end', False)}"
+            f"- **Val ELBO still decreasing at end**: {training.get('still_decreasing_at_end', False)}"
         )
         lines.append(f"- **LR reductions**: {training.get('n_lr_reductions', 0)}")
         lines.append("")
@@ -401,7 +401,7 @@ def _generate_recommendations(diagnostics: dict[str, Any]) -> list[str]:
     # Training recommendations
     if training.get("still_decreasing_at_end", False):
         recs.append(
-            "**Increase max_epochs**: loss was still decreasing at the end of training. "
+            "**Increase max_epochs**: val ELBO was still decreasing at the end of training. "
             "The model may benefit from longer training."
         )
 

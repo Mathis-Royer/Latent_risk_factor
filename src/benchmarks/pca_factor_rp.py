@@ -58,9 +58,11 @@ class PCAFactorRiskParity(BenchmarkModel):
         k_star = self._bai_ng_ic2(R_centered, k_max=min(k_max, min(T_est, n) - 1))
         k_star = max(1, k_star)
 
-        # PCA loadings: B_PCA (n × k)
+        # PCA loadings: B_PCA (n × k) — unscaled eigenvectors
+        # Variance is carried entirely by eigenvalues = S²/T, NOT by B.
+        # Using B = Vt.T * S would double-count S in B @ diag(S²/T) @ B^T.
         self.k = k_star
-        self.B_PCA = Vt[:k_star].T * S[:k_star]  # (n, k) — scaled loadings
+        self.B_PCA = Vt[:k_star].T  # (n, k) — pure eigenvector directions
 
         # Factor covariance: diagonal (principal components are orthogonal)
         # eigenvalues = S²/T
