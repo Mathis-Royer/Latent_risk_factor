@@ -22,6 +22,7 @@ class EarlyStopping:
 
     Attributes:
         patience: int — epochs without improvement before stopping
+        min_delta: float — minimum ELBO improvement to reset counter
         best_loss: float — best validation ELBO seen
         best_epoch: int — epoch of the best checkpoint (E*)
         counter: int — epochs since last improvement
@@ -29,11 +30,15 @@ class EarlyStopping:
         stopped: bool — whether early stopping was triggered
     """
 
-    def __init__(self, patience: int = 10) -> None:
+    def __init__(self, patience: int = 10, min_delta: float = 0.0) -> None:
         """
         :param patience (int): Number of epochs without improvement before stopping
+        :param min_delta (float): Minimum absolute ELBO decrease to count as
+            improvement. E.g. min_delta=0.5 means val_loss must drop by at
+            least 0.5 below best_loss to reset the counter.
         """
         self.patience = patience
+        self.min_delta = max(0.0, min_delta)
         self.best_loss = float("inf")
         self.best_epoch = 0
         self.counter = 0
@@ -72,7 +77,7 @@ class EarlyStopping:
 
         self._nan_streak = 0
 
-        if val_loss < self.best_loss:
+        if val_loss < self.best_loss - self.min_delta:
             self.best_loss = val_loss
             self.best_epoch = epoch
             self.counter = 0

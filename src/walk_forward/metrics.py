@@ -229,6 +229,112 @@ def factor_explanatory_power_dynamic(
     return float(1.0 - residual_var / total_var)
 
 
+def factor_explanatory_power_oos(
+    B_A_port: np.ndarray,
+    returns_oos: "pd.DataFrame",
+    stock_ids: list[int],
+    conditioning_threshold: float = 1e6,
+    ridge_scale: float = 1e-6,
+) -> dict[str, float]:
+    """
+    Out-of-sample factor explanatory power using fixed B_A_port.
+
+    For each OOS date t, runs cross-sectional OLS:
+        z_hat_t = (B^T B)^{-1} B^T r_t
+    then computes R² = 1 - Var(residuals) / Var(returns).
+
+    This is the correct OOS metric: B was estimated on training data,
+    and we measure how well its column space captures OOS return cross-sections.
+
+    Also returns in-sample-equivalent metrics for comparison.
+
+    :param B_A_port (np.ndarray): Portfolio-rescaled exposure (n, AU)
+    :param returns_oos (pd.DataFrame): OOS log-returns (dates x stocks)
+    :param stock_ids (list[int]): Stock IDs matching B_A_port rows
+    :param conditioning_threshold (float): κ threshold for ridge fallback
+    :param ridge_scale (float): Ridge regularization scale
+
+    :return result (dict): {ep_oos, n_dates, avg_cs_r2, z_hat_oos_std}
+    """
+    from src.risk_model.conditioning import safe_solve
+
+    n, AU = B_A_port.shape
+    sid_to_col: dict[int, int] = {col: j for j, col in enumerate(returns_oos.columns)}
+    ret_values = returns_oos.values
+
+    # Map stock_ids to return columns
+    col_indices = []
+    valid_rows = []
+    for i, sid in enumerate(stock_ids[:n]):
+        if sid in sid_to_col:
+            col_indices.append(sid_to_col[sid])
+            valid_rows.append(i)
+
+    if len(valid_rows) < AU:
+        return {"ep_oos": 0.0, "n_dates": 0, "avg_cs_r2": 0.0, "z_hat_oos_std": 0.0}
+
+    B_valid = B_A_port[valid_rows]  # (n_valid, AU)
+    col_arr = np.array(col_indices)
+
+    all_actual: list[float] = []
+    all_predicted: list[float] = []
+    cs_r2_list: list[float] = []
+    z_hat_oos_list: list[np.ndarray] = []
+
+    for t in range(ret_values.shape[0]):
+        r_t = ret_values[t, col_arr].astype(np.float64)
+        nan_mask = ~np.isnan(r_t)
+        if nan_mask.sum() < AU:
+            continue
+
+        r_valid = r_t[nan_mask]
+        B_date = B_valid[nan_mask]
+
+        z_hat_t = safe_solve(
+            B_date, r_valid,
+            conditioning_threshold=conditioning_threshold,
+            ridge_scale=ridge_scale,
+        )
+        z_hat_oos_list.append(z_hat_t)
+
+        predicted_t = B_date @ z_hat_t
+        residuals_t = r_valid - predicted_t
+
+        for i in range(len(r_valid)):
+            all_actual.append(float(r_valid[i]))
+            all_predicted.append(float(predicted_t[i]))
+
+        # Per-date cross-sectional R²
+        ss_tot = float(np.sum((r_valid - r_valid.mean()) ** 2))
+        ss_res = float(np.sum(residuals_t ** 2))
+        if ss_tot > 1e-12:
+            cs_r2_list.append(1.0 - ss_res / ss_tot)
+
+    if len(all_actual) < 10:
+        return {"ep_oos": 0.0, "n_dates": 0, "avg_cs_r2": 0.0, "z_hat_oos_std": 0.0}
+
+    actual = np.array(all_actual)
+    predicted = np.array(all_predicted)
+    residuals = actual - predicted
+
+    total_var = float(np.var(actual))
+    residual_var = float(np.var(residuals))
+
+    ep = float(1.0 - residual_var / total_var) if total_var > 1e-10 else 0.0
+
+    z_hat_std = 0.0
+    if z_hat_oos_list:
+        z_oos = np.stack(z_hat_oos_list)
+        z_hat_std = float(np.mean(np.std(z_oos, axis=0)))
+
+    return {
+        "ep_oos": ep,
+        "n_dates": len(cs_r2_list),
+        "avg_cs_r2": float(np.mean(cs_r2_list)) if cs_r2_list else 0.0,
+        "z_hat_oos_std": z_hat_std,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Layer 3: Portfolio Quality
 # ---------------------------------------------------------------------------
