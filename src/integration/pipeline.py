@@ -26,6 +26,7 @@ from src.benchmarks.inverse_vol import InverseVolatility
 from src.benchmarks.min_variance import MinimumVariance
 from src.benchmarks.pca_factor_rp import PCAFactorRiskParity
 from src.benchmarks.pca_vol import PCAVolRiskParity
+from src.benchmarks.sp500_index import SP500TotalReturn
 from src.config import PipelineConfig
 from src.data_pipeline.windowing import create_windows
 from src.data_pipeline.features import compute_rolling_realized_vol
@@ -84,6 +85,7 @@ BENCHMARK_CLASSES: dict[str, type] = {
     "erc": EqualRiskContribution,
     "pca_factor_rp": PCAFactorRiskParity,
     "pca_vol": PCAVolRiskParity,
+    "sp500_index": SP500TotalReturn,
 }
 
 # Variance-targeting scale bounds (safety clamps)
@@ -930,12 +932,23 @@ class FullPipeline:
         self.record_vae_result(0, vae_metrics, e_star)
 
         # --- Step 6: Benchmarks (optional) ---
+        benchmark_weights: dict[str, dict[str, Any]] = {}
         if run_benchmarks:
             for bench_name, bench_cls in BENCHMARK_CLASSES.items():
                 bench_metrics = self._run_benchmark_fold(
                     bench_name, bench_cls, fold, returns, trailing_vol,
                     None, True,
+                    store_weights=True,
                 )
+                # Extract weight/return data before recording metrics
+                bw_entry: dict[str, Any] = {}
+                if "_weights" in bench_metrics:
+                    bw_entry["weights"] = bench_metrics.pop("_weights")
+                if "_universe" in bench_metrics:
+                    bw_entry["universe"] = bench_metrics.pop("_universe")
+                if "_daily_returns" in bench_metrics:
+                    bw_entry["daily_returns"] = bench_metrics.pop("_daily_returns")
+                benchmark_weights[bench_name] = bw_entry
                 self.record_benchmark_result(bench_name, 0, bench_metrics)
 
         # --- Step 7: Generate report ---
@@ -967,6 +980,7 @@ class FullPipeline:
             "direct_mode": True,
             "state": state_bag,
             "weights": w_vae,
+            "benchmark_weights": benchmark_weights,
             "holdout_start": str(holdout_start_ts.date()),
             "train_end": train_end,
             "oos_start": oos_start,
@@ -1382,6 +1396,11 @@ class FullPipeline:
             )
             t_train = time.monotonic() - t0
             actual_epochs = len(fit_result.get("history", []))
+            # Update e_star to actual best epoch (fixes E*=max_epochs bug
+            # when called from run_direct with e_star=max_epochs)
+            if use_early_stopping:
+                e_star = fit_result["best_epoch"]
+
             logger.info(
                 "  [Fold %d] Training: %d/%d epochs in %.1fs (best_epoch=%d%s)",
                 fold_id, actual_epochs, e_star, t_train,
@@ -1788,7 +1807,9 @@ class FullPipeline:
         trailing_vol: pd.DataFrame,
         w_old: np.ndarray | None,
         is_first: bool,
-    ) -> dict[str, float]:
+        *,
+        store_weights: bool = False,
+    ) -> dict[str, Any]:
         """
         Run a single benchmark on a single fold.
 
@@ -1861,7 +1882,7 @@ class FullPipeline:
         metrics = benchmark.evaluate(w, returns_oos, stock_ids_str)
 
         # Rename to distinguish from VAE metrics
-        renamed: dict[str, float] = {}
+        renamed: dict[str, Any] = {}
         for k, v in metrics.items():
             if k == "ann_vol":
                 renamed["ann_vol_oos"] = v
@@ -1869,6 +1890,14 @@ class FullPipeline:
                 renamed["max_drawdown_oos"] = v
             else:
                 renamed[k] = v
+
+        # Optionally store weights / daily returns for cumulative-return plots
+        if store_weights:
+            renamed["_weights"] = w
+            renamed["_universe"] = stock_ids_str
+            custom_oos = benchmark.get_oos_returns(returns_oos)
+            if custom_oos is not None:
+                renamed["_daily_returns"] = custom_oos
 
         return renamed
 

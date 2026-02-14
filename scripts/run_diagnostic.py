@@ -422,7 +422,15 @@ def run_diagnostic(
     # Save plots
     if generate_plots:
         plots_dir = os.path.join(output_dir, "plots")
-        plot_files = save_all_plots(diagnostics, w_vae, output_dir=plots_dir)
+        plot_files = save_all_plots(
+            diagnostics, w_vae, output_dir=plots_dir,
+            returns_oos=returns_oos,
+            benchmark_weights=results.get("benchmark_weights", {}),
+            benchmark_results=results.get("benchmark_results", {}),
+            inferred_stock_ids=state_bag.get("inferred_stock_ids", []),
+            train_end=results.get("train_end", ""),
+            oos_start=oos_start,
+        )
         report_files.extend(plot_files)
     else:
         logger.info("Plot generation skipped")
@@ -460,7 +468,17 @@ def run_diagnostic(
     logger.info("  Sharpe = %.3f", vae_metrics.get("sharpe", 0.0))
     logger.info("  Ann. Return = %.2f%%", vae_metrics.get("ann_return", 0.0) * 100)
     logger.info("  Ann. Vol = %.2f%%", vae_metrics.get("ann_vol_oos", 0.0) * 100)
-    logger.info("  Max DD = %.2f%%", vae_metrics.get("max_drawdown_oos", 0.0) * 100)
+
+    # Max DD with EW benchmark context
+    vae_mdd = vae_metrics.get("max_drawdown_oos", 0.0)
+    bench_res = results.get("benchmark_results", {})
+    ew_folds = bench_res.get("equal_weight", [])
+    ew_mdd_val = ew_folds[0].get("max_drawdown_oos", None) if ew_folds else None
+    if ew_mdd_val is not None:
+        logger.info("  Max DD = %.2f%% (EW benchmark: %.2f%%)", vae_mdd * 100, ew_mdd_val * 100)
+    else:
+        logger.info("  Max DD = %.2f%%", vae_mdd * 100)
+
     logger.info("  H_norm = %.4f", vae_metrics.get("H_norm_oos", 0.0))
     logger.info("  AU = %s", vae_metrics.get("AU", "?"))
     logger.info("  E* = %s", vae_metrics.get("e_star", "?"))

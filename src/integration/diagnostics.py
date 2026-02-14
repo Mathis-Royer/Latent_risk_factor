@@ -281,16 +281,25 @@ def risk_model_diagnostics(
         diag["condition_number"] = cond
 
     # Variance ratio and correlation
+    # IMPORTANT: only use stocks present in both the risk model and OOS returns
+    # to avoid filling missing returns with 0.0 (which biases variance down).
     n_port = Sigma_assets.shape[0] if Sigma_assets.ndim == 2 else 0
     if n_port > 0 and returns_oos.shape[0] > 10:
-        available = [s for s in inferred_stock_ids[:n_port] if s in returns_oos.columns]
-        if len(available) > 2:
-            oos_vals = returns_oos.reindex(
-                columns=inferred_stock_ids[:n_port],
-            ).fillna(0.0).values
+        all_ids = inferred_stock_ids[:n_port]
+        avail_mask = np.array([sid in returns_oos.columns for sid in all_ids])
+        avail_idx = np.where(avail_mask)[0]
+        if len(avail_idx) > 2:
+            avail_ids = [all_ids[i] for i in avail_idx]
+            oos_vals = np.asarray(returns_oos[avail_ids].fillna(0.0).values)
+            w_sub = w_vae[avail_idx]
+            # Re-normalize weights to sum to 1 on the available subset
+            w_sum = w_sub.sum()
+            if w_sum > 1e-10:
+                w_sub = w_sub / w_sum
+            Sigma_sub = Sigma_assets[np.ix_(avail_idx, avail_idx)]
 
-            var_ratio = realized_vs_predicted_variance(w_vae, Sigma_assets, oos_vals)
-            corr_rank = realized_vs_predicted_correlation(Sigma_assets, oos_vals)
+            var_ratio = realized_vs_predicted_variance(w_sub, Sigma_sub, oos_vals)
+            corr_rank = realized_vs_predicted_correlation(Sigma_sub, oos_vals)
             diag["var_ratio_oos"] = var_ratio
             diag["corr_rank_oos"] = corr_rank
 
@@ -318,13 +327,15 @@ def risk_model_diagnostics(
     # Explanatory power — OOS cross-sectional R² using B_A_port
     # B_A_port is the portfolio-rescaled exposure from training; we run OLS on
     # OOS returns at each date to get proper OOS factor returns and R².
+    # Pass returns WITHOUT fillna — factor_explanatory_power_oos handles NaN
+    # per-date via nan_mask, which is more correct than replacing with 0.
     B_A_port: np.ndarray = state_bag.get("B_A_port", np.array([]))
     if B_A_port.ndim == 2 and B_A_port.shape[0] > 0:
         ep_result = factor_explanatory_power_oos(
             B_A_port,
             returns_oos.reindex(
                 columns=inferred_stock_ids[:B_A_port.shape[0]],
-            ).fillna(0.0),
+            ),
             inferred_stock_ids[:B_A_port.shape[0]],
         )
         diag["explanatory_power"] = ep_result["ep_oos"]
@@ -396,17 +407,19 @@ def portfolio_diagnostics(
     hhi = float(np.sum(w_vae ** 2))
 
     # Frontier analysis
+    # NOTE: frontier records use keys from compute_variance_entropy_frontier():
+    #   "alpha", "variance", "entropy", "n_active"
     frontier_diag: dict[str, Any] = {"available": len(frontier) > 0}
     if frontier:
         alphas = [f.get("alpha", 0) for f in frontier]
-        h_values = [f.get("H", 0) for f in frontier]
-        var_values = [f.get("portfolio_variance", 0) for f in frontier]
+        h_values = [f.get("entropy", 0) for f in frontier]
+        var_values = [f.get("variance", 0) for f in frontier]
         frontier_diag.update({
             "alpha_grid": alphas,
             "H_values": h_values,
             "variance_values": var_values,
             "H_at_alpha_opt": next(
-                (f.get("H", 0) for f in frontier if f.get("alpha") == alpha_opt),
+                (f.get("entropy", 0) for f in frontier if f.get("alpha") == alpha_opt),
                 0.0,
             ),
         })
@@ -497,6 +510,7 @@ def benchmark_comparison(
         losses = 0
         deltas: dict[str, float] = {}
 
+        ties = 0
         for metric in compare_metrics:
             vae_val = vae_metrics.get(metric, float("nan"))
             bench_val = bench_m.get(metric, float("nan"))
@@ -509,20 +523,26 @@ def benchmark_comparison(
                     wins += 1
                 elif delta < -1e-6:
                     losses += 1
+                else:
+                    ties += 1
             else:
                 if delta < -1e-6:
                     wins += 1
                 elif delta > 1e-6:
                     losses += 1
+                else:
+                    ties += 1
 
         per_benchmark[bench_name] = {
             "wins": wins,
             "losses": losses,
+            "ties": ties,
             "deltas": deltas,
             "bench_metrics": {k: bench_m.get(k, float("nan")) for k in compare_metrics},
         }
         total_wins += wins
         total_losses += losses
+        total_ties += ties
 
     return {
         "per_benchmark": per_benchmark,
@@ -566,6 +586,22 @@ def data_quality_diagnostics(
         sector_counts: pd.Series = stock_data.drop_duplicates("permno")["sector"].value_counts()  # type: ignore[assignment]
         sector_dist = sector_counts.to_dict()
 
+    # Stocks per year — mean/min/max daily stock count grouped by year
+    stocks_per_date: pd.Series = returns.notna().sum(axis=1)  # type: ignore[assignment]
+    year_idx: pd.Series = pd.Series(  # type: ignore[type-arg]
+        pd.DatetimeIndex(returns.index).year,  # type: ignore[reportAttributeAccessIssue]
+        index=returns.index,
+    )
+    spy_mean: pd.Series = stocks_per_date.groupby(year_idx).mean()  # type: ignore[assignment]
+    spy_min: pd.Series = stocks_per_date.groupby(year_idx).min()  # type: ignore[assignment]
+    spy_max: pd.Series = stocks_per_date.groupby(year_idx).max()  # type: ignore[assignment]
+    stocks_per_year: dict[str, Any] = {
+        "years": [int(y) for y in spy_mean.index.tolist()],
+        "mean": [float(v) for v in spy_mean.tolist()],
+        "min": [float(v) for v in spy_min.tolist()],
+        "max": [float(v) for v in spy_max.tolist()],
+    }
+
     return {
         "n_stocks": n_stocks,
         "n_dates": n_dates,
@@ -575,6 +611,7 @@ def data_quality_diagnostics(
         "missing_pct": missing_pct,
         "stocks_over_20pct_missing": stocks_over_20pct_missing,
         "sector_distribution": sector_dist,
+        "stocks_per_year": stocks_per_year,
         "years_of_data": n_dates / 252.0,
     }
 
@@ -589,6 +626,7 @@ def run_health_checks(
     risk_model: dict[str, Any],
     portfolio: dict[str, Any],
     data_quality: dict[str, Any],
+    benchmark_comparison_data: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
     Run automated health checks across all diagnostic categories.
@@ -598,6 +636,7 @@ def run_health_checks(
     :param risk_model (dict): Risk model diagnostics
     :param portfolio (dict): Portfolio diagnostics
     :param data_quality (dict): Data quality diagnostics
+    :param benchmark_comparison_data (dict | None): Benchmark comparison with per-benchmark metrics
 
     :return checks (list[dict]): List of {category, check, status, message}
         where status is "OK", "WARNING", or "CRITICAL"
@@ -719,12 +758,25 @@ def run_health_checks(
              f"H_norm = {h_norm:.3f}")
 
     mdd = portfolio.get("max_drawdown", 0.0)
+
+    # Extract equal_weight MDD as market proxy for comparison
+    ew_mdd: float | None = None
+    if benchmark_comparison_data is not None:
+        per_bench = benchmark_comparison_data.get("per_benchmark", {})
+        ew_data = per_bench.get("equal_weight", {})
+        ew_bench_metrics = ew_data.get("bench_metrics", {})
+        ew_mdd_val = ew_bench_metrics.get("max_drawdown_oos", float("nan"))
+        if np.isfinite(ew_mdd_val):
+            ew_mdd = ew_mdd_val
+
+    mdd_context = f"MDD = {mdd:.1%}"
+    if ew_mdd is not None:
+        mdd_context += f" (EW benchmark: {ew_mdd:.1%})"
+
     if mdd > 0.3:
-        _add("Portfolio", "Max drawdown", "WARNING",
-             f"MDD = {mdd:.1%}")
+        _add("Portfolio", "Max drawdown", "WARNING", mdd_context)
     else:
-        _add("Portfolio", "Max drawdown", "OK",
-             f"MDD = {mdd:.1%}")
+        _add("Portfolio", "Max drawdown", "OK", mdd_context)
 
     # --- Data quality checks ---
     miss = data_quality.get("missing_pct", 0.0)
@@ -795,7 +847,7 @@ def collect_diagnostics(
     data_qual = data_quality_diagnostics(stock_data, returns)
 
     logger.info("Running health checks...")
-    checks = run_health_checks(training, latent, risk, portfolio, data_qual)
+    checks = run_health_checks(training, latent, risk, portfolio, data_qual, bench_comp)
 
     n_critical = sum(1 for c in checks if c["status"] == "CRITICAL")
     n_warning = sum(1 for c in checks if c["status"] == "WARNING")
