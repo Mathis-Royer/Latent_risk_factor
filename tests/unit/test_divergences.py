@@ -168,55 +168,63 @@ class TestDiv04VarianceTargeting:
     """
 
     def test_variance_targeting_formula(self) -> None:
-        """scale = Var_realized(EW) / Var_predicted(EW), clamped [0.01, 100].
+        """Dual VT: scale_sys for B*Sigma_z*B^T, scale_idio for diag(D_eps).
 
-        Verify exact formula: scale = realized_ew_var / predicted_ew_var.
+        Verify that total realized EW var is preserved:
+        scale_sys * pred_sys + scale_idio * pred_idio ≈ realized_var.
         """
         from src.integration.pipeline import _variance_targeting_scale
 
         rng = np.random.RandomState(42)
         n = 20
-        # Predicted Sigma with known diagonal
-        sigma_diag = rng.uniform(0.0001, 0.001, n)
-        Sigma = np.diag(sigma_diag)
+        AU = 5
+        # Build factor model components
+        B_A_port = rng.randn(n, AU) * 0.1
+        Sigma_z = np.eye(AU) * 0.01
+        D_eps_port = rng.uniform(0.0001, 0.001, n)
 
         # Generate returns whose realized EW variance we can compute manually
         n_days = 500
         ew_rets = rng.randn(n_days) * 0.01  # daily EW returns
         stock_ids = list(range(n))
 
-        # Build a returns DataFrame where mean of all columns = ew_rets
+        # Build a returns DataFrame where mean of all columns ≈ ew_rets
         returns_df = pd.DataFrame(
             {s: ew_rets + rng.randn(n_days) * 0.001 for s in stock_ids},
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale = _variance_targeting_scale(Sigma, returns_df, stock_ids)
-
-        # Must be positive and finite
-        assert 0.01 <= scale <= 100.0, (
-            f"Scale {scale} outside [0.01, 100] clamp range"
+        scale_sys, scale_idio = _variance_targeting_scale(
+            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
         )
-        assert np.isfinite(scale)
 
-        # Formula verification: manually compute the ratio
+        # Both must be positive and clamped
+        assert 0.01 <= scale_sys <= 100.0
+        assert 0.01 <= scale_idio <= 100.0
+        assert np.isfinite(scale_sys)
+        assert np.isfinite(scale_idio)
+
+        # Verify total variance is preserved
         w_eq = np.ones(n) / n
-        predicted_var = float(w_eq @ Sigma @ w_eq)
+        pred_sys = float(w_eq @ (B_A_port @ Sigma_z @ B_A_port.T) @ w_eq)
+        pred_idio = float(w_eq @ np.diag(D_eps_port) @ w_eq)
         ew_returns = returns_df[stock_ids].mean(axis=1).to_numpy()
         realized_var = float(np.var(ew_returns, ddof=1))
-        expected_scale = np.clip(realized_var / max(predicted_var, 1e-30), 0.01, 100.0)
-        assert abs(scale - expected_scale) / max(expected_scale, 1e-10) < 0.01, (
-            f"Scale={scale:.6f} != expected={expected_scale:.6f} "
-            f"(realized={realized_var:.2e}, predicted={predicted_var:.2e})"
+        scaled_total = scale_sys * pred_sys + scale_idio * pred_idio
+        assert abs(scaled_total - realized_var) / max(realized_var, 1e-10) < 0.05, (
+            f"Scaled total={scaled_total:.2e} != realized={realized_var:.2e}"
         )
 
     def test_variance_targeting_clamp_lower(self) -> None:
-        """When predicted var >> realized var, scale is clamped to 0.01."""
+        """When predicted var >> realized var, scales are clamped to >= 0.01."""
         from src.integration.pipeline import _variance_targeting_scale
 
         n = 5
-        # Hugely overestimated Sigma
-        Sigma = np.eye(n) * 1000.0  # predicted vol is enormous
+        AU = 2
+        # Hugely overestimated systematic block
+        B_A_port = np.eye(n, AU) * 100.0
+        Sigma_z = np.eye(AU) * 1000.0
+        D_eps_port = np.ones(n) * 1000.0
         stock_ids = list(range(n))
 
         # Tiny realized returns
@@ -226,17 +234,24 @@ class TestDiv04VarianceTargeting:
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale = _variance_targeting_scale(Sigma, returns_df, stock_ids)
-        assert scale >= 0.01, f"Scale {scale} should be >= 0.01 (lower clamp)"
-        assert scale <= 100.0
+        scale_sys, scale_idio = _variance_targeting_scale(
+            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
+        )
+        assert scale_sys >= 0.01
+        assert scale_idio >= 0.01
+        assert scale_sys <= 100.0
+        assert scale_idio <= 100.0
 
     def test_variance_targeting_clamp_upper(self) -> None:
-        """When predicted var << realized var, scale is clamped to 100."""
+        """When predicted var << realized var, scales are clamped to <= 100."""
         from src.integration.pipeline import _variance_targeting_scale
 
         n = 5
-        # Tiny predicted Sigma
-        Sigma = np.eye(n) * 1e-12
+        AU = 2
+        # Tiny predicted
+        B_A_port = np.eye(n, AU) * 1e-6
+        Sigma_z = np.eye(AU) * 1e-12
+        D_eps_port = np.ones(n) * 1e-12
         stock_ids = list(range(n))
 
         # Large realized returns
@@ -247,16 +262,21 @@ class TestDiv04VarianceTargeting:
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale = _variance_targeting_scale(Sigma, returns_df, stock_ids)
-        assert scale <= 100.0, f"Scale {scale} should be <= 100.0 (upper clamp)"
-        assert scale >= 0.01
+        scale_sys, scale_idio = _variance_targeting_scale(
+            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
+        )
+        assert scale_sys <= 100.0
+        assert scale_idio <= 100.0
+        assert scale_sys >= 0.01
+        assert scale_idio >= 0.01
 
     def test_variance_targeting_identity_when_perfect(self) -> None:
-        """If predicted var == realized var, scale ≈ 1.0."""
+        """If predicted var == realized var, scales ≈ 1.0."""
         from src.integration.pipeline import _variance_targeting_scale
 
         rng = np.random.RandomState(42)
         n = 10
+        AU = 3
         n_days = 10_000
         # Generate returns from known variance
         daily_vol = 0.01
@@ -264,18 +284,25 @@ class TestDiv04VarianceTargeting:
             {s: rng.randn(n_days) * daily_vol for s in range(n)},
             index=pd.date_range("2000-01-01", periods=n_days),
         )
-        # Predicted Sigma = realized Sigma (approximately)
-        ew_rets = returns_df.mean(axis=1).to_numpy()
-        realized_var = np.var(ew_rets, ddof=1)
-        w_eq = np.ones(n) / n
-        # Sigma = exact sample covariance
-        Sigma_sample = np.cov(returns_df.values, rowvar=False)
-        predicted_var = float(w_eq @ Sigma_sample @ w_eq)
+        # Build factor model from realized data
+        # Use SVD of realized returns to build B_A_port, Sigma_z, D_eps
+        ret_matrix = returns_df.values  # (n_days, n)
+        U, S, Vt = np.linalg.svd(ret_matrix, full_matrices=False)
+        B_A_port = Vt[:AU, :].T  # (n, AU)
+        z_hat = ret_matrix @ B_A_port  # (n_days, AU)
+        Sigma_z = np.cov(z_hat, rowvar=False)  # (AU, AU)
+        resids = ret_matrix - z_hat @ B_A_port.T
+        D_eps_port = np.var(resids, axis=0, ddof=1)  # (n,)
 
-        scale = _variance_targeting_scale(Sigma_sample, returns_df, list(range(n)))
-        # scale should be very close to 1.0
-        assert abs(scale - 1.0) < 0.05, (
-            f"Scale should be ~1.0 when Sigma matches realized, got {scale}"
+        scale_sys, scale_idio = _variance_targeting_scale(
+            B_A_port, Sigma_z, D_eps_port, returns_df, list(range(n)),
+        )
+        # Both scales should be close to 1.0
+        assert abs(scale_sys - 1.0) < 0.3, (
+            f"scale_sys should be ~1.0 when model matches realized, got {scale_sys}"
+        )
+        assert abs(scale_idio - 1.0) < 0.3, (
+            f"scale_idio should be ~1.0 when model matches realized, got {scale_idio}"
         )
 
 

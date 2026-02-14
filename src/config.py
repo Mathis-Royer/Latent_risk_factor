@@ -388,6 +388,12 @@ class RiskModelConfig:
         (no truncation, original behavior).  0.95 = discard eigenvalues
         contributing less than 5% of total variance — removes noisy
         factor dimensions.  Range: (0, 1].
+    :param b_a_shrinkage_alpha (float): Shrinkage intensity for the
+        exposure matrix B_A towards zero.  After filtering active units,
+        B_A is multiplied by (1 - alpha).  0.0 = no shrinkage (original
+        behavior).  0.1 = 10% shrinkage — reduces spurious cross-stock
+        correlations embedded in the systematic block B·Σ_z·B^T.
+        Range: [0, 1].
     """
 
     winsorize_lo: float = 5.0
@@ -396,6 +402,7 @@ class RiskModelConfig:
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
     sigma_z_eigenvalue_pct: float = 1.0
+    b_a_shrinkage_alpha: float = 0.0
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
@@ -414,6 +421,9 @@ class RiskModelConfig:
                         self.sigma_z_eigenvalue_pct,
                         default=1.0, lo=0, hi=1,
                         lo_exclusive=True)
+        _validate_range("b_a_shrinkage_alpha",
+                        self.b_a_shrinkage_alpha,
+                        default=0.0, lo=0, hi=1)
 
 
 # ---------------------------------------------------------------------------
