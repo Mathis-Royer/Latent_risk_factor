@@ -250,10 +250,12 @@ def risk_model_diagnostics(
     risk_model: dict[str, Any] = state_bag.get("risk_model", {})
     Sigma_assets: np.ndarray = risk_model.get("Sigma_assets", np.array([]))
     eigenvalues: np.ndarray = risk_model.get("eigenvalues", np.array([]))
-    vt_scale: float = state_bag.get("vt_scale", 1.0)
+    vt_scale_sys: float = state_bag.get("vt_scale_sys", 1.0)
+    vt_scale_idio: float = state_bag.get("vt_scale_idio", 1.0)
 
     diag: dict[str, Any] = {
-        "vt_scale": vt_scale,
+        "vt_scale_sys": vt_scale_sys,
+        "vt_scale_idio": vt_scale_idio,
     }
 
     # Eigenvalue spectrum

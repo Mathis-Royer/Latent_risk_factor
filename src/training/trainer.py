@@ -686,20 +686,23 @@ class VAETrainer:
         if not self.early_stopping.stopped:
             self.early_stopping.restore_best(self.model)
 
-        # Overfit diagnostic
+        # Overfit diagnostic: generalization gap AT best epoch (E*)
         best_val = self.early_stopping.best_loss
-        last_train = history[-1]["train_loss"] if history else 1.0
-        overfit_ratio = best_val / max(last_train, 1e-8) if last_train > 0 else 0.0
+        best_epoch = self.early_stopping.best_epoch
+        if history and 0 <= best_epoch < len(history):
+            best_train = history[best_epoch]["train_loss"]
+        else:
+            best_train = history[-1]["train_loss"] if history else 1.0
+        overfit_ratio = best_val / max(best_train, 1e-8) if best_train > 0 else 0.0
         overfit_flag = overfit_ratio < 0.85 or overfit_ratio > 1.5
 
         if overfit_flag:
             logger.warning(
-                "Overfitting detected: val/train ratio=%.2f "
-                "(best_val=%.1f, last_train=%.1f, best_epoch=%d). "
+                "Overfitting detected: val/train ratio=%.2f at best epoch %d "
+                "(best_val=%.1f, best_train=%.1f). "
                 "Consider: increase weight_decay, add dropout, "
                 "reduce max_epochs, or try Mode P (learnable sigma_sq).",
-                overfit_ratio, best_val, last_train,
-                self.early_stopping.best_epoch,
+                overfit_ratio, best_epoch, best_val, best_train,
             )
 
         return {

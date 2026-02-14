@@ -92,48 +92,82 @@ _VT_SCALE_MAX = 100.0
 
 
 def _variance_targeting_scale(
-    Sigma_assets: np.ndarray,
+    B_A_port: np.ndarray,
+    Sigma_z: np.ndarray,
+    D_eps_port: np.ndarray,
     train_returns: "pd.DataFrame",
     stock_ids: list[int],
-) -> float:
+) -> tuple[float, float]:
     """
-    Compute scalar to calibrate Sigma_assets to in-sample realized variance.
+    Compute dual variance-targeting scales for systematic and idiosyncratic blocks.
 
-    Uses an equal-weight portfolio as reference: scale = Var_realized(EW) / Var_predicted(EW).
-    Clamped to [0.01, 100] to avoid pathological cases.
+    Decomposes predicted EW variance into systematic (w^T B Σ_z B^T w) and
+    idiosyncratic (w^T diag(D_ε) w) components, then calibrates each block
+    separately so total predicted EW variance matches realized EW variance.
 
-    :param Sigma_assets (np.ndarray): Predicted covariance (n, n)
+    This avoids the bias of single-scalar VT: a scalar calibrated on the
+    equal-weight portfolio over-corrects the idiosyncratic block for
+    concentrated portfolios.
+
+    :param B_A_port (np.ndarray): Portfolio-rescaled exposures (n, AU)
+    :param Sigma_z (np.ndarray): Factor covariance (AU, AU)
+    :param D_eps_port (np.ndarray): Idiosyncratic variances (n,)
     :param train_returns (pd.DataFrame): Training-period daily log-returns (dates x stocks)
-    :param stock_ids (list[int]): Stock IDs matching Sigma_assets rows
+    :param stock_ids (list[int]): Stock IDs matching rows of B_A_port
 
-    :return scale (float): Multiplicative calibration factor
+    :return (scale_sys, scale_idio) (tuple[float, float]): Calibration factors
+        for the systematic and idiosyncratic blocks respectively.
     """
-    n = Sigma_assets.shape[0]
+    n = B_A_port.shape[0]
     w_eq = np.ones(n) / n
 
-    predicted_var = float(w_eq @ Sigma_assets @ w_eq)
-    if predicted_var <= 1e-12:
-        return 1.0
+    # Decompose predicted variance
+    Sigma_sys = B_A_port @ Sigma_z @ B_A_port.T
+    pred_sys = float(w_eq @ Sigma_sys @ w_eq)
+    pred_idio = float(w_eq @ np.diag(D_eps_port) @ w_eq)
+    pred_total = pred_sys + pred_idio
+
+    if pred_total <= 1e-12:
+        return 1.0, 1.0
 
     # Realized EW portfolio variance over training period
     available = [s for s in stock_ids[:n] if s in train_returns.columns]
     if len(available) < 2:
-        return 1.0
+        return 1.0, 1.0
     ew_returns = train_returns[available].mean(axis=1).dropna().to_numpy()
     if len(ew_returns) < 2:
-        return 1.0
+        return 1.0, 1.0
     realized_var = float(np.var(ew_returns, ddof=1))
 
-    scale = realized_var / predicted_var
-    if not np.isfinite(scale):
-        return 1.0
-    scale = float(np.clip(scale, _VT_SCALE_MIN, _VT_SCALE_MAX))
+    # Fraction of predicted variance from systematic block
+    frac_sys = pred_sys / pred_total if pred_total > 1e-12 else 0.5
+
+    # Allocate realized variance proportionally to predicted split
+    target_sys = realized_var * frac_sys
+    target_idio = realized_var * (1.0 - frac_sys)
+
+    # Compute per-block scales
+    scale_sys = (target_sys / pred_sys) if pred_sys > 1e-12 else 1.0
+    scale_idio = (target_idio / pred_idio) if pred_idio > 1e-12 else 1.0
+
+    # Clamp to safety bounds
+    scale_sys = float(np.clip(scale_sys, _VT_SCALE_MIN, _VT_SCALE_MAX))
+    scale_idio = float(np.clip(scale_idio, _VT_SCALE_MIN, _VT_SCALE_MAX))
+
+    if not np.isfinite(scale_sys):
+        scale_sys = 1.0
+    if not np.isfinite(scale_idio):
+        scale_idio = 1.0
 
     logger.info(
-        "  Variance targeting: realized_vol=%.4f, predicted_vol=%.4f, scale=%.4f",
-        np.sqrt(realized_var * 252), np.sqrt(predicted_var * 252), scale,
+        "  Variance targeting (dual): realized_vol=%.4f, "
+        "pred_sys_vol=%.4f, pred_idio_vol=%.4f, "
+        "scale_sys=%.4f, scale_idio=%.4f",
+        np.sqrt(realized_var * 252),
+        np.sqrt(pred_sys * 252), np.sqrt(pred_idio * 252),
+        scale_sys, scale_idio,
     )
-    return scale
+    return scale_sys, scale_idio
 
 
 class FullPipeline:
@@ -1427,6 +1461,16 @@ class FullPipeline:
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
 
+        # B_A shrinkage: reduce spurious cross-stock correlations
+        shrinkage_alpha = self.config.risk_model.b_a_shrinkage_alpha
+        if shrinkage_alpha > 0.0:
+            B_A = B_A * (1.0 - shrinkage_alpha)
+            logger.info(
+                "  [Fold %d] B_A shrinkage applied: alpha=%.3f, "
+                "mean_abs=%.4f",
+                fold_id, shrinkage_alpha, float(np.mean(np.abs(B_A))),
+            )
+
         if _state_bag is not None:
             _state_bag["B"] = B
             _state_bag["B_A"] = B_A
@@ -1471,9 +1515,20 @@ class FullPipeline:
         # 5. Dual rescaling
         logger.info("  [Fold %d] Dual rescaling (%d stocks, %d dates)...",
                      fold_id, n_stocks, len(train_returns.index))
-        # Build universe snapshots for estimation rescaling
+        # Build universe snapshots for estimation rescaling (point-in-time)
         train_dates = [str(d.date()) for d in train_returns.index]
-        universe_snapshots = {d: inferred_stock_ids for d in train_dates}
+        train_ret_sub = returns.loc[train_start:train_end]
+        universe_snapshots: dict[str, list[int]] = {}
+        for d in train_dates:
+            if d in train_ret_sub.index.strftime("%Y-%m-%d").values:
+                row = train_ret_sub.loc[d]
+                valid_ids = [
+                    sid for sid in inferred_stock_ids
+                    if sid in row.index and pd.notna(row[sid])
+                ]
+                universe_snapshots[d] = valid_ids if valid_ids else inferred_stock_ids
+            else:
+                universe_snapshots[d] = inferred_stock_ids
 
         B_A_by_date = rescale_estimation(
             B_A, trailing_vol.loc[train_start:train_end],
@@ -1537,15 +1592,18 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
-        # Variance targeting: calibrate Sigma_assets so predicted EW
-        # portfolio variance matches in-sample realized EW variance.
-        vt_scale = _variance_targeting_scale(
-            Sigma_assets, returns.loc[train_start:train_end],
+        # Variance targeting (dual): calibrate systematic and idiosyncratic
+        # blocks separately so predicted EW variance matches realized.
+        vt_scale_sys, vt_scale_idio = _variance_targeting_scale(
+            B_A_port, Sigma_z, D_eps_port,
+            returns.loc[train_start:train_end],
             inferred_stock_ids,
         )
-        Sigma_assets = Sigma_assets * vt_scale
-        eigenvalues = eigenvalues * vt_scale
-        D_eps_port = D_eps_port * vt_scale
+        # Rebuild Sigma_assets with separate scales per block
+        Sigma_sys = B_A_port @ Sigma_z @ B_A_port.T
+        Sigma_assets = vt_scale_sys * Sigma_sys + np.diag(vt_scale_idio * D_eps_port)
+        eigenvalues = eigenvalues * vt_scale_sys
+        D_eps_port = D_eps_port * vt_scale_idio
 
         # Update risk_model dict with variance-targeted values so that
         # downstream consumers (diagnostics, state_bag) see the scaled
@@ -1559,7 +1617,8 @@ class FullPipeline:
             _state_bag["Sigma_z"] = Sigma_z
             _state_bag["z_hat"] = z_hat
             _state_bag["B_A_port"] = B_A_port
-            _state_bag["vt_scale"] = vt_scale
+            _state_bag["vt_scale_sys"] = vt_scale_sys
+            _state_bag["vt_scale_idio"] = vt_scale_idio
             _state_bag["B_A_by_date"] = B_A_by_date
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots
@@ -1567,9 +1626,10 @@ class FullPipeline:
 
         logger.info(
             "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d), "
-            "vt_scale=%.4f",
+            "vt_scale_sys=%.4f, vt_scale_idio=%.4f",
             fold_id, AU, B_A_port.shape[0], B_A_port.shape[1],
-            Sigma_assets.shape[0], Sigma_assets.shape[1], vt_scale,
+            Sigma_assets.shape[0], Sigma_assets.shape[1],
+            vt_scale_sys, vt_scale_idio,
         )
 
         # 8. Portfolio optimization: frontier → α*, SCA → w*

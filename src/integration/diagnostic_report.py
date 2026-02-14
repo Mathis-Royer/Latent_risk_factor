@@ -209,7 +209,10 @@ def generate_diagnostic_markdown(
     lines.append("## 4. Risk Model Quality")
     lines.append("")
     lines.append(
-        f"- **Variance targeting scale**: {_fmt(risk.get('vt_scale', 1.0))}"
+        f"- **Variance targeting scale (sys)**: {_fmt(risk.get('vt_scale_sys', 1.0))}"
+    )
+    lines.append(
+        f"- **Variance targeting scale (idio)**: {_fmt(risk.get('vt_scale_idio', 1.0))}"
     )
     lines.append(
         f"- **Variance ratio (OOS)**: {_fmt(risk.get('var_ratio_oos', 0))} "
