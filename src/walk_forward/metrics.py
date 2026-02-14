@@ -345,6 +345,7 @@ def portfolio_metrics(
     universe: list[int],
     H_oos: float = 0.0,
     AU: int = 0,
+    K: int = 0,
     Sigma_hat: np.ndarray | None = None,
 ) -> dict[str, float]:
     """
@@ -355,6 +356,7 @@ def portfolio_metrics(
     :param universe (list[int]): Stock identifiers (permnos)
     :param H_oos (float): OOS factor entropy
     :param AU (int): Active units
+    :param K (int): Total latent capacity (for scale-invariant H_norm)
     :param Sigma_hat (np.ndarray | None): Predicted covariance
 
     :return metrics (dict): Portfolio performance metrics
@@ -375,20 +377,21 @@ def portfolio_metrics(
     if n_days == 0:
         return {"error": 1.0}
 
-    # Annualized return
-    ann_return = float(np.mean(port_returns) * 252)
+    # Geometric annualized return — exp(sum(log_r)) for CONV-01 log returns
+    cumulative = float(np.exp(np.sum(np.asarray(port_returns))))
+    ann_return = cumulative ** (252.0 / n_days) - 1.0 if n_days > 0 else 0.0
 
     # Annualized volatility
     ann_vol = float(np.std(port_returns, ddof=1) * np.sqrt(252)) if n_days > 1 else 0.0
 
-    # Sharpe ratio
+    # Sharpe ratio (geometric return / vol)
     sharpe = ann_return / max(ann_vol, 1e-10)
 
-    # Maximum drawdown
+    # Maximum drawdown (percentage, not log-space)
     cum_returns = np.cumsum(port_returns)
     running_max = np.maximum.accumulate(cum_returns)
-    drawdowns = cum_returns - running_max
-    max_drawdown = float(-np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+    log_drawdowns = cum_returns - running_max
+    max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
 
     # Calmar and Sortino
     calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0
@@ -396,8 +399,12 @@ def portfolio_metrics(
     downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if len(downside) > 1 else 1e-10
     sortino = ann_return / max(downside_vol, 1e-10)
 
-    # Normalized entropy
-    H_norm = H_oos / max(np.log(max(AU, 1)), 1e-10) if AU > 0 else 0.0
+    # Normalized entropy: primary uses log(K) for cross-fold comparability,
+    # secondary uses log(AU) for efficiency-of-usage diagnostic
+    denom_K = max(np.log(max(K, 1)), 1e-10) if K > 0 else 1e-10
+    denom_AU = max(np.log(max(AU, 1)), 1e-10) if AU > 0 else 1e-10
+    H_norm = H_oos / denom_K if K > 0 else H_oos / denom_AU
+    H_norm_au = H_oos / denom_AU if AU > 0 else 0.0
 
     # Effective number of positions
     eff_n = float(1.0 / np.sum(w_active ** 2)) if np.sum(w_active ** 2) > 0 else 0.0
@@ -428,6 +435,7 @@ def portfolio_metrics(
         "diversification_ratio": dr,
         "n_active_positions": float(n_active_positions),
         "n_days_oos": float(n_days),
+        "H_norm_au": H_norm_au,
     }
 
 
@@ -460,4 +468,6 @@ def crisis_period_return(
     if len(crisis_returns) == 0:
         return 0.0
 
-    return float(np.mean(crisis_returns) * 252)
+    n_crisis = len(crisis_returns)
+    cumulative = float(np.exp(np.sum(np.asarray(crisis_returns))))
+    return cumulative ** (252.0 / n_crisis) - 1.0

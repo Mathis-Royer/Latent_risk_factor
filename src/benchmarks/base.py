@@ -148,20 +148,21 @@ class BenchmarkModel(ABC):
         port_returns = R_oos @ w_active
         n_days = len(port_returns)
 
-        # Annualized return
-        ann_return = float(np.mean(port_returns) * 252)
+        # Geometric annualized return — exp(sum(log_r)) for CONV-01 log returns
+        cumulative = float(np.exp(np.sum(np.asarray(port_returns))))
+        ann_return = cumulative ** (252.0 / n_days) - 1.0 if n_days > 0 else 0.0
 
         # Annualized volatility
         ann_vol = float(np.std(port_returns, ddof=1) * np.sqrt(252))
 
-        # Sharpe ratio
+        # Sharpe ratio (geometric return / vol)
         sharpe = ann_return / max(ann_vol, 1e-10)
 
-        # Maximum drawdown
+        # Maximum drawdown (percentage, not log-space)
         cum_returns = np.cumsum(port_returns)
         running_max = np.maximum.accumulate(cum_returns)
-        drawdowns = cum_returns - running_max
-        max_drawdown = float(-np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+        log_drawdowns = cum_returns - running_max
+        max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
 
         # Calmar ratio
         calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0

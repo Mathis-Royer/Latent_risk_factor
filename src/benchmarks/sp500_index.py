@@ -172,14 +172,17 @@ class SP500TotalReturn(BenchmarkModel):
         if n_days < 2:
             return nan_result
 
-        ann_return = float(np.mean(sp500_ret) * 252)
+        # Geometric annualized return — exp(sum(log_r)) for log returns
+        cumulative = float(np.exp(np.sum(sp500_ret)))
+        ann_return = cumulative ** (252.0 / n_days) - 1.0
         ann_vol = float(np.std(sp500_ret, ddof=1) * np.sqrt(252))
         sharpe = ann_return / max(ann_vol, 1e-10)
 
+        # Maximum drawdown (percentage, not log-space)
         cum_returns = np.cumsum(sp500_ret)
         running_max = np.maximum.accumulate(cum_returns)
-        drawdowns = cum_returns - running_max
-        max_drawdown = float(-np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+        log_drawdowns = cum_returns - running_max
+        max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
         calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0
 
         return {

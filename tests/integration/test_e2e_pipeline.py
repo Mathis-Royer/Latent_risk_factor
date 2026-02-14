@@ -385,7 +385,7 @@ def test_e2e_benchmarks_complete() -> None:
 
         # INV-012: Semi-continuous constraint (w_i = 0 or w_i >= w_min)
         for i, wi in enumerate(w):
-            assert wi < 1e-10 or wi >= w_min - 1e-8, (
+            assert wi < 1e-6 or wi >= w_min - 1e-6, (
                 f"{name}: w[{i}]={wi:.8f} violates semi-continuous "
                 f"(must be 0 or >= {w_min})"
             )

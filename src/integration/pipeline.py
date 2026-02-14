@@ -103,13 +103,14 @@ def _variance_targeting_scale(
     """
     Compute dual variance-targeting scales for systematic and idiosyncratic blocks.
 
-    Decomposes predicted EW variance into systematic (w^T B Σ_z B^T w) and
-    idiosyncratic (w^T diag(D_ε) w) components, then calibrates each block
-    separately so total predicted EW variance matches realized EW variance.
+    Decomposes *realized* daily EW returns into systematic and idiosyncratic
+    components via cross-sectional OLS (f_t = (B^T B)^-1 B^T r_t), then
+    calibrates each block against its own realized variance independently.
+    This produces genuinely different scales, unlike proportional allocation
+    which collapses to a single scalar.
 
-    This avoids the bias of single-scalar VT: a scalar calibrated on the
-    equal-weight portfolio over-corrects the idiosyncratic block for
-    concentrated portfolios.
+    Follows Barra USE4 methodology (Menchero, Wang, Orr 2011): factor and
+    specific risk are calibrated via independent realized observables.
 
     :param B_A_port (np.ndarray): Portfolio-rescaled exposures (n, AU)
     :param Sigma_z (np.ndarray): Factor covariance (AU, AU)
@@ -121,36 +122,52 @@ def _variance_targeting_scale(
         for the systematic and idiosyncratic blocks respectively.
     """
     n = B_A_port.shape[0]
+    AU = B_A_port.shape[1]
     w_eq = np.ones(n) / n
 
-    # Decompose predicted variance
+    # Decompose predicted EW variance
     Sigma_sys = B_A_port @ Sigma_z @ B_A_port.T
     pred_sys = float(w_eq @ Sigma_sys @ w_eq)
     pred_idio = float(w_eq @ np.diag(D_eps_port) @ w_eq)
-    pred_total = pred_sys + pred_idio
 
-    if pred_total <= 1e-12:
+    if pred_sys <= 1e-12 and pred_idio <= 1e-12:
         return 1.0, 1.0
 
-    # Realized EW portfolio variance over training period
+    # Align stock IDs with return columns
     available = [s for s in stock_ids[:n] if s in train_returns.columns]
-    if len(available) < 2:
+    if len(available) < max(AU + 1, 10):
         return 1.0, 1.0
-    ew_returns = train_returns[available].mean(axis=1).dropna().to_numpy()
-    if len(ew_returns) < 2:
+    avail_idx = [stock_ids[:n].index(s) for s in available]
+    R = train_returns[available].fillna(0.0).to_numpy()  # (T, n_avail)
+    if R.shape[0] < 20:
         return 1.0, 1.0
-    realized_var = float(np.var(ew_returns, ddof=1))
 
-    # Fraction of predicted variance from systematic block
-    frac_sys = pred_sys / pred_total if pred_total > 1e-12 else 0.5
+    B_sub = B_A_port[avail_idx]  # (n_avail, AU)
+    n_avail = len(available)
+    w_sub = np.ones(n_avail) / n_avail
 
-    # Allocate realized variance proportionally to predicted split
-    target_sys = realized_var * frac_sys
-    target_idio = realized_var * (1.0 - frac_sys)
+    # Daily factor returns via cross-sectional OLS: f_t = (B^T B)^-1 B^T r_t
+    BtB = B_sub.T @ B_sub
+    eigenvalues_btb = np.linalg.eigvalsh(BtB)
+    if eigenvalues_btb.min() <= 0 or eigenvalues_btb.max() / max(eigenvalues_btb.min(), 1e-15) > 1e6:
+        # Ill-conditioned: add ridge
+        trace = float(np.trace(BtB))
+        BtB = BtB + (1e-6 * trace / max(AU, 1)) * np.eye(AU)
+    BtB_inv = np.linalg.inv(BtB)
+    F = R @ B_sub @ BtB_inv.T  # (T, AU) daily factor returns
 
-    # Compute per-block scales
-    scale_sys = (target_sys / pred_sys) if pred_sys > 1e-12 else 1.0
-    scale_idio = (target_idio / pred_idio) if pred_idio > 1e-12 else 1.0
+    # Decompose realized EW portfolio return into systematic + idiosyncratic
+    r_ew = R @ w_sub  # (T,) realized EW returns
+    r_sys_per_stock = F @ B_sub.T  # (T, n_avail) systematic component per stock
+    r_sys = r_sys_per_stock @ w_sub  # (T,) systematic EW return
+    r_idio = r_ew - r_sys  # (T,) idiosyncratic EW return
+
+    realized_sys_var = float(np.var(r_sys, ddof=1))
+    realized_idio_var = float(np.var(r_idio, ddof=1))
+
+    # Compute genuinely independent per-block scales
+    scale_sys = (realized_sys_var / pred_sys) if pred_sys > 1e-12 else 1.0
+    scale_idio = (realized_idio_var / pred_idio) if pred_idio > 1e-12 else 1.0
 
     # Clamp to safety bounds
     scale_sys = float(np.clip(scale_sys, _VT_SCALE_MIN, _VT_SCALE_MAX))
@@ -162,10 +179,11 @@ def _variance_targeting_scale(
         scale_idio = 1.0
 
     logger.info(
-        "  Variance targeting (dual): realized_vol=%.4f, "
+        "  Variance targeting (dual): "
+        "realized_sys_vol=%.4f, realized_idio_vol=%.4f, "
         "pred_sys_vol=%.4f, pred_idio_vol=%.4f, "
         "scale_sys=%.4f, scale_idio=%.4f",
-        np.sqrt(realized_var * 252),
+        np.sqrt(realized_sys_var * 252), np.sqrt(realized_idio_var * 252),
         np.sqrt(pred_sys * 252), np.sqrt(pred_idio * 252),
         scale_sys, scale_idio,
     )
@@ -1736,7 +1754,7 @@ class FullPipeline:
         metrics = portfolio_metrics(
             w_final, returns_oos,
             universe=inferred_stock_ids,
-            H_oos=H_opt, AU=AU,
+            H_oos=H_opt, AU=AU, K=self.config.vae.K,
             Sigma_hat=Sigma_assets,
         )
         metrics["AU"] = float(AU)
@@ -1752,12 +1770,15 @@ class FullPipeline:
             trainer.close()
 
         # Layer 2: realized vs predicted variance + correlation
+        # Use dropna (not fillna(0)) to avoid downward bias on realized variance.
         if returns_oos.shape[0] > 0:
-            oos_values = returns_oos.reindex(columns=inferred_stock_ids[:n_port]).fillna(0.0).values
-            var_ratio = realized_vs_predicted_variance(w_final, Sigma_assets, oos_values)
-            metrics["var_ratio_oos"] = var_ratio
-            corr_rank = realized_vs_predicted_correlation(Sigma_assets, oos_values)
-            metrics["corr_rank_oos"] = corr_rank
+            oos_df = returns_oos.reindex(columns=inferred_stock_ids[:n_port]).dropna(how="any")
+            if len(oos_df) > 10:
+                oos_values = oos_df.values
+                var_ratio = realized_vs_predicted_variance(w_final, Sigma_assets, oos_values)
+                metrics["var_ratio_oos"] = var_ratio
+                corr_rank = realized_vs_predicted_correlation(Sigma_assets, oos_values)
+                metrics["corr_rank_oos"] = corr_rank
 
         # Layer 3: crisis-period return
         if vix_data is not None and returns_oos.shape[0] > 0:
