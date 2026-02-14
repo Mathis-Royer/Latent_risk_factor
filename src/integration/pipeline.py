@@ -61,7 +61,6 @@ from src.vae.build_vae import (
 from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.metrics import (
     crisis_period_return,
-    factor_explanatory_power,
     factor_explanatory_power_dynamic,
     portfolio_metrics,
     realized_vs_predicted_correlation,
@@ -1132,6 +1131,7 @@ class FullPipeline:
             beta_fixed=self.config.loss.beta_fixed,
             warmup_fraction=self.config.loss.warmup_fraction,
             patience=self.config.training.patience,
+            es_min_delta=self.config.training.es_min_delta,
             lr_patience=self.config.training.lr_patience,
             lr_factor=self.config.training.lr_factor,
             device=device,
@@ -1307,6 +1307,7 @@ class FullPipeline:
                 beta_fixed=self.config.loss.beta_fixed,
                 warmup_fraction=self.config.loss.warmup_fraction,
                 patience=patience,
+                es_min_delta=self.config.training.es_min_delta,
                 lr_patience=self.config.training.lr_patience,
                 lr_factor=self.config.training.lr_factor,
                 device=device,
@@ -1346,9 +1347,12 @@ class FullPipeline:
                 strata=train_strata,
             )
             t_train = time.monotonic() - t0
+            actual_epochs = len(fit_result.get("history", []))
             logger.info(
-                "  [Fold %d] Training: %d epochs in %.1fs (best_epoch=%d)",
-                fold_id, e_star, t_train, fit_result["best_epoch"],
+                "  [Fold %d] Training: %d/%d epochs in %.1fs (best_epoch=%d%s)",
+                fold_id, actual_epochs, e_star, t_train,
+                fit_result["best_epoch"],
+                ", early stopped" if fit_result.get("best_epoch", 0) < actual_epochs - 1 else "",
             )
 
             if _state_bag is not None:
@@ -1446,8 +1450,8 @@ class FullPipeline:
                     if _oos_w.shape[0] > 0:
                         model.eval()
                         with torch.no_grad():
-                            _oos_t = torch.tensor(
-                                _oos_w, dtype=torch.float32, device=device,
+                            _oos_t = _oos_w.to(
+                                dtype=torch.float32, device=device,
                             )
                             _x_hat, _, _ = model(_oos_t)
                             _oos_mse = float(
@@ -1549,6 +1553,10 @@ class FullPipeline:
             _state_bag["z_hat"] = z_hat
             _state_bag["B_A_port"] = B_A_port
             _state_bag["vt_scale"] = vt_scale
+            _state_bag["B_A_by_date"] = B_A_by_date
+            _state_bag["valid_dates"] = valid_dates
+            _state_bag["universe_snapshots"] = universe_snapshots
+            _state_bag["train_returns"] = returns.loc[train_start:train_end]
 
         logger.info(
             "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d), "

@@ -15,7 +15,8 @@ import pandas as pd
 from scipy import stats as sp_stats
 
 from src.walk_forward.metrics import (
-    factor_explanatory_power,
+    factor_explanatory_power_dynamic,
+    factor_explanatory_power_oos,
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
 )
@@ -288,16 +289,55 @@ def risk_model_diagnostics(
             diag["var_ratio_oos"] = var_ratio
             diag["corr_rank_oos"] = corr_rank
 
-    # Explanatory power
-    B_A: np.ndarray = state_bag.get("B_A", np.array([]))
+    # In-sample explanatory power — uses estimation-rescaled B_A_by_date and
+    # z_hat from training (matches the OLS that produced z_hat). This is
+    # the training R² and should always be in [0, 1].
+    B_A_by_date: dict[str, np.ndarray] = state_bag.get("B_A_by_date", {})
     z_hat: np.ndarray = state_bag.get("z_hat", np.array([]))
-    if B_A.ndim == 2 and z_hat.ndim == 2 and B_A.shape[1] == z_hat.shape[1]:
-        diag["explanatory_power"] = factor_explanatory_power(
-            returns_oos.reindex(
-                columns=inferred_stock_ids[:B_A.shape[0]],
-            ).fillna(0.0).values,
-            B_A, z_hat[-returns_oos.shape[0]:] if z_hat.shape[0] > returns_oos.shape[0] else z_hat,
+    valid_dates: list[str] = state_bag.get("valid_dates", [])
+    universe_snapshots: dict[str, list[int]] = state_bag.get("universe_snapshots", {})
+    train_returns: pd.DataFrame | None = state_bag.get("train_returns")
+    if (
+        B_A_by_date
+        and z_hat.ndim == 2
+        and z_hat.shape[0] > 0
+        and valid_dates
+        and train_returns is not None
+    ):
+        ep_is = factor_explanatory_power_dynamic(
+            B_A_by_date, z_hat, train_returns,
+            universe_snapshots, valid_dates,
         )
+        diag["ep_in_sample"] = ep_is
+
+    # Explanatory power — OOS cross-sectional R² using B_A_port
+    # B_A_port is the portfolio-rescaled exposure from training; we run OLS on
+    # OOS returns at each date to get proper OOS factor returns and R².
+    B_A_port: np.ndarray = state_bag.get("B_A_port", np.array([]))
+    if B_A_port.ndim == 2 and B_A_port.shape[0] > 0:
+        ep_result = factor_explanatory_power_oos(
+            B_A_port,
+            returns_oos.reindex(
+                columns=inferred_stock_ids[:B_A_port.shape[0]],
+            ).fillna(0.0),
+            inferred_stock_ids[:B_A_port.shape[0]],
+        )
+        diag["explanatory_power"] = ep_result["ep_oos"]
+        diag["ep_oos_n_dates"] = ep_result["n_dates"]
+        diag["avg_cs_r2"] = ep_result["avg_cs_r2"]
+        diag["z_hat_oos_std"] = ep_result["z_hat_oos_std"]
+
+    # B_A scale diagnostics: detect magnitude issues in raw exposures
+    B_A_raw: np.ndarray = state_bag.get("B_A", np.array([]))
+    if B_A_raw.ndim == 2:
+        diag["B_A_mean_abs"] = float(np.mean(np.abs(B_A_raw)))
+        diag["B_A_std"] = float(np.std(B_A_raw))
+        diag["B_A_max_abs"] = float(np.max(np.abs(B_A_raw)))
+        # Column (factor) norms: if some factors have huge loadings, they
+        # dominate the quadratic form in Sigma_assets
+        col_norms = np.linalg.norm(B_A_raw, axis=0)
+        diag["B_A_col_norm_mean"] = float(np.mean(col_norms))
+        diag["B_A_col_norm_max"] = float(np.max(col_norms))
 
     return diag
 
@@ -642,15 +682,19 @@ def run_health_checks(
              f"cond(Sigma) = {cond:.0e}")
 
     ep = risk_model.get("explanatory_power", 0.0)
+    ep_is = risk_model.get("ep_in_sample", None)
+    ep_detail = f"EP_oos = {ep:.4f}"
+    if ep_is is not None:
+        ep_detail += f", EP_is = {ep_is:.4f}"
     if ep < _THRESHOLDS["ep_min_crit"]:
         _add("Risk Model", "Explanatory power", "CRITICAL",
-             f"EP = {ep:.4f} — factors explain almost nothing")
+             f"{ep_detail} — factors explain almost nothing OOS")
     elif ep < _THRESHOLDS["ep_min_warn"]:
         _add("Risk Model", "Explanatory power", "WARNING",
-             f"EP = {ep:.4f}")
+             ep_detail)
     else:
         _add("Risk Model", "Explanatory power", "OK",
-             f"EP = {ep:.4f}")
+             ep_detail)
 
     # --- Portfolio checks ---
     sharpe = portfolio.get("sharpe", 0.0)

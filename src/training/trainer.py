@@ -70,6 +70,7 @@ class VAETrainer:
         adam_betas: tuple[float, float] = (0.9, 0.999),
         adam_eps: float = 1e-8,
         patience: int = 10,
+        es_min_delta: float = 0.0,
         lr_patience: int = 5,
         lr_factor: float = 0.5,
         device: torch.device | None = None,
@@ -95,6 +96,7 @@ class VAETrainer:
         :param adam_betas (tuple): Adam betas
         :param adam_eps (float): Adam epsilon
         :param patience (int): Early stopping patience
+        :param es_min_delta (float): Minimum ELBO improvement to reset counter
         :param lr_patience (int): ReduceLROnPlateau patience
         :param lr_factor (float): ReduceLROnPlateau factor
         :param device (torch.device | None): Device for training
@@ -118,6 +120,7 @@ class VAETrainer:
         self.delta_sync = delta_sync
         self._accumulation_steps = max(1, gradient_accumulation_steps)
         self._gradient_checkpointing = gradient_checkpointing
+        self._es_min_delta = es_min_delta
         self.device = device or get_optimal_device()
         self._is_cuda = self.device.type == "cuda"
 
@@ -155,7 +158,9 @@ class VAETrainer:
             )
 
         # Early stopping and scheduler
-        self.early_stopping = EarlyStopping(patience=patience)
+        self.early_stopping = EarlyStopping(
+            patience=patience, min_delta=self._es_min_delta,
+        )
         self.scheduler = SchedulerWrapper(
             self.optimizer, patience=lr_patience, factor=lr_factor,
         )

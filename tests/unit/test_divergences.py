@@ -132,12 +132,12 @@ class TestDiv03DropoutAsymmetry:
             f"decoder.DROPOUT should be 0.1 per divergences.md, got {DECODER_DROPOUT}"
         )
 
-    def test_config_default_dropout_is_0_1(self) -> None:
-        """Config default is 0.1 — divergences.md notes misalignment with encoder."""
+    def test_config_default_dropout_is_0_2(self) -> None:
+        """Config default is 0.2 (raised from 0.1 for regularization)."""
         from src.config import VAEArchitectureConfig
         cfg = VAEArchitectureConfig()
-        assert cfg.dropout == 0.1, (
-            f"config.dropout default should be 0.1, got {cfg.dropout}"
+        assert cfg.dropout == 0.2, (
+            f"config.dropout default should be 0.2, got {cfg.dropout}"
         )
 
     def test_build_vae_explicit_dropout_overrides_all(self) -> None:

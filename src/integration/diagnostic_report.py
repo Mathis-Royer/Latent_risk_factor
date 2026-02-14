@@ -218,7 +218,27 @@ def generate_diagnostic_markdown(
     lines.append(
         f"- **Rank correlation (OOS)**: {_fmt(risk.get('corr_rank_oos', 0))}"
     )
-    lines.append(f"- **Explanatory power**: {_fmt(risk.get('explanatory_power', 0))}")
+    lines.append(f"- **Explanatory power (OOS)**: {_fmt(risk.get('explanatory_power', 0))}")
+    ep_is = risk.get("ep_in_sample")
+    if ep_is is not None:
+        lines.append(f"- **Explanatory power (IS)**: {_fmt(ep_is)}")
+    if "avg_cs_r2" in risk:
+        lines.append(
+            f"- **Avg cross-sectional R² (OOS)**: {_fmt(risk.get('avg_cs_r2', 0))}"
+        )
+    if "B_A_mean_abs" in risk:
+        lines.append("")
+        lines.append("### Exposure Matrix (B_A) Scale")
+        lines.append("")
+        lines.append(f"- **Mean |B_A|**: {_fmt(risk.get('B_A_mean_abs', 0))}")
+        lines.append(f"- **Std B_A**: {_fmt(risk.get('B_A_std', 0))}")
+        lines.append(f"- **Max |B_A|**: {_fmt(risk.get('B_A_max_abs', 0))}")
+        lines.append(
+            f"- **Column norm (mean)**: {_fmt(risk.get('B_A_col_norm_mean', 0))}"
+        )
+        lines.append(
+            f"- **Column norm (max)**: {_fmt(risk.get('B_A_col_norm_max', 0))}"
+        )
     lines.append(
         f"- **Condition number**: {risk.get('condition_number', 0):.2e}"
     )
@@ -438,12 +458,30 @@ def _generate_recommendations(diagnostics: dict[str, Any]) -> list[str]:
         )
 
     ep = risk.get("explanatory_power", 0)
+    ep_is = risk.get("ep_in_sample")
     if ep < 0.05:
-        recs.append(
-            f"**Very low explanatory power** (EP = {ep:.4f}): "
-            "latent factors explain almost none of the return variance. "
-            "The VAE-discovered factors may not correspond to true risk drivers."
+        ep_msg = (
+            f"**Very low OOS explanatory power** (EP_oos = {ep:.4f}"
         )
+        if ep_is is not None:
+            ep_msg += f", EP_is = {ep_is:.4f}"
+            if ep_is > 0.1 and ep < 0.01:
+                ep_msg += (
+                    "): large IS/OOS gap suggests the factor model overfits "
+                    "the training period. Consider reducing AU, using shorter "
+                    "aggregation windows, or regularizing the exposures."
+                )
+            else:
+                ep_msg += (
+                    "): latent factors explain little return variance even in-sample. "
+                    "The VAE-discovered factors may not correspond to true risk drivers."
+                )
+        else:
+            ep_msg += (
+                "): latent factors explain almost none of the return variance. "
+                "The VAE-discovered factors may not correspond to true risk drivers."
+            )
+        recs.append(ep_msg)
 
     # Portfolio recommendations
     sharpe = portfolio.get("sharpe", 0.0)

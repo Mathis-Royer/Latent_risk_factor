@@ -269,6 +269,9 @@ class TrainingConfig:
     :param adam_betas (tuple): Adam betas
     :param adam_eps (float): Adam epsilon
     :param patience (int): Early stopping patience (epochs)
+    :param es_min_delta (float): Minimum ELBO improvement to count as progress.
+        val_loss must drop by at least this amount below best to reset the
+        patience counter. 0.0 = any improvement counts (default).
     :param lr_patience (int): ReduceLROnPlateau patience
     :param lr_factor (float): ReduceLROnPlateau factor
     :param n_strata (int): Number of strata for synchronous batching
@@ -290,6 +293,7 @@ class TrainingConfig:
     adam_betas: tuple[float, float] = (0.9, 0.999)
     adam_eps: float = 1e-8
     patience: int = 20
+    es_min_delta: float = 0.0
     lr_patience: int = 10
     lr_factor: float = 0.75
     n_strata: int = 15
@@ -305,6 +309,7 @@ class TrainingConfig:
         _validate_range("learning_rate", self.learning_rate, default=5e-3,
                         lo=0, lo_exclusive=True)
         _validate_range("patience", self.patience, default=20, lo=1)
+        _validate_range("es_min_delta", self.es_min_delta, default=0.0, lo=0)
         _validate_range("lr_patience", self.lr_patience, default=10, lo=1)
         _validate_range("lr_factor", self.lr_factor, default=0.75,
                         lo=0, hi=1, lo_exclusive=True, hi_exclusive=True)
