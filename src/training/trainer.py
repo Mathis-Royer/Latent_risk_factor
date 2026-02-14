@@ -290,6 +290,19 @@ class VAETrainer:
                 )
 
             # Backward pass with gradient accumulation
+            if torch.isnan(loss) or torch.isinf(loss):
+                # Skip backward pass for NaN/Inf loss to prevent corrupting model weights
+                logger.warning(
+                    "Train step %d: loss is %s (epoch %d). Skipping backward pass. "
+                    "Check model outputs for NaN (float16 overflow, torch.compile issue).",
+                    step_in_epoch, "NaN" if torch.isnan(loss) else "Inf", epoch,
+                )
+                n_batches += 1
+                self._global_step += 1
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                continue
+
             loss_scaled = loss / accum
             if self.scaler is not None:
                 self.scaler.scale(loss_scaled).backward()
@@ -430,6 +443,7 @@ class VAETrainer:
         _nb = self._is_cuda
         total_elbo = torch.tensor(0.0, device=self.device)
         n_batches = 0
+        n_nan_batches = 0
 
         with torch.no_grad():
             for batch_data in val_loader:
@@ -438,6 +452,7 @@ class VAETrainer:
                 else:
                     x = batch_data.to(self.device, non_blocking=_nb)
 
+                # Model forward pass under AMP autocast (float16 convolutions)
                 with torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
                     device_type=self._amp_device_type,
                     dtype=self._amp_dtype,
@@ -445,20 +460,36 @@ class VAETrainer:
                 ):
                     x_hat, mu, log_var = self.model(x)
 
-                    elbo = compute_validation_elbo(
-                        x=x,
-                        x_hat=x_hat,
-                        mu=mu,
-                        log_var=log_var,
-                        log_sigma_sq=self.model.log_sigma_sq,
-                        sigma_sq_min=self._sigma_sq_min,
-                        sigma_sq_max=self._sigma_sq_max,
-                    )
+                # ELBO computed OUTSIDE autocast in float32 for numerical stability
+                # (loss functions cast inputs to float32 internally)
+                elbo = compute_validation_elbo(
+                    x=x,
+                    x_hat=x_hat,
+                    mu=mu,
+                    log_var=log_var,
+                    log_sigma_sq=self.model.log_sigma_sq,
+                    sigma_sq_min=self._sigma_sq_min,
+                    sigma_sq_max=self._sigma_sq_max,
+                )
 
-                total_elbo += elbo
+                if torch.isnan(elbo) or torch.isinf(elbo):
+                    n_nan_batches += 1
+                else:
+                    total_elbo += elbo
                 n_batches += 1
 
-        return float(total_elbo / max(1, n_batches))
+        if n_nan_batches > 0:
+            logger.warning(
+                "Validation: %d/%d batches produced NaN/Inf ELBO. "
+                "Check AMP settings, sigma_sq bounds, or data quality.",
+                n_nan_batches, n_batches,
+            )
+
+        if n_nan_batches == n_batches:
+            return float("nan")
+
+        valid_batches = max(1, n_batches - n_nan_batches)
+        return float(total_elbo / valid_batches)
 
     def fit(
         self,

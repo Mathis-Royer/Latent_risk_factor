@@ -97,13 +97,13 @@ class TestGetAmpConfig:
         assert cfg["use_scaler"] is False
         assert cfg["dtype"] is torch.float32
 
-    def test_mps_amp_enabled(self) -> None:
-        """MPS should have AMP enabled with float16."""
+    def test_mps_amp_disabled(self) -> None:
+        """MPS should have AMP disabled (float16 unreliable on MPS)."""
         cfg = get_amp_config(torch.device("mps"))
-        assert cfg["use_amp"] is True
+        assert cfg["use_amp"] is False
         assert cfg["device_type"] == "mps"
-        assert cfg["dtype"] is torch.float16
-        assert cfg["use_scaler"] is True
+        assert cfg["dtype"] is torch.float32
+        assert cfg["use_scaler"] is False
 
     def test_cuda_amp_enabled(self) -> None:
         """CUDA should have AMP enabled with float16."""

@@ -46,6 +46,10 @@ def compute_reconstruction_loss(
 
     :return L_recon (torch.Tensor): Scalar, weighted reconstruction loss
     """
+    # Ensure float32 for numerically stable loss (inputs may be float16 from AMP)
+    x = x.float()
+    x_hat = x_hat.float()
+
     # Per-element squared error, mean over T and F dims → (B,)
     mse_per_window = torch.mean((x - x_hat) ** 2, dim=(1, 2))
 
@@ -74,6 +78,10 @@ def compute_kl_loss(
 
     :return L_KL (torch.Tensor): Scalar KL loss
     """
+    # Ensure float32 (exp(log_var) can overflow float16 when log_var > 11)
+    mu = mu.float()
+    log_var = log_var.float()
+
     # Sum over K dimensions, then average over batch
     kl_per_sample = 0.5 * torch.sum(
         mu ** 2 + torch.exp(log_var) - log_var - 1.0,
@@ -253,7 +261,9 @@ def compute_co_movement_loss(
         target_dist = 1.0 - spearman_corr
 
     # Cosine distance in latent space (needs gradient)
-    cos_sim = F_torch.cosine_similarity(mu[idx_i], mu[idx_j], dim=1)
+    # Cast to float32: cosine_similarity norm can overflow float16
+    mu_f32 = mu.float()
+    cos_sim = F_torch.cosine_similarity(mu_f32[idx_i], mu_f32[idx_j], dim=1)
     cosine_dist = 1.0 - cos_sim
 
     # L_co = mean squared error between cosine distance and target
@@ -375,6 +385,12 @@ def compute_validation_elbo(
 
     :return L_val (torch.Tensor): Scalar validation ELBO
     """
+    # Ensure float32 for numerical stability (inputs may be float16 from AMP)
+    x = x.float()
+    x_hat = x_hat.float()
+    mu = mu.float()
+    log_var = log_var.float()
+
     T = x.shape[1]
     F = x.shape[2]
     D = T * F
@@ -385,7 +401,7 @@ def compute_validation_elbo(
     # KL
     L_kl = compute_kl_loss(mu, log_var)
 
-    # σ²
+    # σ² (log_sigma_sq is a Parameter, always float32)
     sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)
 
     # Assembly: includes σ² terms

@@ -45,6 +45,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -75,10 +76,10 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Profile definitions
+# Profile definitions (public — importable from notebook)
 # ---------------------------------------------------------------------------
 
-_PROFILES: dict[str, dict[str, Any]] = {
+PROFILES: dict[str, dict[str, Any]] = {
     "quick": {
         "description": "Quick sanity check with reduced parameters (< 10 min)",
         "data": {
@@ -102,14 +103,14 @@ _PROFILES: dict[str, dict[str, Any]] = {
     "full": {
         "description": "Full diagnostic with production-level parameters (1-3 hours)",
         "data": {
-            "n_stocks": 0,  # 0 = no cap, use all available
+            "n_stocks": 1000,  # 0 = no cap, use all available
             "training_stride": 21,
         },
         "vae": {
-            "K": 200,
+            "K": 75,
         },
         "training": {
-            "max_epochs": 100,
+            "max_epochs": 500,
             "batch_size": 512,
             "compile_model": True,
             "gradient_checkpointing": False,
@@ -135,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--profile", type=str, default="quick",
-        choices=list(_PROFILES.keys()),
+        choices=list(PROFILES.keys()),
         help="Parameter profile: 'quick' for sanity check, 'full' for real diagnostic"
              " (default: quick)",
     )
@@ -196,32 +197,48 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_config(args: argparse.Namespace, profile: dict[str, Any]) -> PipelineConfig:
+def build_config_from_profile(
+    profile_name: str,
+    *,
+    n_stocks: int | None = None,
+    loss_mode: str = "P",
+    seed: int = 42,
+) -> PipelineConfig:
     """
-    Build PipelineConfig from profile and CLI overrides.
+    Build PipelineConfig from a named profile.
 
-    :param args (Namespace): CLI arguments
-    :param profile (dict): Profile parameter dict
+    Callable from both CLI and notebook without argparse dependency.
+
+    :param profile_name (str): Profile key in PROFILES ("quick" or "full")
+    :param n_stocks (int | None): Override n_stocks (None = use profile default)
+    :param loss_mode (str): VAE loss mode ("P", "F", or "A")
+    :param seed (int): Random seed
 
     :return config (PipelineConfig): Pipeline configuration
     """
+    if profile_name not in PROFILES:
+        raise ValueError(
+            f"Unknown profile {profile_name!r}. "
+            f"Available: {list(PROFILES.keys())}"
+        )
+
+    profile = PROFILES[profile_name]
     p_data = profile.get("data", {})
     p_vae = profile.get("vae", {})
     p_training = profile.get("training", {})
     p_portfolio = profile.get("portfolio", {})
 
-    # Apply n_stocks override
-    n_stocks = args.n_stocks if args.n_stocks is not None else p_data.get("n_stocks", 1000)
+    effective_n_stocks = n_stocks if n_stocks is not None else p_data.get("n_stocks", 1000)
 
     data_cfg = DataPipelineConfig(
-        n_stocks=n_stocks,
+        n_stocks=effective_n_stocks,
         training_stride=p_data.get("training_stride", 21),
     )
     vae_cfg = VAEArchitectureConfig(
         K=p_vae.get("K", 200),
     )
     loss_cfg = LossConfig(
-        mode=args.loss_mode,
+        mode=loss_mode,
     )
     training_cfg = TrainingConfig(
         max_epochs=p_training.get("max_epochs", 100),
@@ -233,39 +250,244 @@ def _build_config(args: argparse.Namespace, profile: dict[str, Any]) -> Pipeline
         n_starts=p_portfolio.get("n_starts", 5),
     )
 
-    config = PipelineConfig(
+    return PipelineConfig(
         data=data_cfg,
         vae=vae_cfg,
         loss=loss_cfg,
         training=training_cfg,
         portfolio=portfolio_cfg,
+        seed=seed,
+    )
+
+
+def _build_config(args: argparse.Namespace, profile: dict[str, Any]) -> PipelineConfig:
+    """
+    Build PipelineConfig from profile and CLI overrides (CLI wrapper).
+
+    Delegates to build_config_from_profile().
+
+    :param args (Namespace): CLI arguments
+    :param profile (dict): Profile parameter dict
+
+    :return config (PipelineConfig): Pipeline configuration
+    """
+    return build_config_from_profile(
+        args.profile,
+        n_stocks=args.n_stocks,
+        loss_mode=args.loss_mode,
         seed=args.seed,
     )
 
-    return config
+
+def run_diagnostic(
+    stock_data: pd.DataFrame,
+    returns: pd.DataFrame,
+    trailing_vol: pd.DataFrame,
+    config: PipelineConfig,
+    *,
+    output_dir: str = "results/diagnostic",
+    device: str = "auto",
+    holdout_fraction: float = 0.2,
+    holdout_start: str | None = None,
+    loss_mode: str = "P",
+    run_benchmarks: bool = True,
+    generate_plots: bool = True,
+    tensorboard_dir: str | None = "runs/diagnostic",
+    profile_name: str = "custom",
+    data_source_label: str = "unknown",
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Run comprehensive pipeline diagnostic.
+
+    Callable from both CLI (main()) and notebook (in-process).
+    Runs pipeline, collects diagnostics, generates reports.
+
+    :param stock_data (pd.DataFrame): Raw stock price data
+    :param returns (pd.DataFrame): Log-returns (dates x stocks)
+    :param trailing_vol (pd.DataFrame): Trailing volatility
+    :param config (PipelineConfig): Pipeline configuration
+    :param output_dir (str): Output directory for reports
+    :param device (str): PyTorch device
+    :param holdout_fraction (float): Fraction held out for OOS
+    :param holdout_start (str | None): Explicit split date (overrides fraction)
+    :param loss_mode (str): VAE loss mode (P/F/A)
+    :param run_benchmarks (bool): Whether to run benchmark comparison
+    :param generate_plots (bool): Whether to generate PNG plots
+    :param tensorboard_dir (str | None): TensorBoard log dir (None to disable)
+    :param profile_name (str): Profile label for report metadata
+    :param data_source_label (str): Data source label for report metadata
+    :param seed (int): Random seed
+
+    :return diagnostics (dict): Full diagnostic results dict
+    """
+    t_start = time.monotonic()
+    np.random.seed(seed)
+
+    n_stocks_actual = returns.shape[1]
+    n_dates_actual = returns.shape[0]
+    date_start = str(returns.index[0])[:10]
+    date_end = str(returns.index[-1])[:10]
+
+    logger.info(
+        "Data: %d stocks, %d dates (%s to %s)",
+        n_stocks_actual, n_dates_actual, date_start, date_end,
+    )
+
+    # ---- Step 1: Configure pipeline ----
+    logger.info("Step 1/4: Configuring pipeline...")
+
+    pipeline = FullPipeline(
+        config, tensorboard_dir=tensorboard_dir,
+        checkpoint_dir=os.path.join(output_dir, "checkpoints"),
+    )
+
+    hp_config = [{"mode": loss_mode, "learning_rate": config.training.learning_rate, "alpha": 1.0}]
+
+    logger.info(
+        "Config: K=%d, max_epochs=%d, batch=%d, n_starts=%d, "
+        "stride=%d, holdout=%.0f%%, mode=%s",
+        config.vae.K, config.training.max_epochs,
+        config.training.batch_size, config.portfolio.n_starts,
+        config.data.training_stride, holdout_fraction * 100,
+        loss_mode,
+    )
+
+    # ---- Step 2: Run pipeline ----
+    logger.info("Step 2/4: Running pipeline (direct training mode)...")
+    t_run = time.monotonic()
+
+    results = pipeline.run_direct(
+        stock_data=stock_data,
+        returns=returns,
+        trailing_vol=trailing_vol,
+        vix_data=None,
+        start_date=date_start,
+        hp_grid=hp_config,
+        device=device,
+        holdout_start=holdout_start,
+        holdout_fraction=holdout_fraction,
+        run_benchmarks=run_benchmarks,
+    )
+
+    t_pipeline = time.monotonic() - t_run
+    logger.info("Pipeline completed in %.1f seconds", t_pipeline)
+
+    # Extract results
+    state_bag: dict[str, Any] = results.get("state", {})
+    vae_metrics: dict[str, float] = (
+        results["vae_results"][0] if results["vae_results"] else {}
+    )
+    w_vae = results.get("weights", np.array([]))
+    oos_start = results.get("oos_start", "")
+    oos_end = results.get("oos_end", "")
+    returns_oos = returns.loc[oos_start:oos_end] if oos_start else returns.iloc[-50:]
+
+    # ---- Step 3: Collect diagnostics ----
+    logger.info("Step 3/4: Collecting diagnostics...")
+
+    config_dict = asdict(config)
+    config_dict["_diagnostic"] = {
+        "profile": profile_name,
+        "data_source": data_source_label,
+        "n_stocks_actual": n_stocks_actual,
+        "n_dates_actual": n_dates_actual,
+        "date_range": f"{date_start} to {date_end}",
+        "pipeline_time_seconds": t_pipeline,
+        "holdout_fraction": holdout_fraction,
+        "loss_mode": loss_mode,
+    }
+
+    diagnostics = collect_diagnostics(
+        state_bag=state_bag,
+        vae_metrics=vae_metrics,
+        benchmark_results=results.get("benchmark_results", {}),
+        returns_oos=returns_oos,
+        stock_data=stock_data,
+        returns=returns,
+        w_vae=w_vae,
+        config_dict=config_dict,
+    )
+
+    # ---- Step 4: Generate reports ----
+    logger.info("Step 4/4: Generating reports...")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save standard pipeline results too
+    export_results(results, config_dict, output_dir=output_dir)
+
+    # Save diagnostic report (MD + JSON + CSVs)
+    report_files = save_diagnostic_report(diagnostics, output_dir=output_dir)
+
+    # Save plots
+    if generate_plots:
+        plots_dir = os.path.join(output_dir, "plots")
+        plot_files = save_all_plots(diagnostics, w_vae, output_dir=plots_dir)
+        report_files.extend(plot_files)
+    else:
+        logger.info("Plot generation skipped")
+
+    # ---- Summary ----
+    t_total = time.monotonic() - t_start
+
+    logger.info("=" * 70)
+    logger.info("DIAGNOSTIC COMPLETE")
+    logger.info("=" * 70)
+    logger.info("Total time: %.1f seconds (%.1f min)", t_total, t_total / 60)
+    logger.info("Files generated: %d", len(report_files))
+    logger.info("Output directory: %s", output_dir)
+    logger.info("")
+
+    # Print health check summary
+    checks = diagnostics.get("health_checks", [])
+    summary = diagnostics.get("summary", {})
+    logger.info(
+        "Health: %d OK, %d WARNING, %d CRITICAL",
+        summary.get("n_ok", 0),
+        summary.get("n_warning", 0),
+        summary.get("n_critical", 0),
+    )
+    for c in checks:
+        if c["status"] != "OK":
+            logger.info(
+                "  [%s] %s / %s: %s",
+                c["status"], c["category"], c["check"], c["message"],
+            )
+
+    # Print key metrics
+    logger.info("")
+    logger.info("Key metrics:")
+    logger.info("  Sharpe = %.3f", vae_metrics.get("sharpe", 0.0))
+    logger.info("  Ann. Return = %.2f%%", vae_metrics.get("ann_return", 0.0) * 100)
+    logger.info("  Ann. Vol = %.2f%%", vae_metrics.get("ann_vol_oos", 0.0) * 100)
+    logger.info("  Max DD = %.2f%%", vae_metrics.get("max_drawdown_oos", 0.0) * 100)
+    logger.info("  H_norm = %.4f", vae_metrics.get("H_norm_oos", 0.0))
+    logger.info("  AU = %s", vae_metrics.get("AU", "?"))
+    logger.info("  E* = %s", vae_metrics.get("e_star", "?"))
+
+    logger.info("")
+    logger.info("Report: %s", os.path.join(output_dir, "diagnostic_report.md"))
+
+    return diagnostics
 
 
 def main() -> int:
     """
-    Main diagnostic entry point.
+    Main CLI entry point. Parses args, loads data, delegates to run_diagnostic().
 
     :return exit_code (int): 0 on success, 1 on failure
     """
     args = parse_args()
-    profile = _PROFILES[args.profile]
+    profile = PROFILES[args.profile]
 
     logger.info("=" * 70)
     logger.info("VAE LATENT RISK FACTOR — DIAGNOSTIC RUN")
     logger.info("Profile: %s — %s", args.profile, profile["description"])
     logger.info("=" * 70)
 
-    t_start = time.monotonic()
-
     try:
-        np.random.seed(args.seed)
-
-        # ---- Step 1: Load data ----
-        logger.info("Step 1/5: Loading data...")
+        # ---- Load data ----
+        logger.info("Loading data...")
 
         if args.synthetic:
             n_stocks_syn = args.n_stocks or profile.get("data", {}).get("n_stocks", 50)
@@ -287,165 +509,42 @@ def main() -> int:
             )
             stock_data = load_stock_data(csv_path)
             os.unlink(csv_path)
+            data_source_label = "synthetic"
         else:
             logger.info("Loading Tiingo data from %s", args.data_dir)
             stock_data = load_tiingo_data(data_dir=args.data_dir)
             n_stocks_cap = args.n_stocks or profile.get("data", {}).get("n_stocks", 0)
             stock_data = _filter_universe(stock_data, n_stocks_cap, args.n_years)
+            data_source_label = "tiingo"
 
         # Compute returns and trailing vol
         logger.info("Computing log-returns and trailing volatility...")
         returns = compute_log_returns(stock_data)
         trailing_vol = compute_trailing_volatility(returns, window=252)
 
-        n_stocks_actual = returns.shape[1]
-        n_dates_actual = returns.shape[0]
-        date_start = str(returns.index[0])[:10]
-        date_end = str(returns.index[-1])[:10]
-        logger.info(
-            "Data loaded: %d stocks, %d dates (%s to %s)",
-            n_stocks_actual, n_dates_actual, date_start, date_end,
-        )
-
-        # ---- Step 2: Configure pipeline ----
-        logger.info("Step 2/5: Configuring pipeline...")
+        # ---- Build config ----
         config = _build_config(args, profile)
-
-        tb_dir = None if args.no_tensorboard else args.tensorboard_dir
-        pipeline = FullPipeline(
-            config, tensorboard_dir=tb_dir,
-            checkpoint_dir=os.path.join(args.output_dir, "checkpoints"),
-        )
-
-        # HP config (single config for direct mode)
-        hp_config = [{"mode": args.loss_mode, "learning_rate": config.training.learning_rate, "alpha": 1.0}]
-
         holdout_fraction = profile.get("holdout_fraction", 0.2)
+        tb_dir = None if args.no_tensorboard else args.tensorboard_dir
 
-        logger.info(
-            "Config: K=%d, max_epochs=%d, batch=%d, n_starts=%d, "
-            "stride=%d, holdout=%.0f%%, mode=%s",
-            config.vae.K, config.training.max_epochs,
-            config.training.batch_size, config.portfolio.n_starts,
-            config.data.training_stride, holdout_fraction * 100,
-            args.loss_mode,
-        )
-
-        # ---- Step 3: Run pipeline ----
-        logger.info("Step 3/5: Running pipeline (direct training mode)...")
-        t_run = time.monotonic()
-
-        results = pipeline.run_direct(
+        # ---- Run diagnostic ----
+        run_diagnostic(
             stock_data=stock_data,
             returns=returns,
             trailing_vol=trailing_vol,
-            vix_data=None,
-            start_date=date_start,
-            hp_grid=hp_config,
+            config=config,
+            output_dir=args.output_dir,
             device=args.device,
-            holdout_start=args.holdout_start,
             holdout_fraction=holdout_fraction,
+            holdout_start=args.holdout_start,
+            loss_mode=args.loss_mode,
             run_benchmarks=not args.no_benchmarks,
+            generate_plots=not args.no_plots,
+            tensorboard_dir=tb_dir,
+            profile_name=args.profile,
+            data_source_label=data_source_label,
+            seed=args.seed,
         )
-
-        t_pipeline = time.monotonic() - t_run
-        logger.info("Pipeline completed in %.1f seconds", t_pipeline)
-
-        # Extract results
-        state_bag: dict[str, Any] = results.get("state", {})
-        vae_metrics: dict[str, float] = (
-            results["vae_results"][0] if results["vae_results"] else {}
-        )
-        w_vae = results.get("weights", np.array([]))
-        oos_start = results.get("oos_start", "")
-        oos_end = results.get("oos_end", "")
-        returns_oos = returns.loc[oos_start:oos_end] if oos_start else returns.iloc[-50:]
-
-        # ---- Step 4: Collect diagnostics ----
-        logger.info("Step 4/5: Collecting diagnostics...")
-
-        config_dict = asdict(config)
-        config_dict["_diagnostic"] = {
-            "profile": args.profile,
-            "data_source": "synthetic" if args.synthetic else "tiingo",
-            "n_stocks_actual": n_stocks_actual,
-            "n_dates_actual": n_dates_actual,
-            "date_range": f"{date_start} to {date_end}",
-            "pipeline_time_seconds": t_pipeline,
-            "holdout_fraction": holdout_fraction,
-            "loss_mode": args.loss_mode,
-        }
-
-        diagnostics = collect_diagnostics(
-            state_bag=state_bag,
-            vae_metrics=vae_metrics,
-            benchmark_results=results.get("benchmark_results", {}),
-            returns_oos=returns_oos,
-            stock_data=stock_data,
-            returns=returns,
-            w_vae=w_vae,
-            config_dict=config_dict,
-        )
-
-        # ---- Step 5: Generate reports ----
-        logger.info("Step 5/5: Generating reports...")
-        os.makedirs(args.output_dir, exist_ok=True)
-
-        # Save standard pipeline results too
-        export_results(results, config_dict, output_dir=args.output_dir)
-
-        # Save diagnostic report (MD + JSON + CSVs)
-        report_files = save_diagnostic_report(diagnostics, output_dir=args.output_dir)
-
-        # Save plots
-        if not args.no_plots:
-            plots_dir = os.path.join(args.output_dir, "plots")
-            plot_files = save_all_plots(diagnostics, w_vae, output_dir=plots_dir)
-            report_files.extend(plot_files)
-        else:
-            logger.info("Plot generation skipped (--no-plots)")
-
-        # ---- Summary ----
-        t_total = time.monotonic() - t_start
-        n_files = len(report_files)
-
-        logger.info("=" * 70)
-        logger.info("DIAGNOSTIC COMPLETE")
-        logger.info("=" * 70)
-        logger.info("Total time: %.1f seconds (%.1f min)", t_total, t_total / 60)
-        logger.info("Files generated: %d", n_files)
-        logger.info("Output directory: %s", args.output_dir)
-        logger.info("")
-
-        # Print health check summary
-        checks = diagnostics.get("health_checks", [])
-        summary = diagnostics.get("summary", {})
-        logger.info(
-            "Health: %d OK, %d WARNING, %d CRITICAL",
-            summary.get("n_ok", 0),
-            summary.get("n_warning", 0),
-            summary.get("n_critical", 0),
-        )
-        for c in checks:
-            if c["status"] != "OK":
-                logger.info(
-                    "  [%s] %s / %s: %s",
-                    c["status"], c["category"], c["check"], c["message"],
-                )
-
-        # Print key metrics
-        logger.info("")
-        logger.info("Key metrics:")
-        logger.info("  Sharpe = %.3f", vae_metrics.get("sharpe", 0.0))
-        logger.info("  Ann. Return = %.2f%%", vae_metrics.get("ann_return", 0.0) * 100)
-        logger.info("  Ann. Vol = %.2f%%", vae_metrics.get("ann_vol_oos", 0.0) * 100)
-        logger.info("  Max DD = %.2f%%", vae_metrics.get("max_drawdown_oos", 0.0) * 100)
-        logger.info("  H_norm = %.4f", vae_metrics.get("H_norm_oos", 0.0))
-        logger.info("  AU = %s", vae_metrics.get("AU", "?"))
-        logger.info("  E* = %s", vae_metrics.get("e_star", "?"))
-
-        logger.info("")
-        logger.info("Report: %s", os.path.join(args.output_dir, "diagnostic_report.md"))
 
         return 0
 

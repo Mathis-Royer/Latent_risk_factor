@@ -8,8 +8,12 @@ Reference: ISD Section MOD-005 — Sub-task 3.
 """
 
 import copy
+import logging
+import math
 
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 class EarlyStopping:
@@ -35,10 +39,14 @@ class EarlyStopping:
         self.counter = 0
         self.best_state: dict | None = None
         self.stopped = False
+        self._nan_streak = 0
 
     def check(self, val_loss: float, epoch: int, model: nn.Module) -> bool:
         """
         Check if training should stop.
+
+        NaN val_loss is treated as non-improvement (counter increments).
+        Consecutive NaN epochs are tracked and logged.
 
         :param val_loss (float): Current validation ELBO
         :param epoch (int): Current epoch number
@@ -46,6 +54,24 @@ class EarlyStopping:
 
         :return should_stop (bool): True if patience exhausted
         """
+        if math.isnan(val_loss) or math.isinf(val_loss):
+            self._nan_streak += 1
+            if self._nan_streak in (1, 5, 10, 20):
+                logger.warning(
+                    "val_loss is %s at epoch %d (%d consecutive). "
+                    "Possible causes: AMP float16 overflow, exploding gradients, "
+                    "or degenerate data. Counter: %d/%d.",
+                    "NaN" if math.isnan(val_loss) else "Inf",
+                    epoch, self._nan_streak, self.counter + 1, self.patience,
+                )
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.stopped = True
+                return True
+            return False
+
+        self._nan_streak = 0
+
         if val_loss < self.best_loss:
             self.best_loss = val_loss
             self.best_epoch = epoch

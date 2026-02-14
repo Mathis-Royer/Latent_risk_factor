@@ -1536,6 +1536,13 @@ class FullPipeline:
         eigenvalues = eigenvalues * vt_scale
         D_eps_port = D_eps_port * vt_scale
 
+        # Update risk_model dict with variance-targeted values so that
+        # downstream consumers (diagnostics, state_bag) see the scaled
+        # covariance matrix, not the raw assembly output.
+        risk_model["Sigma_assets"] = Sigma_assets
+        risk_model["eigenvalues"] = eigenvalues
+        risk_model["D_eps_port"] = D_eps_port
+
         if _state_bag is not None:
             _state_bag["risk_model"] = risk_model
             _state_bag["Sigma_z"] = Sigma_z
