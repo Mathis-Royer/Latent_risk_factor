@@ -15,6 +15,7 @@ from sklearn.covariance import LedoitWolf
 
 def estimate_sigma_z(
     z_hat: np.ndarray,
+    eigenvalue_pct: float = 1.0,
 ) -> np.ndarray:
     """
     Estimate factor covariance Σ_z using Ledoit-Wolf shrinkage.
@@ -23,13 +24,57 @@ def estimate_sigma_z(
 
     Uses the FULL history (anti-cyclical principle).
 
-    :param z_hat (np.ndarray): Factor returns (n_dates, AU)
+    When *eigenvalue_pct* < 1.0, post-shrinkage eigenvalue truncation
+    is applied: after LW shrinkage, Σ_z is eigendecomposed and only
+    the top-k eigenvalues that collectively explain at least
+    eigenvalue_pct of the total trace are kept.  Remaining eigenvalues
+    are set to zero and the matrix is reconstructed.  This removes
+    noisy factor dimensions that otherwise get amplified through the
+    quadratic form B·Σ_z·B^T.
 
-    :return Sigma_z (np.ndarray): Shrunk factor covariance (AU, AU)
+    :param z_hat (np.ndarray): Factor returns (n_dates, AU)
+    :param eigenvalue_pct (float): Fraction of total Σ_z variance
+        to retain (0, 1].  1.0 = keep all (no truncation).
+        Typical: 0.95.
+
+    :return Sigma_z (np.ndarray): Shrunk (and optionally truncated)
+        factor covariance (AU, AU)
     """
     lw = LedoitWolf()
     lw.fit(z_hat)
-    return lw.covariance_  # type: ignore[return-value]
+    Sigma_z: np.ndarray = lw.covariance_  # type: ignore[assignment]
+
+    if eigenvalue_pct >= 1.0:
+        return Sigma_z
+
+    # Eigenvalue truncation
+    eigenvalues, V = np.linalg.eigh(Sigma_z)
+    # Sort descending
+    sort_idx = np.argsort(-eigenvalues)
+    eigenvalues = eigenvalues[sort_idx]
+    V = V[:, sort_idx]
+
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    total_var = eigenvalues.sum()
+
+    if total_var <= 0.0:
+        return Sigma_z
+
+    cumulative = np.cumsum(eigenvalues) / total_var
+    # Keep smallest k such that cumulative[k-1] >= eigenvalue_pct
+    k = int(np.searchsorted(cumulative, eigenvalue_pct)) + 1
+    k = min(k, len(eigenvalues))
+
+    # Zero out smaller eigenvalues
+    eigenvalues[k:] = 0.0
+
+    # Reconstruct: V diag(λ) V^T
+    Sigma_z_trunc = (V * eigenvalues[np.newaxis, :]) @ V.T
+
+    # Symmetrize (numerical safety)
+    Sigma_z_trunc = 0.5 * (Sigma_z_trunc + Sigma_z_trunc.T)
+
+    return Sigma_z_trunc
 
 
 def estimate_d_eps(

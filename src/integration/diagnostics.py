@@ -83,12 +83,15 @@ def training_diagnostics(fit_result: dict[str, Any] | None) -> dict[str, Any]:
     au_series = [h.get("AU", 0) for h in history]
     lr_series = [h.get("learning_rate", float("nan")) for h in history]
 
-    # Convergence check: is loss still decreasing at end?
-    loss_last_10 = train_loss[-min(10, n_epochs):]
+    # Convergence check: is val ELBO still decreasing at end?
+    # Use val_elbo (not train_loss) because early stopping acts on val ELBO.
+    # A declining train_loss with flat val ELBO signals overfitting, not
+    # insufficient training.
+    elbo_last_10 = val_elbo[-min(10, n_epochs):]
     still_decreasing = False
-    if len(loss_last_10) >= 5:
-        _x = list(range(len(loss_last_10)))
-        _y = list(loss_last_10)
+    if len(elbo_last_10) >= 5:
+        _x = list(range(len(elbo_last_10)))
+        _y = list(elbo_last_10)
         regress_result = sp_stats.linregress(_x, _y)
         slope = float(regress_result[0])  # type: ignore[arg-type]
         p_value = float(regress_result[3])  # type: ignore[arg-type]
@@ -633,7 +636,7 @@ def run_health_checks(
         # Still decreasing at end
         if training.get("still_decreasing_at_end", False):
             _add("Training", "Convergence", "WARNING",
-                 "Loss still decreasing at end — consider more epochs")
+                 "Val ELBO still decreasing at end — consider more epochs")
         else:
             _add("Training", "Convergence", "OK", "Training converged")
 

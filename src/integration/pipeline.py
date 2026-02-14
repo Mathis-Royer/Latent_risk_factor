@@ -1395,7 +1395,11 @@ class FullPipeline:
             device=device,
             compute_kl=True,
         )
-        B, inferred_stock_ids = aggregate_profiles(trajectories, method="mean")
+        B, inferred_stock_ids = aggregate_profiles(
+            trajectories,
+            method="mean",
+            half_life=self.config.inference.aggregation_half_life,
+        )
 
         # 4. Derive AU from pre-computed KL (no extra forward pass)
         assert kl_per_dim is not None
@@ -1516,7 +1520,10 @@ class FullPipeline:
             "  [Fold %d] Factor regression done (%d valid dates). Covariance estimation...",
             fold_id, z_hat.shape[0],
         )
-        Sigma_z = estimate_sigma_z(z_hat)
+        Sigma_z = estimate_sigma_z(
+            z_hat,
+            eigenvalue_pct=self.config.risk_model.sigma_z_eigenvalue_pct,
+        )
         D_eps = estimate_d_eps(
             residuals, inferred_stock_ids,
             d_eps_floor=self.config.risk_model.d_eps_floor,

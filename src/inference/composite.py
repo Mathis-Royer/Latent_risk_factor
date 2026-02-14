@@ -108,6 +108,7 @@ def infer_latent_trajectories(
 def aggregate_profiles(
     trajectories: dict[int, np.ndarray],
     method: str = "mean",
+    half_life: int = 0,
 ) -> tuple[np.ndarray, list[int]]:
     """
     Aggregate local latent vectors into composite profiles.
@@ -115,8 +116,21 @@ def aggregate_profiles(
     Default: mean (all windows contribute equally, preserving memory
     of all historical regimes).
 
+    When half_life > 0, use exponential decay weighting: recent windows
+    get more weight than older ones. Each stock's windows are assumed to
+    be sorted chronologically (from create_windows). The weight of
+    window i (0=oldest, n-1=newest) is w_i = exp(-ln(2) * (n-1-i) / half_life).
+
+    This addresses the "B_A staleness" issue: with half_life=60 and
+    stride=21, windows older than ~5 years have negligible weight,
+    so B_A reflects the current factor structure rather than the
+    average over the entire training history.
+
     :param trajectories (dict): stock_id (int) → (n_windows, K)
-    :param method (str): Aggregation method ('mean')
+    :param method (str): Aggregation method ('mean', 'ewm')
+    :param half_life (int): Exponential decay half-life in windows.
+        0 = uniform mean (original behavior). Typical: 60 (1260 days
+        at stride=21, i.e. ~5 years). Only used when method='mean'.
 
     :return B (np.ndarray): Exposure matrix (n_stocks, K)
     :return stock_ids (list[int]): Ordered stock identifiers (permnos)
@@ -128,7 +142,16 @@ def aggregate_profiles(
         vectors = trajectories[sid]  # (n_windows_for_stock, K)
 
         if method == "mean":
-            profile = np.mean(vectors, axis=0)
+            if half_life > 0 and vectors.shape[0] > 1:
+                n_w = vectors.shape[0]
+                decay = np.log(2.0) / half_life
+                # i=0 oldest, i=n_w-1 newest → weight = exp(-decay * (n_w-1-i))
+                indices = np.arange(n_w, dtype=np.float64)
+                weights = np.exp(-decay * (n_w - 1 - indices))
+                weights /= weights.sum()
+                profile = weights @ vectors  # (K,)
+            else:
+                profile = np.mean(vectors, axis=0)
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
 
