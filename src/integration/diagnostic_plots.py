@@ -135,13 +135,15 @@ def plot_training_convergence(
     ax.set_title("Co-movement Loss", fontsize=11, fontweight="bold")
     ax.grid(True, alpha=0.3)
 
-    # --- [1,1] Overfit ratio (val / train) ---
+    # --- [1,1] Overfit ratio (val ELBO / train ELBO) ---
     ax = axes[1][1]
-    if train_loss and val_elbo:
-        min_len = min(len(train_loss), len(val_elbo))
+    if train_recon and train_kl and val_elbo:
+        min_len = min(len(train_recon), len(train_kl), len(val_elbo))
         ratio = [
-            v / max(t, 1e-10)
-            for t, v in zip(train_loss[:min_len], val_elbo[:min_len])
+            v / max(r + k, 1e-10)
+            for r, k, v in zip(
+                train_recon[:min_len], train_kl[:min_len], val_elbo[:min_len],
+            )
         ]
         ax.plot(
             epochs[:min_len], ratio,
@@ -150,7 +152,7 @@ def plot_training_convergence(
         ax.axhspan(0.85, 1.5, color="#22c55e", alpha=0.08, label="Healthy [0.85, 1.5]")
         ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
     _add_best_line(ax)
-    ax.set_title("Overfit Ratio (Val / Train)", fontsize=11, fontweight="bold")
+    ax.set_title("Overfit Ratio (Val ELBO / Train ELBO)", fontsize=11, fontweight="bold")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
