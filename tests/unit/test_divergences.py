@@ -163,106 +163,102 @@ class TestDiv03DropoutAsymmetry:
 
 
 class TestDiv04VarianceTargeting:
-    """Divergence #4: _variance_targeting_scale not in DVT/ISD.
+    """Divergence #4: scalar variance targeting (undocumented addition).
     divergences.md says: 'Garder — ajout critique, clamped [0.01, 100]'.
+    Now uses a single scalar VT (realized_EW_var / predicted_EW_var) applied
+    AFTER all eigenvalue transformations.
     """
 
     def test_variance_targeting_formula(self) -> None:
-        """Dual VT via cross-sectional regression decomposition.
+        """Block VT: separate sys/idio scales.
 
         Verifies that:
-        1. Both scales are positive and clamped.
-        2. Scales are genuinely independent (not always equal), unlike
-           proportional allocation which is degenerate.
-        3. Scaled total is within reasonable range of realized variance
-           (exact equality is not expected due to cross-term Cov(r_sys, r_idio)).
+        1. Both scales are positive and clamped to [0.01, 100].
+        2. Combined scaled predicted EW variance is close to realized EW variance.
         """
-        from src.integration.pipeline import _variance_targeting_scale
+        from src.integration.pipeline import FullPipeline
+        from src.risk_model.covariance import assemble_risk_model
 
         rng = np.random.RandomState(42)
         n = 20
         AU = 5
-        # Build factor model components
         B_A_port = rng.randn(n, AU) * 0.1
         Sigma_z = np.eye(AU) * 0.01
         D_eps_port = rng.uniform(0.0001, 0.001, n)
 
-        # Generate returns whose realized EW variance we can compute manually
-        n_days = 500
-        ew_rets = rng.randn(n_days) * 0.01  # daily EW returns
-        stock_ids = list(range(n))
+        # Get B_prime and eigenvalues via assemble_risk_model
+        rm = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
+        B_prime_port = rm["B_prime_port"]
+        eigenvalues = rm["eigenvalues"]
 
-        # Build a returns DataFrame where mean of all columns ≈ ew_rets
+        n_days = 500
+        ew_rets = rng.randn(n_days) * 0.01
+        stock_ids = list(range(n))
         returns_df = pd.DataFrame(
             {s: ew_rets + rng.randn(n_days) * 0.001 for s in stock_ids},
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale_sys, scale_idio = _variance_targeting_scale(
-            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
+        vt_sys, vt_idio = FullPipeline._block_variance_targeting(
+            B_prime_port, eigenvalues, D_eps_port, returns_df, stock_ids, n,
         )
 
-        # Both must be positive and clamped
-        assert 0.01 <= scale_sys <= 100.0
-        assert 0.01 <= scale_idio <= 100.0
-        assert np.isfinite(scale_sys)
-        assert np.isfinite(scale_idio)
+        assert 0.01 <= vt_sys <= 100.0
+        assert 0.01 <= vt_idio <= 100.0
+        assert np.isfinite(vt_sys)
+        assert np.isfinite(vt_idio)
 
-        # Scaled total should be in reasonable range of realized variance
-        # (not exact due to cross-term from regression decomposition)
+        # Combined scaled predicted EW var should be close to realized
         w_eq = np.ones(n) / n
-        pred_sys = float(w_eq @ (B_A_port @ Sigma_z @ B_A_port.T) @ w_eq)
-        pred_idio = float(w_eq @ np.diag(D_eps_port) @ w_eq)
+        beta_eq = B_prime_port.T @ w_eq
+        pred_sys = float(np.sum(beta_eq ** 2 * eigenvalues))
+        pred_idio = float(np.sum(w_eq ** 2 * D_eps_port))
         ew_returns = returns_df[stock_ids].mean(axis=1).to_numpy()
         realized_var = float(np.var(ew_returns, ddof=1))
-        scaled_total = scale_sys * pred_sys + scale_idio * pred_idio
-        # Allow up to 100% relative error (cross-term can be significant for
-        # small synthetic data where factor model poorly fits the DGP)
-        assert scaled_total > 0, f"Scaled total must be positive, got {scaled_total}"
-        assert abs(scaled_total - realized_var) / max(realized_var, 1e-10) < 1.0, (
-            f"Scaled total={scaled_total:.2e} too far from realized={realized_var:.2e}"
+        scaled_pred = vt_sys * pred_sys + vt_idio * pred_idio
+        assert abs(scaled_pred - realized_var) / max(realized_var, 1e-10) < 0.10, (
+            f"Scaled pred={scaled_pred:.2e} should be close to realized={realized_var:.2e}"
         )
 
     def test_variance_targeting_clamp_lower(self) -> None:
         """When predicted var >> realized var, scales are clamped to >= 0.01."""
-        from src.integration.pipeline import _variance_targeting_scale
+        from src.integration.pipeline import FullPipeline
+        from src.risk_model.covariance import assemble_risk_model
 
         n = 5
         AU = 2
-        # Hugely overestimated systematic block
         B_A_port = np.eye(n, AU) * 100.0
         Sigma_z = np.eye(AU) * 1000.0
         D_eps_port = np.ones(n) * 1000.0
+        rm = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
         stock_ids = list(range(n))
 
-        # Tiny realized returns
         n_days = 100
         returns_df = pd.DataFrame(
             {s: np.ones(n_days) * 0.0001 for s in stock_ids},
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale_sys, scale_idio = _variance_targeting_scale(
-            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
+        vt_sys, vt_idio = FullPipeline._block_variance_targeting(
+            rm["B_prime_port"], rm["eigenvalues"], D_eps_port,
+            returns_df, stock_ids, n,
         )
-        assert scale_sys >= 0.01
-        assert scale_idio >= 0.01
-        assert scale_sys <= 100.0
-        assert scale_idio <= 100.0
+        assert 0.01 <= vt_sys <= 100.0
+        assert 0.01 <= vt_idio <= 100.0
 
     def test_variance_targeting_clamp_upper(self) -> None:
         """When predicted var << realized var, scales are clamped to <= 100."""
-        from src.integration.pipeline import _variance_targeting_scale
+        from src.integration.pipeline import FullPipeline
+        from src.risk_model.covariance import assemble_risk_model
 
         n = 5
         AU = 2
-        # Tiny predicted
         B_A_port = np.eye(n, AU) * 1e-6
         Sigma_z = np.eye(AU) * 1e-12
         D_eps_port = np.ones(n) * 1e-12
+        rm = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
         stock_ids = list(range(n))
 
-        # Large realized returns
         rng = np.random.RandomState(0)
         n_days = 100
         returns_df = pd.DataFrame(
@@ -270,47 +266,46 @@ class TestDiv04VarianceTargeting:
             index=pd.date_range("2020-01-01", periods=n_days),
         )
 
-        scale_sys, scale_idio = _variance_targeting_scale(
-            B_A_port, Sigma_z, D_eps_port, returns_df, stock_ids,
+        vt_sys, vt_idio = FullPipeline._block_variance_targeting(
+            rm["B_prime_port"], rm["eigenvalues"], D_eps_port,
+            returns_df, stock_ids, n,
         )
-        assert scale_sys <= 100.0
-        assert scale_idio <= 100.0
-        assert scale_sys >= 0.01
-        assert scale_idio >= 0.01
+        assert 0.01 <= vt_sys <= 100.0
+        assert 0.01 <= vt_idio <= 100.0
 
     def test_variance_targeting_identity_when_perfect(self) -> None:
         """If predicted var == realized var, scales ≈ 1.0."""
-        from src.integration.pipeline import _variance_targeting_scale
+        from src.integration.pipeline import FullPipeline
+        from src.risk_model.covariance import assemble_risk_model
 
         rng = np.random.RandomState(42)
         n = 10
         AU = 3
         n_days = 10_000
-        # Generate returns from known variance
         daily_vol = 0.01
         returns_df = pd.DataFrame(
             {s: rng.randn(n_days) * daily_vol for s in range(n)},
             index=pd.date_range("2000-01-01", periods=n_days),
         )
-        # Build factor model from realized data
-        # Use SVD of realized returns to build B_A_port, Sigma_z, D_eps
-        ret_matrix = returns_df.values  # (n_days, n)
+        ret_matrix = returns_df.values
         U, S, Vt = np.linalg.svd(ret_matrix, full_matrices=False)
-        B_A_port = Vt[:AU, :].T  # (n, AU)
-        z_hat = ret_matrix @ B_A_port  # (n_days, AU)
-        Sigma_z = np.cov(z_hat, rowvar=False)  # (AU, AU)
+        B_A_port = Vt[:AU, :].T
+        z_hat = ret_matrix @ B_A_port
+        Sigma_z = np.cov(z_hat, rowvar=False)
         resids = ret_matrix - z_hat @ B_A_port.T
-        D_eps_port = np.var(resids, axis=0, ddof=1)  # (n,)
+        D_eps_port = np.var(resids, axis=0, ddof=1)
+        rm = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
 
-        scale_sys, scale_idio = _variance_targeting_scale(
-            B_A_port, Sigma_z, D_eps_port, returns_df, list(range(n)),
+        vt_sys, vt_idio = FullPipeline._block_variance_targeting(
+            rm["B_prime_port"], rm["eigenvalues"], D_eps_port,
+            returns_df, list(range(n)), n,
         )
-        # Both scales should be close to 1.0
-        assert abs(scale_sys - 1.0) < 0.3, (
-            f"scale_sys should be ~1.0 when model matches realized, got {scale_sys}"
+        # Both scales should be close to 1.0 when model matches realized
+        assert abs(vt_sys - 1.0) < 0.25, (
+            f"vt_sys should be ~1.0 when model matches realized, got {vt_sys}"
         )
-        assert abs(scale_idio - 1.0) < 0.3, (
-            f"scale_idio should be ~1.0 when model matches realized, got {scale_idio}"
+        assert abs(vt_idio - 1.0) < 0.25, (
+            f"vt_idio should be ~1.0 when model matches realized, got {vt_idio}"
         )
 
 

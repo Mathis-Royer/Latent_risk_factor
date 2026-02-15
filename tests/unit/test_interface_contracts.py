@@ -627,7 +627,7 @@ def test_contract_covariance_assembly() -> None:
 
     # Build valid PSD Sigma_z via scatter matrix
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
 
     # Synthetic portfolio exposures and idiosyncratic variances
     B_A_port = rng.randn(n, AU).astype(np.float64)
@@ -802,7 +802,7 @@ def test_contract_multi_start_optimize() -> None:
     # Build valid PSD Sigma_assets
     B_A_port = rng.randn(n, AU).astype(np.float64)
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
     D_eps = np.abs(rng.randn(n).astype(np.float64)) + 1e-4
 
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)
@@ -844,9 +844,12 @@ def test_contract_multi_start_optimize() -> None:
     # FORMULA: H ≥ 0 (entropy non-negative)
     assert H >= -1e-10, f"Entropy H={H} should be >= 0"
 
-    # FORMULA: H ≤ ln(AU) (entropy upper bound)
-    assert H <= np.log(AU) + 0.01, (
-        f"H={H:.4f} exceeds max entropy ln({AU})={np.log(AU):.4f}"
+    # FORMULA: H ≤ ln(AU + n) (entropy upper bound with idiosyncratic contributions)
+    # When D_eps is passed, entropy considers AU systematic + n idiosyncratic
+    # contributions, so the maximum is ln(AU + n), not ln(AU).
+    max_H = float(np.log(AU + n))
+    assert H <= max_H + 0.01, (
+        f"H={H:.4f} exceeds max entropy ln({AU}+{n})={max_H:.4f}"
     )
 
     # FORMULA: INV-012 constraints satisfied
@@ -882,7 +885,7 @@ def test_contract_enforce_cardinality() -> None:
     # Build valid risk model
     B_A_port = rng.randn(n, AU).astype(np.float64)
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
     D_eps = np.abs(rng.randn(n).astype(np.float64)) + 1e-4
 
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)

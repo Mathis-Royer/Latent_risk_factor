@@ -409,9 +409,9 @@ def run_diagnostic(
         config_dict=config_dict,
     )
 
-    # Expose raw data for notebook consumption (not serialized to reports)
+    # Expose lightweight data for notebook portfolio holdings cell
     diagnostics["_raw_weights"] = w_vae
-    diagnostics["_raw_state"] = state_bag
+    diagnostics["_raw_stock_ids"] = state_bag.get("inferred_stock_ids", [])
 
     # ---- Step 4: Generate reports ----
     logger.info("Step 4/4: Generating reports...")

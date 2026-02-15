@@ -57,22 +57,21 @@ def safe_solve(
     ridge_scale: float = 1e-6,
 ) -> np.ndarray:
     """
-    Solve cross-sectional OLS with conditioning guard.
+    Solve cross-sectional OLS via SVD-based least squares.
 
-    z_hat_t = (B^T B)^{-1} B^T r_t, with ridge if ill-conditioned.
+    Uses np.linalg.lstsq() which handles rank-deficiency and
+    ill-conditioning via SVD truncation — more numerically stable
+    than explicit (B^T B)^{-1} B^T r with manual ridge.
+
+    The conditioning_threshold and ridge_scale parameters are retained
+    for API compatibility but no longer used internally.
 
     :param B_t (np.ndarray): Exposures at date t (n_active, AU)
     :param r_t (np.ndarray): Returns at date t (n_active,)
-    :param conditioning_threshold (float): κ threshold for ridge
-    :param ridge_scale (float): Ridge scale factor
+    :param conditioning_threshold (float): Unused (kept for API compat)
+    :param ridge_scale (float): Unused (kept for API compat)
 
     :return z_hat (np.ndarray): Factor returns (AU,)
     """
-    BtB = B_t.T @ B_t
-
-    if check_conditioning(BtB, conditioning_threshold):
-        BtB = apply_ridge(BtB, ridge_scale)
-
-    Btr = B_t.T @ r_t
-    z_hat = np.linalg.solve(BtB, Btr)
+    z_hat, _, _, _ = np.linalg.lstsq(B_t, r_t, rcond=None)
     return z_hat

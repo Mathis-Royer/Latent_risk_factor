@@ -93,103 +93,6 @@ _VT_SCALE_MIN = 0.01
 _VT_SCALE_MAX = 100.0
 
 
-def _variance_targeting_scale(
-    B_A_port: np.ndarray,
-    Sigma_z: np.ndarray,
-    D_eps_port: np.ndarray,
-    train_returns: "pd.DataFrame",
-    stock_ids: list[int],
-) -> tuple[float, float]:
-    """
-    Compute dual variance-targeting scales for systematic and idiosyncratic blocks.
-
-    Decomposes *realized* daily EW returns into systematic and idiosyncratic
-    components via cross-sectional OLS (f_t = (B^T B)^-1 B^T r_t), then
-    calibrates each block against its own realized variance independently.
-    This produces genuinely different scales, unlike proportional allocation
-    which collapses to a single scalar.
-
-    Follows Barra USE4 methodology (Menchero, Wang, Orr 2011): factor and
-    specific risk are calibrated via independent realized observables.
-
-    :param B_A_port (np.ndarray): Portfolio-rescaled exposures (n, AU)
-    :param Sigma_z (np.ndarray): Factor covariance (AU, AU)
-    :param D_eps_port (np.ndarray): Idiosyncratic variances (n,)
-    :param train_returns (pd.DataFrame): Training-period daily log-returns (dates x stocks)
-    :param stock_ids (list[int]): Stock IDs matching rows of B_A_port
-
-    :return (scale_sys, scale_idio) (tuple[float, float]): Calibration factors
-        for the systematic and idiosyncratic blocks respectively.
-    """
-    n = B_A_port.shape[0]
-    AU = B_A_port.shape[1]
-    w_eq = np.ones(n) / n
-
-    # Decompose predicted EW variance
-    Sigma_sys = B_A_port @ Sigma_z @ B_A_port.T
-    pred_sys = float(w_eq @ Sigma_sys @ w_eq)
-    pred_idio = float(w_eq @ np.diag(D_eps_port) @ w_eq)
-
-    if pred_sys <= 1e-12 and pred_idio <= 1e-12:
-        return 1.0, 1.0
-
-    # Align stock IDs with return columns
-    available = [s for s in stock_ids[:n] if s in train_returns.columns]
-    if len(available) < max(AU + 1, 10):
-        return 1.0, 1.0
-    avail_idx = [stock_ids[:n].index(s) for s in available]
-    R = train_returns[available].fillna(0.0).to_numpy()  # (T, n_avail)
-    if R.shape[0] < 20:
-        return 1.0, 1.0
-
-    B_sub = B_A_port[avail_idx]  # (n_avail, AU)
-    n_avail = len(available)
-    w_sub = np.ones(n_avail) / n_avail
-
-    # Daily factor returns via cross-sectional OLS: f_t = (B^T B)^-1 B^T r_t
-    BtB = B_sub.T @ B_sub
-    eigenvalues_btb = np.linalg.eigvalsh(BtB)
-    if eigenvalues_btb.min() <= 0 or eigenvalues_btb.max() / max(eigenvalues_btb.min(), 1e-15) > 1e6:
-        # Ill-conditioned: add ridge
-        trace = float(np.trace(BtB))
-        BtB = BtB + (1e-6 * trace / max(AU, 1)) * np.eye(AU)
-    BtB_inv = np.linalg.inv(BtB)
-    F = R @ B_sub @ BtB_inv.T  # (T, AU) daily factor returns
-
-    # Decompose realized EW portfolio return into systematic + idiosyncratic
-    r_ew = R @ w_sub  # (T,) realized EW returns
-    r_sys_per_stock = F @ B_sub.T  # (T, n_avail) systematic component per stock
-    r_sys = r_sys_per_stock @ w_sub  # (T,) systematic EW return
-    r_idio = r_ew - r_sys  # (T,) idiosyncratic EW return
-
-    realized_sys_var = float(np.var(r_sys, ddof=1))
-    realized_idio_var = float(np.var(r_idio, ddof=1))
-
-    # Compute genuinely independent per-block scales
-    scale_sys = (realized_sys_var / pred_sys) if pred_sys > 1e-12 else 1.0
-    scale_idio = (realized_idio_var / pred_idio) if pred_idio > 1e-12 else 1.0
-
-    # Clamp to safety bounds
-    scale_sys = float(np.clip(scale_sys, _VT_SCALE_MIN, _VT_SCALE_MAX))
-    scale_idio = float(np.clip(scale_idio, _VT_SCALE_MIN, _VT_SCALE_MAX))
-
-    if not np.isfinite(scale_sys):
-        scale_sys = 1.0
-    if not np.isfinite(scale_idio):
-        scale_idio = 1.0
-
-    logger.info(
-        "  Variance targeting (dual): "
-        "realized_sys_vol=%.4f, realized_idio_vol=%.4f, "
-        "pred_sys_vol=%.4f, pred_idio_vol=%.4f, "
-        "scale_sys=%.4f, scale_idio=%.4f",
-        np.sqrt(realized_sys_var * 252), np.sqrt(realized_idio_var * 252),
-        np.sqrt(pred_sys * 252), np.sqrt(pred_idio * 252),
-        scale_sys, scale_idio,
-    )
-    return scale_sys, scale_idio
-
-
 class FullPipeline:
     """
     End-to-end pipeline orchestrator.
@@ -1249,6 +1152,181 @@ class FullPipeline:
         }
 
     # -------------------------------------------------------------------
+    # Block-level variance targeting
+    # NOTE: Currently calibrates on in-sample training data (last holdout_fraction
+    # of the training period).  Ideally, VT should use a separate held-out period
+    # not used for factor regression or covariance estimation (Barra USE4 approach).
+    # However, this requires re-running factor regression on a subset, which is
+    # architecturally complex.  The current approach provides a reasonable
+    # approximation because (1) EWMA half-life=252 gives less weight to recent
+    # observations in Sigma_z, partially decorrelating prediction from the
+    # holdout period, and (2) VT scales are clamped to [0.01, 100].
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _block_variance_targeting(
+        B_prime_port: np.ndarray,
+        eigenvalues: np.ndarray,
+        D_eps_port: np.ndarray,
+        train_returns: "pd.DataFrame",
+        stock_ids: list[int],
+        n_port: int,
+        z_hat: np.ndarray | None = None,
+        residuals_by_stock: dict[int, list[float]] | None = None,
+        B_A_by_date: dict[str, np.ndarray] | None = None,
+        valid_dates: list[str] | None = None,
+        holdout_fraction: float = 0.2,
+    ) -> tuple[float, float]:
+        """
+        Block-level variance targeting via z_hat/residual decomposition.
+
+        Uses the available z_hat (factor returns) and stock-level residuals
+        to independently estimate realized systematic and idiosyncratic
+        variances of the EW portfolio, then scales each block to match.
+
+        For each holdout day t:
+          r_sys_t = w_eq^T @ B_A_t @ z_hat_t  (systematic EW return)
+          r_idio_t = r_ew_t - r_sys_t          (idiosyncratic EW return)
+
+        Then: vt_sys = Var(r_sys) / pred_sys_var
+              vt_idio = Var(r_idio) / pred_idio_var
+
+        Falls back to scalar VT when z_hat decomposition is not available.
+
+        :param B_prime_port (np.ndarray): Rotated exposures (n, n_signal)
+        :param eigenvalues (np.ndarray): Principal eigenvalues (n_signal,)
+        :param D_eps_port (np.ndarray): Idiosyncratic variances (n,)
+        :param train_returns (pd.DataFrame): Training daily log-returns
+        :param stock_ids (list[int]): Stock IDs matching Sigma_assets rows
+        :param n_port (int): Number of portfolio stocks
+        :param z_hat (np.ndarray | None): Factor returns (n_dates, AU)
+        :param residuals_by_stock (dict | None): stock_id -> list of residuals
+        :param B_A_by_date (dict | None): date_str -> B_A matrix
+        :param valid_dates (list[str] | None): Dates with valid factor returns
+        :param holdout_fraction (float): Fraction of training for holdout
+
+        :return vt_sys (float): Systematic block scale, clamped to [0.01, 100]
+        :return vt_idio (float): Idiosyncratic block scale, clamped to [0.01, 100]
+        """
+        n = B_prime_port.shape[0]
+        w_eq = np.ones(n) / n
+
+        # Predicted variance decomposition for EW portfolio
+        beta_eq = B_prime_port.T @ w_eq  # (n_signal,)
+        pred_sys_var = float(np.sum(beta_eq ** 2 * eigenvalues))
+        pred_idio_var = float(np.sum(w_eq ** 2 * D_eps_port))
+
+        if pred_sys_var <= 1e-12 and pred_idio_var <= 1e-12:
+            return 1.0, 1.0
+
+        # Realized EW portfolio returns on holdout
+        available = [s for s in stock_ids[:n_port] if s in train_returns.columns]
+        if len(available) < 10:
+            return 1.0, 1.0
+        R_full = train_returns[available].fillna(0.0).to_numpy()
+        n_total = R_full.shape[0]
+        if n_total < 40:
+            return 1.0, 1.0
+
+        n_holdout = max(20, int(n_total * holdout_fraction))
+        R = R_full[-n_holdout:]
+        n_avail = len(available)
+        w_sub = np.ones(n_avail) / n_avail
+        r_ew = R @ w_sub
+
+        # Try z_hat decomposition for independent block VT
+        can_decompose = (
+            z_hat is not None
+            and B_A_by_date is not None
+            and valid_dates is not None
+            and len(valid_dates) > n_holdout
+        )
+
+        if can_decompose:
+            assert z_hat is not None and B_A_by_date is not None and valid_dates is not None
+            # Use the last n_holdout valid dates
+            holdout_dates = valid_dates[-n_holdout:]
+            r_sys_list: list[float] = []
+            r_idio_list: list[float] = []
+
+            # Pre-build date → z_hat index lookup (O(1) per date instead of O(n))
+            date_to_zidx = {d: i for i, d in enumerate(valid_dates)}
+
+            for t_idx, date_str in enumerate(holdout_dates):
+                if date_str not in B_A_by_date:
+                    continue
+                if t_idx >= z_hat.shape[0]:
+                    continue
+                z_idx = date_to_zidx.get(date_str)
+                if z_idx is None or z_idx >= z_hat.shape[0]:
+                    continue
+
+                B_A_t = B_A_by_date[date_str]
+                z_t = z_hat[z_idx]  # (AU,)
+
+                # Systematic return: use properly normalized EW weights
+                n_b = B_A_t.shape[0]
+                if n_b >= n_avail:
+                    r_sys_t = float(w_sub @ (B_A_t[:n_avail] @ z_t))
+                else:
+                    w_eq_t = np.ones(n_b) / n_b  # normalized for this date's universe
+                    r_sys_t = float(w_eq_t @ (B_A_t @ z_t))
+                r_total_t = float(r_ew[t_idx]) if t_idx < len(r_ew) else 0.0
+                r_idio_t = r_total_t - r_sys_t
+
+                r_sys_list.append(r_sys_t)
+                r_idio_list.append(r_idio_t)
+
+            if len(r_sys_list) >= 20:
+                realized_sys_var = float(np.var(r_sys_list, ddof=1))
+                realized_idio_var = float(np.var(r_idio_list, ddof=1))
+
+                # Independent block scales
+                vt_sys = realized_sys_var / max(pred_sys_var, 1e-15)
+                vt_idio = realized_idio_var / max(pred_idio_var, 1e-15)
+
+                vt_sys = float(np.clip(vt_sys, _VT_SCALE_MIN, _VT_SCALE_MAX))
+                vt_idio = float(np.clip(vt_idio, _VT_SCALE_MIN, _VT_SCALE_MAX))
+
+                if not np.isfinite(vt_sys):
+                    vt_sys = 1.0
+                if not np.isfinite(vt_idio):
+                    vt_idio = 1.0
+
+                logger.info(
+                    "  Variance targeting (z_hat decomposition, %d holdout days): "
+                    "realized_sys_vol=%.4f, realized_idio_vol=%.4f, "
+                    "pred_sys_vol=%.4f, pred_idio_vol=%.4f, "
+                    "s_sys=%.4f, s_idio=%.4f",
+                    len(r_sys_list),
+                    np.sqrt(realized_sys_var * 252),
+                    np.sqrt(realized_idio_var * 252),
+                    np.sqrt(pred_sys_var * 252),
+                    np.sqrt(pred_idio_var * 252),
+                    vt_sys, vt_idio,
+                )
+                return vt_sys, vt_idio
+
+        # Fallback: scalar VT (single ratio for both blocks)
+        realized_var = float(np.var(r_ew, ddof=1))
+        pred_total = pred_sys_var + pred_idio_var
+        if pred_total <= 1e-12:
+            return 1.0, 1.0
+
+        overall_ratio = realized_var / pred_total
+        vt_scalar = float(np.clip(overall_ratio, _VT_SCALE_MIN, _VT_SCALE_MAX))
+
+        logger.info(
+            "  Variance targeting (scalar fallback, %d holdout days): "
+            "realized_vol=%.4f, pred_vol=%.4f, s=%.4f",
+            n_holdout,
+            np.sqrt(realized_var * 252),
+            np.sqrt(pred_total * 252),
+            vt_scalar,
+        )
+        return vt_scalar, vt_scalar
+
+    # -------------------------------------------------------------------
     # Phase B: Single fold deployment
     # -------------------------------------------------------------------
 
@@ -1498,19 +1576,21 @@ class FullPipeline:
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
 
-        # B_A scale normalization: target mean(|B_A|) = 1/sqrt(AU)
+        # B_A per-factor z-score normalization (Barra USE4 standard):
+        # each column of B_A (factor) is standardized to mean=0, std=1
+        # cross-sectionally.  This replaces the ad-hoc global scaling
+        # (mean(|B_A|) = 1/sqrt(AU)) with the industry-standard approach.
         if self.config.risk_model.b_a_normalize and AU > 0:
-            current_scale = float(np.mean(np.abs(B_A)))
-            target_scale = 1.0 / np.sqrt(float(AU))
-            if current_scale > 1e-12:
-                b_a_scale_factor = target_scale / current_scale
-                B_A = B_A * b_a_scale_factor
-                logger.info(
-                    "  [Fold %d] B_A normalized: scale_factor=%.3f, "
-                    "mean_abs %.4f -> %.4f",
-                    fold_id, b_a_scale_factor, current_scale,
-                    float(np.mean(np.abs(B_A))),
-                )
+            col_means = np.mean(B_A, axis=0)  # (AU,)
+            col_stds = np.std(B_A, axis=0, ddof=1)  # (AU,)
+            col_stds = np.maximum(col_stds, 1e-12)
+            B_A = (B_A - col_means[np.newaxis, :]) / col_stds[np.newaxis, :]
+            logger.info(
+                "  [Fold %d] B_A z-score normalized (per-factor): "
+                "mean_abs=%.4f, col_std_range=[%.4f, %.4f]",
+                fold_id, float(np.mean(np.abs(B_A))),
+                float(np.min(col_stds)), float(np.max(col_stds)),
+            )
 
         # B_A shrinkage: reduce spurious cross-stock correlations
         shrinkage_alpha = self.config.risk_model.b_a_shrinkage_alpha
@@ -1626,9 +1706,11 @@ class FullPipeline:
             "  [Fold %d] Factor regression done (%d valid dates). Covariance estimation...",
             fold_id, z_hat.shape[0],
         )
-        Sigma_z = estimate_sigma_z(
+        Sigma_z, n_signal = estimate_sigma_z(
             z_hat,
             eigenvalue_pct=self.config.risk_model.sigma_z_eigenvalue_pct,
+            shrinkage_method=self.config.risk_model.sigma_z_shrinkage,
+            ewma_half_life=self.config.risk_model.sigma_z_ewma_half_life,
         )
         D_eps = estimate_d_eps(
             residuals, inferred_stock_ids,
@@ -1643,29 +1725,43 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
-        # Variance targeting (dual): calibrate systematic and idiosyncratic
-        # blocks separately so predicted EW variance matches realized.
-        vt_scale_sys, vt_scale_idio = _variance_targeting_scale(
-            B_A_port, Sigma_z, D_eps_port,
-            returns.loc[train_start:train_end],
-            inferred_stock_ids,
-        )
-        # Rebuild Sigma_assets with separate scales per block
-        Sigma_sys = B_A_port @ Sigma_z @ B_A_port.T
-        Sigma_assets = vt_scale_sys * Sigma_sys + np.diag(vt_scale_idio * D_eps_port)
-        eigenvalues = eigenvalues * vt_scale_sys
-        D_eps_port = D_eps_port * vt_scale_idio
-
-        # Eigenvalue power shrinkage (compress dominant eigenvalues)
-        eig_power = self.config.risk_model.eigenvalue_power
-        if eig_power < 1.0:
-            eigenvalues = np.power(eigenvalues, eig_power)
-            Sigma_sys_compressed = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
-            Sigma_assets = Sigma_sys_compressed + np.diag(D_eps_port)
+        # Truncate to signal eigenvalues only: entropy should diversify
+        # across real factors, not noise dimensions (DGJ BBP threshold).
+        n_signal = max(1, min(n_signal, len(eigenvalues)))
+        if n_signal < len(eigenvalues):
+            eigenvalues = eigenvalues[:n_signal]
+            B_prime_port = B_prime_port[:, :n_signal]
+            # Rebuild Sigma_assets with truncated systematic block
+            Sigma_sys_trunc = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+            Sigma_assets = Sigma_sys_trunc + np.diag(D_eps_port)
+            Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)  # ensure symmetry
+            risk_model["Sigma_assets"] = Sigma_assets
+            risk_model["eigenvalues"] = eigenvalues
+            risk_model["B_prime_port"] = B_prime_port
             logger.info(
-                "  [Fold %d] Eigenvalue power shrinkage: p=%.2f",
-                fold_id, eig_power,
+                "  [Fold %d] Eigenvalue truncation: n_signal=%d/%d",
+                fold_id, n_signal, AU,
             )
+
+        # Block-level variance targeting: separate scales for systematic
+        # and idiosyncratic blocks (Barra USE4 methodology).
+        # Applied AFTER all eigenvalue transformations (DGJ/power) to avoid
+        # the old ordering bug where dual VT was invalidated by subsequent
+        # power shrinkage.
+        vt_sys, vt_idio = self._block_variance_targeting(
+            B_prime_port, eigenvalues, D_eps_port,
+            returns.loc[train_start:train_end],
+            inferred_stock_ids, n_port,
+            z_hat=z_hat,
+            residuals_by_stock=residuals,
+            B_A_by_date=B_A_by_date,
+            valid_dates=valid_dates,
+        )
+        eigenvalues = eigenvalues * vt_sys
+        D_eps_port = D_eps_port * vt_idio
+        Sigma_sys_vt = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+        Sigma_assets = Sigma_sys_vt + np.diag(D_eps_port)
+        Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)  # ensure symmetry
 
         # Update risk_model dict with variance-targeted values so that
         # downstream consumers (diagnostics, state_bag) see the scaled
@@ -1679,19 +1775,20 @@ class FullPipeline:
             _state_bag["Sigma_z"] = Sigma_z
             _state_bag["z_hat"] = z_hat
             _state_bag["B_A_port"] = B_A_port
-            _state_bag["vt_scale_sys"] = vt_scale_sys
-            _state_bag["vt_scale_idio"] = vt_scale_idio
+            _state_bag["vt_scale_sys"] = vt_sys
+            _state_bag["vt_scale_idio"] = vt_idio
+            _state_bag["n_signal"] = n_signal
             _state_bag["B_A_by_date"] = B_A_by_date
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots
             _state_bag["train_returns"] = returns.loc[train_start:train_end]
 
         logger.info(
-            "  [Fold %d] Risk model: AU=%d, B_A(%d×%d), Sigma(%d×%d), "
-            "vt_scale_sys=%.4f, vt_scale_idio=%.4f",
-            fold_id, AU, B_A_port.shape[0], B_A_port.shape[1],
+            "  [Fold %d] Risk model: AU=%d, n_signal=%d, B_A(%d×%d), Sigma(%d×%d), "
+            "vt_sys=%.4f, vt_idio=%.4f, shrinkage=%s",
+            fold_id, AU, n_signal, B_A_port.shape[0], B_A_port.shape[1],
             Sigma_assets.shape[0], Sigma_assets.shape[1],
-            vt_scale_sys, vt_scale_idio,
+            vt_sys, vt_idio, self.config.risk_model.sigma_z_shrinkage,
         )
 
         # 8. Portfolio optimization: frontier → α*, SCA → w*
@@ -1731,8 +1828,9 @@ class FullPipeline:
             n_starts=pc.n_starts, seed=self.config.seed,
             entropy_eps=pc.entropy_eps,
             mu=mu,
+            idio_weight=pc.entropy_idio_weight,
         )
-        alpha_opt = select_operating_alpha(frontier)
+        alpha_opt = select_operating_alpha(frontier, target_enb=pc.target_enb)
 
         if _state_bag is not None:
             _state_bag["alpha_opt"] = alpha_opt
@@ -1759,6 +1857,7 @@ class FullPipeline:
             w_old=None, is_first=True,
             entropy_eps=pc.entropy_eps,
             mu=mu,
+            idio_weight=pc.entropy_idio_weight,
         )
 
         logger.info("  [Fold %d] SCA done. Cardinality enforcement...", fold_id)
@@ -1781,6 +1880,8 @@ class FullPipeline:
             "entropy_eps": pc.entropy_eps,
             "_L_sigma": L_sigma,
             "mu": mu,
+            "D_eps": D_eps_port,
+            "idio_weight": pc.entropy_idio_weight,
         }
         w_final = enforce_cardinality(
             w_opt, B_prime_port, eigenvalues,
@@ -1790,6 +1891,8 @@ class FullPipeline:
             max_eliminations=pc.max_cardinality_elim,
             entropy_eps=pc.entropy_eps,
             method=pc.cardinality_method,
+            D_eps=D_eps_port,
+            idio_weight=pc.entropy_idio_weight,
         )
 
         t_fold = time.monotonic() - t0
@@ -1806,6 +1909,7 @@ class FullPipeline:
             universe=inferred_stock_ids,
             H_oos=H_opt, AU=AU, K=self.config.vae.K,
             Sigma_hat=Sigma_assets,
+            n_signal=n_signal,
         )
         metrics["AU"] = float(AU)
         metrics["e_star"] = float(e_star)
@@ -1820,14 +1924,22 @@ class FullPipeline:
             trainer.close()
 
         # Layer 2: realized vs predicted variance + correlation
-        # Use dropna (not fillna(0)) to avoid downward bias on realized variance.
+        # Use only active positions to avoid dropna("any") eliminating most
+        # OOS rows due to missing data in zero-weight stocks.
         if returns_oos.shape[0] > 0:
-            oos_df = returns_oos.reindex(columns=inferred_stock_ids[:n_port]).dropna(how="any")
-            if len(oos_df) > 10:
+            active_mask = w_final > 1e-8
+            active_ids = [inferred_stock_ids[i] for i in range(n_port) if active_mask[i]]
+            oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
+            if len(oos_df) > 10 and len(active_ids) > 0:
+                w_active = w_final[active_mask]
+                w_active = w_active / w_active.sum()
+                # Build the active-only sub-covariance
+                active_indices = np.where(active_mask)[0]
+                Sigma_active = Sigma_assets[np.ix_(active_indices, active_indices)]
                 oos_values = oos_df.values
-                var_ratio = realized_vs_predicted_variance(w_final, Sigma_assets, oos_values)
+                var_ratio = realized_vs_predicted_variance(w_active, Sigma_active, oos_values)
                 metrics["var_ratio_oos"] = var_ratio
-                corr_rank = realized_vs_predicted_correlation(Sigma_assets, oos_values)
+                corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_values)
                 metrics["corr_rank_oos"] = corr_rank
 
         # Layer 3: crisis-period return

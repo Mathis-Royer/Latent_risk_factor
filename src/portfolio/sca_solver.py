@@ -253,6 +253,8 @@ def objective_function(
     mu: np.ndarray | None = None,
     entropy_eps: float = 1e-30,
     _L_sigma: np.ndarray | None = None,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> float:
     """
     Full objective: f(w) = w^T μ - λ w^T Σ w + α H(w) - φ P_conc - P_turn
@@ -275,6 +277,9 @@ def objective_function(
     :param mu (np.ndarray | None): Expected returns (default: zeros)
     :param entropy_eps (float): Numerical stability for entropy
     :param _L_sigma (np.ndarray | None): Pre-computed Cholesky factor (internal)
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,) for
+        entropy computation including idiosyncratic risk contributions.
+    :param idio_weight (float): Weight for idiosyncratic entropy layer (0-1).
 
     :return f (float): Objective value (to maximize)
     """
@@ -290,8 +295,9 @@ def objective_function(
     else:
         risk_term = lambda_risk * float(w @ Sigma_assets @ w)
 
-    # Entropy term
-    H = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps)
+    # Entropy term (two-layer: factor + idiosyncratic)
+    H = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                             idio_weight=idio_weight)
 
     # Concentration penalty
     P_conc = concentration_penalty(w, w_bar)
@@ -369,6 +375,8 @@ def sca_optimize(
     armijo_max_iter: int = 20,
     entropy_eps: float = 1e-30,
     _L_sigma: np.ndarray | None = None,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> tuple[np.ndarray, float, float, int]:
     """
     SCA optimization from a single starting point.
@@ -399,6 +407,9 @@ def sca_optimize(
     :param armijo_max_iter (int): Max Armijo steps
     :param entropy_eps (float): Numerical stability
     :param _L_sigma (np.ndarray | None): Pre-computed Cholesky (internal)
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,) for
+        entropy computation including idiosyncratic risk contributions.
+    :param idio_weight (float): Weight for idiosyncratic entropy layer (0-1).
 
     :return w_final (np.ndarray): Optimized weights (n,)
     :return f_final (float): Final objective value
@@ -424,6 +435,7 @@ def sca_optimize(
             w_eval, Sigma_assets, B_prime, eigenvalues, alpha,
             lambda_risk, phi, w_bar, w_old, kappa_1, kappa_2,
             delta_bar, is_first, mu, entropy_eps, _L_sigma=L_sigma,
+            D_eps=D_eps, idio_weight=idio_weight,
         )
 
     f_current = obj_fn(w)
@@ -431,7 +443,8 @@ def sca_optimize(
     for it in range(max_iter):
         # Compute entropy and gradient at current point
         H_current, grad_H = compute_entropy_and_gradient(
-            w, B_prime, eigenvalues, entropy_eps,
+            w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+            idio_weight=idio_weight,
         )
 
         # Solve reusing pre-compiled parametric problem
@@ -440,31 +453,42 @@ def sca_optimize(
         if w_star is None:
             break
 
-        # Surrogate improvement
-        f_surr_star = obj_fn(w_star)
-        delta_surr = f_surr_star - f_current
-        if delta_surr < 0:
-            delta_surr = 0.0
+        # Directional derivative of the smooth part of the objective:
+        #   ∇f_smooth = μ - 2λΣw + α∇H(w)
+        # Used as reference descent for Armijo sufficient decrease.
+        # Clamped to 0 when SCA direction is not an ascent direction for
+        # the true objective (happens when linearization error is large).
+        Lw = L_sigma.T @ w
+        grad_risk = -2.0 * lambda_risk * (L_sigma @ Lw)
+        grad_f_smooth = alpha * grad_H + grad_risk
+        if mu is not None:
+            grad_f_smooth = grad_f_smooth + mu
+        direction = w_star - w
+        delta_surr = max(float(grad_f_smooth @ direction), 0.0)
 
         # Armijo backtracking
         eta = armijo_backtracking(
-            w, w_star, f_current, max(delta_surr, tol),
+            w, w_star, f_current, delta_surr,
             obj_fn, armijo_c, armijo_rho, armijo_max_iter,
         )
 
         # Update
         w_new = w + eta * (w_star - w)
 
-        # Ensure feasibility
-        w_new = np.clip(w_new, 0.0, w_max)
-        w_sum = np.sum(w_new)
-        if w_sum > 0:
-            w_new = w_new / w_sum
+        # Ensure feasibility: clip-renormalize loop to prevent w_max
+        # violation from renormalization of a clipped vector.
+        for _ in range(10):
+            w_new = np.clip(w_new, 0.0, w_max)
+            w_sum = np.sum(w_new)
+            if w_sum > 0:
+                w_new = w_new / w_sum
+            if np.all(w_new <= w_max + 1e-10):
+                break
 
         f_new = obj_fn(w_new)
 
-        # Convergence check: |f(w^{t+1}) - f(w^t)| < tol (DVT: 1e-8)
-        if abs(f_new - f_current) < tol:
+        # Convergence check: relative change in objective (scale-independent)
+        if abs(f_new - f_current) < tol * max(1e-10, abs(f_current)):
             w = w_new
             f_current = f_new
             break
@@ -472,7 +496,8 @@ def sca_optimize(
         w = w_new
         f_current = f_new
 
-    H_final = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps)
+    H_final = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                                    idio_weight=idio_weight)
     return w, f_current, H_final, it + 1
 
 
@@ -484,6 +509,7 @@ def multi_start_optimize(
     alpha: float,
     n_starts: int = 5,
     seed: int = 42,
+    warm_start_w: np.ndarray | None = None,
     **kwargs: float | np.ndarray | bool | None,
 ) -> tuple[np.ndarray, float, float]:
     """
@@ -493,7 +519,8 @@ def multi_start_optimize(
     1. Equal-weight
     2. Minimum variance (approximate)
     3. Approximate ERC (inverse vol)
-    4-5. Random (Dirichlet + projection)
+    4+. Random (Dirichlet + projection)
+    Optional: warm-start from a previous solution (replaces one random start)
 
     Pre-computes Cholesky once and shares across all starts.
     Runs starts in parallel via ThreadPoolExecutor (solvers release the GIL).
@@ -505,6 +532,9 @@ def multi_start_optimize(
     :param alpha (float): Entropy weight
     :param n_starts (int): Number of starts
     :param seed (int): Random seed
+    :param warm_start_w (np.ndarray | None): Optional warm-start weights from
+        a previous optimization (e.g., adjacent alpha on the frontier).
+        Replaces one random start to keep total starts constant.
     :param **kwargs: Additional parameters for sca_optimize
 
     :return w_best (np.ndarray): Best weights (n,)
@@ -540,15 +570,22 @@ def multi_start_optimize(
     w_erc = w_erc / w_erc.sum()
     starts.append(project_to_constraints(w_erc, w_max, w_min))
 
-    # 4-5. Random starts
-    for _ in range(max(0, n_starts - 3)):
+    # 4. Warm-start from previous solution (if available)
+    if warm_start_w is not None and warm_start_w.shape[0] == n:
+        starts.append(project_to_constraints(warm_start_w.copy(), w_max, w_min))
+
+    # 5+. Random starts (fill remaining slots)
+    n_random = max(0, n_starts - len(starts))
+    for _ in range(n_random):
         n_active = rng.randint(30, min(300, n) + 1)
         active_idx = rng.choice(n, size=n_active, replace=False)
         w_rand = np.zeros(n)
         w_rand[active_idx] = rng.dirichlet(np.ones(n_active))
         starts.append(project_to_constraints(w_rand, w_max, w_min))
 
-    # Filter kwargs for sca_optimize (remove w_min which is only for initialization)
+    # w_min is used only for initialization projection in multi_start_optimize,
+    # not passed to sca_optimize (which has no w_min parameter — semi-continuous
+    # constraints are enforced post-hoc via cardinality enforcement).
     sca_kwargs = {k: v for k, v in kwargs.items() if k != "w_min"}
 
     active_starts = starts[:n_starts]
@@ -561,6 +598,7 @@ def multi_start_optimize(
             eigenvalues=eigenvalues,
             alpha=alpha,
             _L_sigma=L_sigma,
+            D_eps=D_eps,
             **sca_kwargs,  # type: ignore[arg-type]
         )
 
