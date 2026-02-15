@@ -1498,6 +1498,20 @@ class FullPipeline:
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
 
+        # B_A scale normalization: target mean(|B_A|) = 1/sqrt(AU)
+        if self.config.risk_model.b_a_normalize and AU > 0:
+            current_scale = float(np.mean(np.abs(B_A)))
+            target_scale = 1.0 / np.sqrt(float(AU))
+            if current_scale > 1e-12:
+                b_a_scale_factor = target_scale / current_scale
+                B_A = B_A * b_a_scale_factor
+                logger.info(
+                    "  [Fold %d] B_A normalized: scale_factor=%.3f, "
+                    "mean_abs %.4f -> %.4f",
+                    fold_id, b_a_scale_factor, current_scale,
+                    float(np.mean(np.abs(B_A))),
+                )
+
         # B_A shrinkage: reduce spurious cross-stock correlations
         shrinkage_alpha = self.config.risk_model.b_a_shrinkage_alpha
         if shrinkage_alpha > 0.0:
@@ -1766,6 +1780,7 @@ class FullPipeline:
             "delta_bar": pc.delta_bar, "tau_max": pc.tau_max,
             "entropy_eps": pc.entropy_eps,
             "_L_sigma": L_sigma,
+            "mu": mu,
         }
         w_final = enforce_cardinality(
             w_opt, B_prime_port, eigenvalues,

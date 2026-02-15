@@ -399,6 +399,10 @@ class RiskModelConfig:
         eigenvalues = eigenvalues^p.  1.0 = no change (original behavior).
         0.5 = square root (compresses dominant eigenvalues, reduces
         concentration of top factors in the risk model).  Range: (0, 1].
+    :param b_a_normalize (bool): If True, rescale B_A after AU filtering
+        so that mean(|B_A|) = 1/sqrt(AU).  This corrects the unconstrained
+        VAE encoder output scale and reduces the need for extreme variance
+        targeting corrections.  Default: True.
     """
 
     winsorize_lo: float = 5.0
@@ -406,9 +410,10 @@ class RiskModelConfig:
     d_eps_floor: float = 1e-6
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
-    sigma_z_eigenvalue_pct: float = 1.0
-    b_a_shrinkage_alpha: float = 0.0
-    eigenvalue_power: float = 1.0
+    sigma_z_eigenvalue_pct: float = 0.95
+    b_a_shrinkage_alpha: float = 0.15
+    eigenvalue_power: float = 0.65
+    b_a_normalize: bool = True
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
