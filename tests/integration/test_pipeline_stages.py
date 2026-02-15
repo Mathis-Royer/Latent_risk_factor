@@ -256,7 +256,7 @@ def test_B_to_risk_model_to_Sigma() -> None:
     assert z_hat.shape[0] > 0, "No valid dates for factor regression"
 
     # Covariance
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
     eigenvalues = np.linalg.eigvalsh(Sigma_z)
     assert np.all(eigenvalues >= -1e-10), (
         f"Sigma_z not PSD: min eigenvalue = {eigenvalues.min():.2e}"
@@ -341,15 +341,20 @@ def test_Sigma_to_portfolio_weights() -> None:
     assert np.all(np.isfinite(w_opt)), "Non-finite weights"
     assert np.isfinite(H_opt), "Non-finite entropy"
 
-    # FORMULA: H ∈ [0, ln(AU)] and constraints satisfied
+    # FORMULA: H ∈ [0, max_H] and constraints satisfied
+    # Must pass D_eps to match two-layer entropy used by the optimizer
     from src.portfolio.entropy import compute_entropy_and_gradient
-    H_verify, grad_H = compute_entropy_and_gradient(w_opt, B_prime, eigenvalues)
+    H_verify, grad_H = compute_entropy_and_gradient(
+        w_opt, B_prime, eigenvalues, D_eps=D_eps,
+    )
     assert abs(H_opt - H_verify) < 1e-6, (
         f"Returned H={H_opt:.6f} != recomputed H={H_verify:.6f}"
     )
     assert H_opt >= -1e-10, f"Entropy H={H_opt} should be ≥ 0"
-    assert H_opt <= np.log(au) + 0.01, (
-        f"H={H_opt:.4f} exceeds ln(AU)={np.log(au):.4f}"
+    # Two-layer max: (1-w_idio)*ln(AU) + w_idio*ln(n)
+    max_H = 0.8 * np.log(au) + 0.2 * np.log(n)
+    assert H_opt <= max_H + 0.01, (
+        f"H={H_opt:.4f} exceeds max_H={max_H:.4f}"
     )
 
     # FORMULA: INV-012 constraints — w_max check
@@ -420,7 +425,7 @@ def test_risk_model_to_portfolio_chain() -> None:
     assert z_hat.shape[0] > 0, "No valid factor returns"
 
     # Covariance
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
     residuals = compute_residuals(B_A_by_date, z_hat, returns, universe_snapshots, valid_dates, stock_ids)
     D_eps = estimate_d_eps(residuals, stock_ids)
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)

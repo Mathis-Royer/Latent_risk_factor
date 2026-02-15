@@ -313,7 +313,22 @@ class TestCovariance:
     """Tests for covariance estimation (MOD-007 sub-tasks 3-4)."""
 
     def test_Sigma_z_psd(self) -> None:
-        """Ledoit-Wolf Sigma_z must be PSD and match shrinkage formula.
+        """Default (spiked) Sigma_z must be PSD."""
+        np.random.seed(SEED)
+        rng = np.random.RandomState(SEED)
+
+        z_hat = rng.randn(100, AU).astype(np.float64) * 0.01
+        Sigma_z, n_signal = estimate_sigma_z(z_hat)  # default: spiked (DGJ)
+
+        assert isinstance(n_signal, int) and n_signal >= 0
+        eigenvalues = np.linalg.eigvalsh(Sigma_z)
+        assert np.all(eigenvalues >= -1e-14), (
+            f"Sigma_z not PSD: min eigenvalue = {eigenvalues.min():.2e}"
+        )
+        assert Sigma_z.shape == (AU, AU)
+
+    def test_Sigma_z_truncation_matches_lw(self) -> None:
+        """Truncation method uses LW and must match shrinkage formula.
 
         B1: Verify Sigma_LW = (1-delta)*S_sample + delta*(tr(S_sample)/AU)*I
         """
@@ -323,12 +338,8 @@ class TestCovariance:
         rng = np.random.RandomState(SEED)
 
         z_hat = rng.randn(100, AU).astype(np.float64) * 0.01
-        Sigma_z = estimate_sigma_z(z_hat)
-
-        eigenvalues = np.linalg.eigvalsh(Sigma_z)
-        assert np.all(eigenvalues >= -1e-14), (
-            f"Sigma_z not PSD: min eigenvalue = {eigenvalues.min():.2e}"
-        )
+        # Use truncation method (which applies LW internally)
+        Sigma_z, n_signal_trunc = estimate_sigma_z(z_hat, shrinkage_method="truncation")
 
         # B1: Verify LW shrinkage formula directly
         lw = LedoitWolf()
@@ -347,10 +358,10 @@ class TestCovariance:
         Sigma_LW_manual = (1.0 - delta) * S_sample + delta * target
         np.testing.assert_allclose(
             Sigma_z, Sigma_LW_manual, atol=1e-10,
-            err_msg="estimate_sigma_z doesn't match LW shrinkage formula",
+            err_msg="estimate_sigma_z(truncation) doesn't match LW formula",
         )
 
-        # Shrinkage MUST improve conditioning (not just by a tiny additive margin)
+        # Shrinkage MUST improve conditioning
         cond_sample = np.linalg.cond(S_sample)
         cond_lw = np.linalg.cond(Sigma_z)
         assert cond_lw <= cond_sample * (1.0 + 1e-10), (
@@ -465,31 +476,17 @@ class TestConditioning:
 
         r_t = rng.randn(n_active).astype(np.float64) * 0.01
 
-        # This should not raise thanks to the ridge fallback
+        # This should not raise thanks to lstsq's SVD-based solving
         z_hat = safe_solve(B_t, r_t, conditioning_threshold=1e6, ridge_scale=1e-6)
 
         assert z_hat.shape == (au,), f"Unexpected shape: {z_hat.shape}"
         assert np.all(np.isfinite(z_hat)), "z_hat contains non-finite values"
 
-        # A3: Verify ridge formula matches manual computation.
-        # λ_ridge = ridge_scale · tr(BᵀB) / AU
-        # z_hat = (BᵀB + λ_ridge·I)⁻¹ Bᵀr
-        BtB = B_t.T @ B_t
-        trace_BtB = np.trace(BtB)
-        lambda_ridge = 1e-6 * trace_BtB / max(1, au)
-        BtB_reg = BtB + lambda_ridge * np.eye(au)
-        Btr = B_t.T @ r_t
-        expected_z = np.linalg.solve(BtB_reg, Btr)
+        # Verify safe_solve matches np.linalg.lstsq
+        z_hat_lstsq, _, _, _ = np.linalg.lstsq(B_t, r_t, rcond=None)
         np.testing.assert_allclose(
-            z_hat, expected_z, atol=1e-10,
-            err_msg="safe_solve result doesn't match manual ridge formula",
-        )
-
-        # Verify ridge improves conditioning
-        kappa_raw = np.linalg.cond(BtB)
-        kappa_reg = np.linalg.cond(BtB_reg)
-        assert kappa_reg < kappa_raw, (
-            f"Ridge should improve conditioning: kappa_raw={kappa_raw:.2e}, kappa_reg={kappa_reg:.2e}"
+            z_hat, z_hat_lstsq, atol=1e-10,
+            err_msg="safe_solve result doesn't match np.linalg.lstsq",
         )
 
     def test_conditioning_guard_triggers_at_threshold(self) -> None:
@@ -586,19 +583,18 @@ class TestConditioning:
             f"lambda_ridge should be positive, got {lambda_ridge_expected}"
         )
 
-        # Step 3: Verify safe_solve produces the exact ridge OLS solution
+        # Step 3: Verify safe_solve (now lstsq-based) produces finite results
+        # on ill-conditioned input and matches np.linalg.lstsq
         z_hat = safe_solve(B_t, r_t, conditioning_threshold=threshold,
                            ridge_scale=ridge_scale)
+        assert np.all(np.isfinite(z_hat)), "safe_solve produced non-finite values"
 
-        # Manual ridge OLS: z = (B^T B + lambda*I)^{-1} B^T r
-        Btr = B_t.T @ r_t
-        z_hat_manual = np.linalg.solve(BtB_reg_manual, Btr)
-
+        z_hat_lstsq, _, _, _ = np.linalg.lstsq(B_t, r_t, rcond=None)
         np.testing.assert_allclose(
-            z_hat, z_hat_manual, atol=1e-12,
+            z_hat, z_hat_lstsq, atol=1e-12,
             err_msg=(
-                f"safe_solve result doesn't match manual ridge OLS formula. "
-                f"max diff = {np.max(np.abs(z_hat - z_hat_manual)):.2e}"
+                f"safe_solve result doesn't match np.linalg.lstsq. "
+                f"max diff = {np.max(np.abs(z_hat - z_hat_lstsq)):.2e}"
             ),
         )
 
@@ -752,7 +748,7 @@ class TestCovarianceProperties:
         au = 5
         n_dates = 30  # Small sample -> poorly conditioned sample cov
         z_hat = rng.randn(n_dates, au)
-        Sigma_lw = estimate_sigma_z(z_hat)
+        Sigma_lw, _ = estimate_sigma_z(z_hat)
         Sigma_sample = np.cov(z_hat.T)
         cond_lw = np.linalg.cond(Sigma_lw)
         cond_sample = np.linalg.cond(Sigma_sample)
@@ -844,9 +840,9 @@ class TestSigmaZFullHistory:
         # Full history = both periods
         z_full = np.vstack([z_period1, z_period2])
 
-        Sigma_full = estimate_sigma_z(z_full)
-        Sigma_p1 = estimate_sigma_z(z_period1)
-        Sigma_p2 = estimate_sigma_z(z_period2)
+        Sigma_full, _ = estimate_sigma_z(z_full)
+        Sigma_p1, _ = estimate_sigma_z(z_period1)
+        Sigma_p2, _ = estimate_sigma_z(z_period2)
 
         # Sigma_full must differ from both period-specific estimates
         assert not np.allclose(Sigma_full, Sigma_p1, atol=1e-6), (
@@ -871,7 +867,8 @@ class TestSigmaZFullHistory:
         rng = np.random.RandomState(42)
         for au in [3, 5, 10]:
             z_hat = rng.randn(50, au) * 0.01
-            Sigma_z = estimate_sigma_z(z_hat)
+            Sigma_z, n_sig = estimate_sigma_z(z_hat)
+            assert isinstance(n_sig, int) and n_sig >= 0
             assert Sigma_z.shape == (au, au), (
                 f"Sigma_z shape {Sigma_z.shape} != expected ({au}, {au})"
             )
@@ -1070,7 +1067,7 @@ class TestDEpsVarianceFormula:
     """Verify D_eps = max(Var(eps_i, ddof=1), 1e-6) with known residuals."""
 
     def test_d_eps_matches_manual_variance(self) -> None:
-        """D_eps for normal residuals must match np.var(eps, ddof=1)."""
+        """D_eps without shrinkage must match np.var(eps, ddof=1)."""
         rng = np.random.RandomState(42)
         stock_ids = [0, 1, 2, 3, 4]
         residuals_by_stock: dict[int, list[float]] = {}
@@ -1081,12 +1078,41 @@ class TestDEpsVarianceFormula:
             residuals_by_stock[sid] = eps
             expected_d_eps[i] = max(np.var(eps, ddof=1), 1e-6)
 
-        D_eps = estimate_d_eps(residuals_by_stock, stock_ids, d_eps_floor=1e-6)
+        D_eps = estimate_d_eps(
+            residuals_by_stock, stock_ids, d_eps_floor=1e-6,
+            shrink_toward_mean=False,
+        )
 
         np.testing.assert_allclose(
             D_eps, expected_d_eps, rtol=1e-10,
             err_msg="D_eps doesn't match manual Var(eps, ddof=1) with floor",
         )
+
+    def test_d_eps_james_stein_shrinkage(self) -> None:
+        """D_eps with James-Stein shrinkage moves estimates toward the mean."""
+        rng = np.random.RandomState(42)
+        stock_ids = [0, 1, 2, 3, 4]
+        residuals_by_stock: dict[int, list[float]] = {}
+
+        for i, sid in enumerate(stock_ids):
+            eps = list(rng.randn(100) * (0.01 * (i + 1)))
+            residuals_by_stock[sid] = eps
+
+        D_raw = estimate_d_eps(
+            residuals_by_stock, stock_ids, d_eps_floor=1e-6,
+            shrink_toward_mean=False,
+        )
+        D_shrunk = estimate_d_eps(
+            residuals_by_stock, stock_ids, d_eps_floor=1e-6,
+            shrink_toward_mean=True,
+        )
+
+        # Shrinkage should reduce cross-sectional dispersion
+        assert float(np.std(D_shrunk)) < float(np.std(D_raw)), (
+            "James-Stein shrinkage should reduce dispersion of D_eps"
+        )
+        # Shrinkage should preserve the mean (approximately)
+        assert abs(float(np.mean(D_shrunk)) - float(np.mean(D_raw))) < 1e-6
 
 
 # ---------------------------------------------------------------------------

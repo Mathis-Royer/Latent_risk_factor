@@ -115,6 +115,9 @@ def _reduce_sca_kwargs(
     if kwargs.get("mu") is not None:
         reduced["mu"] = kwargs["mu"][active]
 
+    if kwargs.get("D_eps") is not None:
+        reduced["D_eps"] = kwargs["D_eps"][active]
+
     return reduced
 
 
@@ -214,6 +217,8 @@ def _enforce_sequential(
     sca_kwargs: dict[str, Any],
     max_eliminations: int = 100,
     entropy_eps: float = 1e-30,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> np.ndarray:
     """
     Original per-position entropy evaluation + SCA re-optimization.
@@ -229,6 +234,7 @@ def _enforce_sequential(
     :param sca_kwargs (dict): Arguments for sca_solver_fn
     :param max_eliminations (int): Maximum elimination rounds
     :param entropy_eps (float): Numerical stability
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,)
 
     :return w_final (np.ndarray): Weights with cardinality enforced
     """
@@ -246,7 +252,8 @@ def _enforce_sequential(
         logger.info("    [sequential] Round %d: %d violations",
                      round_idx + 1, len(s_sub))
 
-        H_current = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps)
+        H_current = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                                          idio_weight=idio_weight)
 
         costs: list[tuple[int, float]] = []
         for i in s_sub:
@@ -256,7 +263,8 @@ def _enforce_sequential(
             if total > 0:
                 w_trial = w_trial / total
             H_trial = compute_entropy_only(
-                w_trial, B_prime, eigenvalues, entropy_eps,
+                w_trial, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                idio_weight=idio_weight,
             )
             delta_H = H_current - H_trial
             costs.append((i, float(delta_H)))
@@ -283,6 +291,8 @@ def _enforce_gradient(
     sca_kwargs: dict[str, Any],
     max_eliminations: int = 100,
     entropy_eps: float = 1e-30,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> np.ndarray:
     """
     Gradient-based cardinality enforcement using first-order Taylor approximation.
@@ -301,6 +311,7 @@ def _enforce_gradient(
     :param sca_kwargs (dict): Arguments for sca_solver_fn
     :param max_eliminations (int): Maximum elimination rounds
     :param entropy_eps (float): Numerical stability
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,)
 
     :return w_final (np.ndarray): Weights with cardinality enforced
     """
@@ -320,7 +331,8 @@ def _enforce_gradient(
 
         # Single gradient computation replaces |S_sub| entropy evaluations
         _, grad_H = compute_entropy_and_gradient(
-            w, B_prime, eigenvalues, entropy_eps,
+            w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+            idio_weight=idio_weight,
         )
 
         # First-order Taylor: ΔH_i ≈ |∂H/∂w_i| × w_i
@@ -360,6 +372,8 @@ def _enforce_miqp(
     is_first: bool,
     L_sigma: np.ndarray | None = None,
     entropy_eps: float = 1e-30,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> np.ndarray:
     """
     MIQP cardinality enforcement in a single solve.
@@ -394,6 +408,7 @@ def _enforce_miqp(
     :param is_first (bool): First rebalancing flag
     :param L_sigma (np.ndarray | None): Pre-computed Cholesky factor
     :param entropy_eps (float): Numerical stability
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,)
 
     :return w_miqp (np.ndarray): MIQP solution (n,)
     """
@@ -401,7 +416,8 @@ def _enforce_miqp(
     L = L_sigma if L_sigma is not None else _safe_cholesky(Sigma_assets)
 
     _, grad_H = compute_entropy_and_gradient(
-        w, B_prime, eigenvalues, entropy_eps,
+        w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+        idio_weight=idio_weight,
     )
 
     # Pre-screening: w_min-aware threshold + hard cap
@@ -504,6 +520,8 @@ def _enforce_two_stage(
     L_sigma: np.ndarray | None = None,
     entropy_eps: float = 1e-30,
     use_mi: bool = True,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> np.ndarray:
     """
     Two-stage decomposition for cardinality enforcement (DVT Section 4.7).
@@ -544,29 +562,18 @@ def _enforce_two_stage(
     L = L_sigma if L_sigma is not None else _safe_cholesky(Sigma_assets)
 
     # -----------------------------------------------------------------------
-    # Stage 1: Analytical target in R^AU (equal risk contributions)
+    # Stage 1: Target factor exposure from continuous SCA solution
     # -----------------------------------------------------------------------
-    # Target: ĉ'_k = 1/AU for all k -> y*_k proportional to 1/sqrt(lambda_k)
-    lam_safe = np.maximum(eigenvalues, entropy_eps)
-    inv_sqrt_lam = 1.0 / np.sqrt(lam_safe)
+    # Use y* = B'^T w_sca (the actual SCA solution's factor exposure) as
+    # the tracking target.  The SCA solution balances entropy, risk,
+    # concentration, and turnover — using the analytical equal-risk-
+    # contribution target y*_k ∝ 1/√λ_k ignores all terms except entropy
+    # and produces a target that is inconsistent with the optimizer's actual
+    # trade-offs.
+    y_star = B_prime.T @ w  # (AU,)
 
-    # Sign reference from continuous SCA solution
-    beta_sca = B_prime.T @ w  # (AU,)
-    signs = np.sign(beta_sca)
-    signs[signs == 0] = 1.0
-
-    # Energy normalization: match total systematic risk of SCA solution
-    energy_sca = float(np.sum(beta_sca ** 2))
-    energy_target = float(np.sum(inv_sqrt_lam ** 2))
-    if energy_target > 0 and energy_sca > 0:
-        c = np.sqrt(energy_sca / energy_target)
-    else:
-        c = 1.0
-
-    y_star = signs * c * inv_sqrt_lam  # (AU,)
-
-    logger.info("    [two_stage] Stage 1: y* computed, target H=ln(%d)=%.4f",
-                 au, float(np.log(max(au, 1))))
+    logger.info("    [two_stage] Stage 1: y* = B'^T w_sca, ||y*||=%.4f",
+                 float(np.linalg.norm(y_star)))
 
     # -----------------------------------------------------------------------
     # Stage 2: Project to asset space via QP/MIQP
@@ -651,7 +658,8 @@ def _enforce_two_stage(
                         result = result / total
 
                     H_result = compute_entropy_only(
-                        result, B_prime, eigenvalues, entropy_eps,
+                        result, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                        idio_weight=idio_weight,
                     )
                     logger.info(
                         "    [two_stage] Stage 2 solved via %s "
@@ -680,6 +688,8 @@ def enforce_cardinality(
     max_eliminations: int = 100,
     entropy_eps: float = 1e-30,
     method: str = "auto",
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> np.ndarray:
     """
     Enforce semi-continuous constraint: w_i = 0 or w_i >= w_min.
@@ -697,6 +707,9 @@ def enforce_cardinality(
     :param entropy_eps (float): Numerical stability
     :param method (str): Strategy — "auto", "sequential", "gradient",
         "miqp", "two_stage"
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,) for
+        entropy computation including idiosyncratic risk contributions.
+    :param idio_weight (float): Weight for idiosyncratic entropy layer (0-1).
 
     :return w_final (np.ndarray): Weights with cardinality enforced
     """
@@ -731,7 +744,8 @@ def enforce_cardinality(
             try:
                 return _enforce_two_stage(
                     w, B_prime, eigenvalues, w_min,
-                    use_mi=True, entropy_eps=entropy_eps, **mi_params,
+                    use_mi=True, entropy_eps=entropy_eps, D_eps=D_eps,
+                    idio_weight=idio_weight, **mi_params,
                 )
             except Exception as exc:
                 logger.warning(
@@ -741,12 +755,14 @@ def enforce_cardinality(
         try:
             w_qp = _enforce_two_stage(
                 w, B_prime, eigenvalues, w_min,
-                use_mi=False, entropy_eps=entropy_eps, **mi_params,
+                use_mi=False, entropy_eps=entropy_eps, D_eps=D_eps,
+                idio_weight=idio_weight, **mi_params,
             )
             # Post-process: continuous QP may leave violations
             return _enforce_gradient(
                 w_qp, B_prime, eigenvalues, w_min,
                 sca_solver_fn, sca_kwargs, max_eliminations, entropy_eps,
+                D_eps=D_eps, idio_weight=idio_weight,
             )
         except Exception as exc:
             logger.warning(
@@ -763,7 +779,8 @@ def enforce_cardinality(
             try:
                 return _enforce_miqp(
                     w, B_prime, eigenvalues, w_min,
-                    entropy_eps=entropy_eps, **mi_params,
+                    entropy_eps=entropy_eps, D_eps=D_eps,
+                    idio_weight=idio_weight, **mi_params,
                 )
             except Exception as exc:
                 logger.warning(
@@ -781,6 +798,7 @@ def enforce_cardinality(
         return _enforce_gradient(
             w, B_prime, eigenvalues, w_min,
             sca_solver_fn, sca_kwargs, max_eliminations, entropy_eps,
+            D_eps=D_eps, idio_weight=idio_weight,
         )
 
     # ------------------------------------------------------------------
@@ -789,4 +807,5 @@ def enforce_cardinality(
     return _enforce_sequential(
         w, B_prime, eigenvalues, w_min,
         sca_solver_fn, sca_kwargs, max_eliminations, entropy_eps,
+        D_eps=D_eps, idio_weight=idio_weight,
     )

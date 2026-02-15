@@ -184,6 +184,49 @@ class TestEntropy:
         )
 
 
+    def test_entropy_gradient_numerical_two_layer(self) -> None:
+        """Two-layer entropy gradient must match finite-difference approximation.
+
+        Same as test_entropy_gradient_numerical but with D_eps and idio_weight,
+        verifying the combined factor + idiosyncratic gradient.
+        """
+        np.random.seed(SEED)
+        data = _make_portfolio_data()
+
+        rng = np.random.RandomState(SEED + 2)
+        w_raw = rng.dirichlet(np.ones(N_STOCKS))
+        w = w_raw.astype(np.float64)
+
+        B_prime = data["B_prime"]
+        eigenvalues = data["eigenvalues"]
+        D_eps = data["D_eps"]
+        idio_weight = 0.3
+
+        H, grad_H = compute_entropy_and_gradient(
+            w, B_prime, eigenvalues, D_eps=D_eps, idio_weight=idio_weight,
+        )
+
+        epsilon = 1e-7
+        grad_numerical = np.zeros_like(w)
+        for i in range(len(w)):
+            w_plus = w.copy()
+            w_plus[i] += epsilon
+            H_plus = compute_entropy_only(
+                w_plus, B_prime, eigenvalues, D_eps=D_eps, idio_weight=idio_weight,
+            )
+            w_minus = w.copy()
+            w_minus[i] -= epsilon
+            H_minus = compute_entropy_only(
+                w_minus, B_prime, eigenvalues, D_eps=D_eps, idio_weight=idio_weight,
+            )
+            grad_numerical[i] = (H_plus - H_minus) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(
+            grad_H, grad_numerical, atol=1e-5,
+            err_msg="Two-layer analytical gradient differs from numerical gradient",
+        )
+
+
 class TestSCASolver:
     """Tests for SCA optimization (MOD-008 sub-task 2)."""
 
@@ -1026,6 +1069,45 @@ class TestSelectOperatingAlpha:
         alpha_opt = select_operating_alpha(frontier)
         # Degenerate: H_range=0, fallback to alpha at max H (any is valid)
         assert alpha_opt in [0.0, 1.0, 5.0]
+
+    def test_target_enb_selects_smallest_alpha(self) -> None:
+        """target_enb selects the smallest alpha where ENB >= target."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 0.01, 0.1, 1.0, 5.0],
+            "variance": [1e-5, 5e-5, 5.5e-5, 9e-5, 9.5e-5],
+            "entropy": [0.5, 1.0, 1.2, 1.5, 1.6],
+        })
+        # ENB = exp(H): [1.65, 2.72, 3.32, 4.48, 4.95]
+        # target_enb=3.0 → first point where ENB>=3.0 is alpha=0.1 (ENB=3.32)
+        alpha_opt = select_operating_alpha(frontier, target_enb=3.0)
+        assert alpha_opt == pytest.approx(0.1), (
+            f"Expected α=0.1 for target_enb=3.0, got {alpha_opt}"
+        )
+
+    def test_target_enb_unreachable_returns_max(self) -> None:
+        """When no point reaches target ENB, returns the max-ENB alpha."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 1.0, 5.0],
+            "variance": [1e-5, 5e-5, 9e-5],
+            "entropy": [0.5, 0.8, 1.0],
+        })
+        # ENB = exp(H): [1.65, 2.23, 2.72]
+        # target_enb=10.0 → unreachable, should return alpha=5.0 (max ENB)
+        alpha_opt = select_operating_alpha(frontier, target_enb=10.0)
+        assert alpha_opt == pytest.approx(5.0), (
+            f"Expected α=5.0 (max ENB) when target unreachable, got {alpha_opt}"
+        )
+
+    def test_target_enb_zero_falls_back_to_kneedle(self) -> None:
+        """target_enb=0.0 falls back to Kneedle method."""
+        frontier = pd.DataFrame({
+            "alpha": [0.0, 0.01, 0.1, 1.0, 5.0],
+            "variance": [1e-5, 5e-5, 5.5e-5, 9e-5, 9.5e-5],
+            "entropy": [2.0, 3.5, 3.6, 3.7, 3.72],
+        })
+        alpha_kneedle = select_operating_alpha(frontier, target_enb=0.0)
+        alpha_default = select_operating_alpha(frontier)
+        assert alpha_kneedle == alpha_default
 
 
 # ---------------------------------------------------------------------------

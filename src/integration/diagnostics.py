@@ -263,9 +263,12 @@ def risk_model_diagnostics(
     vt_scale_sys: float = state_bag.get("vt_scale_sys", 1.0)
     vt_scale_idio: float = state_bag.get("vt_scale_idio", 1.0)
 
+    n_signal: int = state_bag.get("n_signal", 0)
+
     diag: dict[str, Any] = {
         "vt_scale_sys": vt_scale_sys,
         "vt_scale_idio": vt_scale_idio,
+        "n_signal": n_signal,
     }
 
     # Eigenvalue spectrum
@@ -291,16 +294,31 @@ def risk_model_diagnostics(
         diag["condition_number"] = cond
 
     # Variance ratio and correlation
-    # Use only stocks present in both the risk model and OOS returns, and
-    # drop dates where any of these stocks have NaN (avoid fillna(0) bias).
+    # Restrict to stocks with non-zero portfolio weight AND present in OOS
+    # returns.  Uses fillna(0) to preserve all OOS days instead of dropna
+    # which discards rows with any NaN (misleadingly perfect var_ratio on
+    # a tiny subset of days).  Missing returns → 0 = flat for that stock.
     n_port = Sigma_assets.shape[0] if Sigma_assets.ndim == 2 else 0
     if n_port > 0 and returns_oos.shape[0] > 10:
         all_ids = inferred_stock_ids[:n_port]
-        avail_mask = np.array([sid in returns_oos.columns for sid in all_ids])
-        avail_idx = np.where(avail_mask)[0]
+        # Only consider stocks with meaningful weight (held positions)
+        active_weight_mask = np.abs(w_vae[:n_port]) > 1e-8
+        held_idx = np.where(active_weight_mask)[0]
+        # Further filter to stocks present in OOS returns columns
+        avail_idx = np.array(
+            [i for i in held_idx if all_ids[i] in returns_oos.columns],
+            dtype=int,
+        )
         if len(avail_idx) > 2:
             avail_ids = [all_ids[i] for i in avail_idx]
-            oos_sub = returns_oos[avail_ids].dropna(how="any")
+            oos_raw = returns_oos[avail_ids]
+            # Report coverage: fraction of non-NaN entries
+            n_total_cells = oos_raw.shape[0] * oos_raw.shape[1]
+            n_valid_cells = int(oos_raw.notna().sum().sum())  # type: ignore[arg-type]
+            coverage = n_valid_cells / max(n_total_cells, 1)
+            diag["var_ratio_coverage"] = coverage
+            # Use fillna(0): missing return = flat for that stock-day
+            oos_sub = oos_raw.fillna(0.0)
             if len(oos_sub) > 10:
                 oos_vals = np.asarray(oos_sub.values)
                 w_sub = w_vae[avail_idx]
@@ -314,6 +332,12 @@ def risk_model_diagnostics(
                 corr_rank = realized_vs_predicted_correlation(Sigma_sub, oos_vals)
                 diag["var_ratio_oos"] = var_ratio
                 diag["corr_rank_oos"] = corr_rank
+                if coverage < 0.5:
+                    diag["var_ratio_oos"] = float("nan")
+                    logger.warning(
+                        "  var_ratio coverage=%.1f%% < 50%% — unreliable, "
+                        "setting to NaN", coverage * 100,
+                    )
 
     # In-sample explanatory power — uses estimation-rescaled B_A_by_date and
     # z_hat from training (matches the OLS that produced z_hat). This is
@@ -398,6 +422,7 @@ def portfolio_diagnostics(
     risk_model: dict[str, Any] = state_bag.get("risk_model", {})
     eigenvalues: np.ndarray = risk_model.get("eigenvalues", np.array([]))
     B_prime_port: np.ndarray = risk_model.get("B_prime_port", np.array([]))
+    n_signal: int = state_bag.get("n_signal", 0)
 
     # Weight statistics
     w_pos = w_vae[w_vae > 1e-8]
@@ -436,24 +461,61 @@ def portfolio_diagnostics(
             ),
         })
 
+    # Effective dimensionality from eigenvalue spectrum.
+    # n_eff = exp(H_eigenvalue) where H_eigenvalue = -sum(p_k * ln(p_k))
+    # with p_k = lambda_k / sum(lambda).  This gives the number of factors
+    # that meaningfully contribute to risk, which is the correct denominator
+    # for normalized entropy (not AU, which overcounts inactive dimensions).
+    n_eff_eigenvalue: float = 0.0
+    h_norm_eff: float = 0.0
+    if eigenvalues.size > 0:
+        eig_total = float(np.sum(eigenvalues))
+        if eig_total > 1e-15:
+            eig_probs = eigenvalues / eig_total
+            eig_probs_pos = eig_probs[eig_probs > 1e-20]
+            h_eig = float(-np.sum(eig_probs_pos * np.log(eig_probs_pos)))
+            n_eff_eigenvalue = float(np.exp(h_eig))
+
     # Risk decomposition: factor contributions at optimal weights
     risk_decomp: dict[str, Any] = {"available": False}
+    enb: float = 0.0
+    h_norm_signal: float = 0.0
     if eigenvalues.size > 0 and B_prime_port.size > 0 and len(w_vae) == B_prime_port.shape[0]:
-        beta_prime = B_prime_port.T @ w_vae  # (AU,)
+        beta_prime = B_prime_port.T @ w_vae  # (n_signal,)
         contributions = beta_prime ** 2 * eigenvalues
         total = float(np.sum(contributions))
         if total > 1e-10:
             fractions = contributions / total
+            entropy_H = float(
+                -np.sum(fractions[fractions > 1e-15] * np.log(fractions[fractions > 1e-15]))
+            )
+            enb = float(np.exp(entropy_H))
+            max_entropy_au = float(np.log(max(len(fractions), 1)))
+            # H_norm_signal: normalized by ln(n_signal) — the number of real
+            # factors identified by DGJ spiked shrinkage. This is the correct
+            # denominator after eigenvalue truncation (not AU which overcounts
+            # noise dimensions, and not n_eff which double-counts spectral decay).
+            if n_signal > 1:
+                h_norm_signal = entropy_H / float(np.log(n_signal))
+            elif n_eff_eigenvalue > 1.0:
+                # Fallback when n_signal not available
+                h_norm_signal = entropy_H / float(np.log(n_eff_eigenvalue))
+            elif max_entropy_au > 0:
+                h_norm_signal = entropy_H / max_entropy_au
+            # Legacy h_norm_eff for backward compatibility
+            if n_eff_eigenvalue > 1.0:
+                h_norm_eff = entropy_H / float(np.log(n_eff_eigenvalue))
+            elif max_entropy_au > 0:
+                h_norm_eff = entropy_H / max_entropy_au
             risk_decomp = {
                 "available": True,
                 "contributions": contributions.tolist(),
                 "fractions": fractions.tolist(),
                 "top_1_fraction": float(fractions[0]) if len(fractions) > 0 else 0.0,
                 "top_3_fraction": float(np.sum(fractions[:3])) if len(fractions) >= 3 else float(np.sum(fractions)),
-                "entropy_H": float(
-                    -np.sum(fractions[fractions > 1e-15] * np.log(fractions[fractions > 1e-15]))
-                ),
-                "max_entropy": float(np.log(max(len(fractions), 1))),
+                "entropy_H": entropy_H,
+                "enb": enb,
+                "max_entropy": max_entropy_au,
             }
 
     return {
@@ -473,6 +535,11 @@ def portfolio_diagnostics(
         "ann_vol": vae_metrics.get("ann_vol_oos", 0.0),
         "max_drawdown": vae_metrics.get("max_drawdown_oos", 0.0),
         "H_norm_oos": vae_metrics.get("H_norm_oos", 0.0),
+        "H_norm_eff": h_norm_eff,
+        "H_norm_signal": h_norm_signal,
+        "enb": enb,
+        "n_signal": n_signal,
+        "n_eff_eigenvalue": n_eff_eigenvalue,
         "sortino": vae_metrics.get("sortino", 0.0),
         "calmar": vae_metrics.get("calmar", 0.0),
         # Frontier
@@ -733,8 +800,11 @@ def run_health_checks(
              f"AU = {au} / K = {k} ({latent.get('utilization_ratio', 0):.1%} utilization)")
 
     # --- Risk model checks ---
-    var_ratio = risk_model.get("var_ratio_oos", 1.0)
-    if var_ratio < _THRESHOLDS["var_ratio_lo"] or var_ratio > _THRESHOLDS["var_ratio_hi"]:
+    var_ratio = risk_model.get("var_ratio_oos", float("nan"))
+    if np.isnan(var_ratio):
+        _add("Risk Model", "Variance ratio", "WARNING",
+             "var_ratio not computed — insufficient OOS data for held positions")
+    elif var_ratio < _THRESHOLDS["var_ratio_lo"] or var_ratio > _THRESHOLDS["var_ratio_hi"]:
         _add("Risk Model", "Variance ratio", "CRITICAL",
              f"var_ratio = {var_ratio:.3f} — outside [{_THRESHOLDS['var_ratio_lo']}, {_THRESHOLDS['var_ratio_hi']}]")
     else:
@@ -777,12 +847,24 @@ def run_health_checks(
              f"Sharpe = {sharpe:.3f}")
 
     h_norm = portfolio.get("H_norm_oos", 0.0)
-    if h_norm < _THRESHOLDS["h_norm_min"]:
+    h_norm_signal = portfolio.get("H_norm_signal", 0.0)
+    h_norm_eff = portfolio.get("H_norm_eff", 0.0)
+    enb = portfolio.get("enb", 0.0)
+    n_signal_port = portfolio.get("n_signal", 0)
+    n_eff_eig = portfolio.get("n_eff_eigenvalue", 0.0)
+    # Use H_norm_signal (normalized by ln(n_signal)) for the health check.
+    # After eigenvalue truncation, n_signal is the number of real factors
+    # identified by DGJ — this is the correct denominator.
+    h_for_check = h_norm_signal if h_norm_signal > 0 else (h_norm_eff if h_norm_eff > 0 else h_norm)
+    h_detail = (
+        f"H_norm_signal = {h_norm_signal:.3f} (n_signal={n_signal_port}), "
+        f"ENB = {enb:.2f}, H_norm_eff = {h_norm_eff:.3f} (n_eff={n_eff_eig:.1f})"
+    )
+    if h_for_check < _THRESHOLDS["h_norm_min"]:
         _add("Portfolio", "Factor entropy", "WARNING",
-             f"H_norm = {h_norm:.3f} — poor factor diversification")
+             f"{h_detail} — poor factor diversification")
     else:
-        _add("Portfolio", "Factor entropy", "OK",
-             f"H_norm = {h_norm:.3f}")
+        _add("Portfolio", "Factor entropy", "OK", h_detail)
 
     mdd = portfolio.get("max_drawdown", 0.0)
 

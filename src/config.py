@@ -383,26 +383,38 @@ class RiskModelConfig:
     :param d_eps_floor (float): Floor for idiosyncratic variance
     :param conditioning_threshold (float): Condition number threshold for ridge
     :param ridge_scale (float): Scale factor for minimal ridge regularization
+    :param sigma_z_shrinkage (str): Eigenvalue shrinkage method for Σ_z.
+        "truncation" — legacy: keep top eigenvalues explaining eigenvalue_pct
+            of variance, zero out the rest. Simple but arbitrary threshold.
+        "spiked" — Donoho-Gavish-Johnstone (2018) optimal shrinker for
+            spiked covariance models.  Analytically corrects finite-sample
+            eigenvalue bias using Baik-Ben Arous-Péché transition.
+            Best for factor models with a few dominant eigenvalues.
+        "analytical_nonlinear" — Ledoit-Wolf (2020) analytical nonlinear
+            shrinkage.  General-purpose, no structural assumption.
+            Requires the covShrinkage package (fallback: "spiked").
+        Default: "spiked".
+    :param sigma_z_ewma_half_life (int): Half-life in days for EWMA weighting
+        of z_hat before Σ_z estimation.  0 = equal weights (legacy).
+        252 = Barra USE4 standard.  Gives more weight to recent observations,
+        better capturing time-varying factor covariance.  Range: [0, ∞).
     :param sigma_z_eigenvalue_pct (float): Fraction of total Σ_z variance
-        retained after eigenvalue truncation.  1.0 = keep all eigenvalues
-        (no truncation, original behavior).  0.95 = discard eigenvalues
-        contributing less than 5% of total variance — removes noisy
-        factor dimensions.  Range: (0, 1].
+        retained after eigenvalue truncation.  Only used when
+        sigma_z_shrinkage="truncation".  1.0 = keep all eigenvalues.
+        0.95 = discard eigenvalues contributing < 5% of variance.
+        Range: (0, 1].
     :param b_a_shrinkage_alpha (float): Shrinkage intensity for the
         exposure matrix B_A towards zero.  After filtering active units,
-        B_A is multiplied by (1 - alpha).  0.0 = no shrinkage (original
-        behavior).  0.1 = 10% shrinkage — reduces spurious cross-stock
-        correlations embedded in the systematic block B·Σ_z·B^T.
-        Range: [0, 1].
-    :param eigenvalue_power (float): Power shrinkage exponent for
-        eigenvalues.  Applied after variance targeting in the pipeline:
-        eigenvalues = eigenvalues^p.  1.0 = no change (original behavior).
-        0.5 = square root (compresses dominant eigenvalues, reduces
-        concentration of top factors in the risk model).  Range: (0, 1].
-    :param b_a_normalize (bool): If True, rescale B_A after AU filtering
-        so that mean(|B_A|) = 1/sqrt(AU).  This corrects the unconstrained
-        VAE encoder output scale and reduces the need for extreme variance
-        targeting corrections.  Default: True.
+        B_A is multiplied by (1 - alpha).  0.0 = no shrinkage (default).
+        NOTE: This is pure scaling, not true column-wise shrinkage.
+        With variance targeting, it changes the sys/idio ratio without
+        benefit.  Set to 0.0 unless implementing proper James-Stein
+        column-wise shrinkage.  Range: [0, 1].
+    :param b_a_normalize (bool): If True, apply per-factor cross-sectional
+        z-score normalization to B_A after AU filtering (Barra USE4 standard).
+        Each column of B_A is standardized to mean=0, std=1.  This corrects
+        the unconstrained VAE encoder output scale and ensures factors are
+        comparable.  Default: True.
     """
 
     winsorize_lo: float = 5.0
@@ -410,9 +422,10 @@ class RiskModelConfig:
     d_eps_floor: float = 1e-6
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
+    sigma_z_shrinkage: str = "spiked"
     sigma_z_eigenvalue_pct: float = 0.95
-    b_a_shrinkage_alpha: float = 0.15
-    eigenvalue_power: float = 0.65
+    sigma_z_ewma_half_life: int = 252
+    b_a_shrinkage_alpha: float = 0.0
     b_a_normalize: bool = True
 
     def __post_init__(self) -> None:
@@ -428,6 +441,9 @@ class RiskModelConfig:
                         lo=0, lo_exclusive=True)
         _validate_pair("winsorize_lo", self.winsorize_lo,
                        "winsorize_hi", self.winsorize_hi, strict=True)
+        _validate_in("sigma_z_shrinkage", self.sigma_z_shrinkage,
+                     {"truncation", "spiked", "analytical_nonlinear"},
+                     default="spiked")
         _validate_range("sigma_z_eigenvalue_pct",
                         self.sigma_z_eigenvalue_pct,
                         default=1.0, lo=0, hi=1,
@@ -435,10 +451,9 @@ class RiskModelConfig:
         _validate_range("b_a_shrinkage_alpha",
                         self.b_a_shrinkage_alpha,
                         default=0.0, lo=0, hi=1)
-        _validate_range("eigenvalue_power",
-                        self.eigenvalue_power,
-                        default=1.0, lo=0, hi=1,
-                        lo_exclusive=True)
+        _validate_range("sigma_z_ewma_half_life",
+                        self.sigma_z_ewma_half_life,
+                        default=0, lo=0)
 
 
 # ---------------------------------------------------------------------------
@@ -452,10 +467,18 @@ class PortfolioConfig:
 
     Constraints are IDENTICAL for VAE and all benchmarks (INV-012).
 
-    :param lambda_risk (float): Risk aversion
+    :param lambda_risk (float): Risk aversion coefficient applied to daily
+        variance.  Since w^T Sigma w is in daily units (~1e-4), this must
+        be large enough to make the risk term commensurate with entropy
+        (O(0.01-0.1)).  252 = annualization (risk aversion γ=1 on annual
+        variance); use 252-2520 for γ in [1, 10].  Literature: Garlappi
+        et al. (2007), DeMiguel et al. (2009).
     :param w_max (float): Maximum weight per stock (hard cap)
     :param w_min (float): Minimum active weight (semi-continuous)
-    :param w_bar (float): Concentration penalty threshold
+    :param w_bar (float): Concentration penalty threshold.  Positions with
+        w_i > w_bar are penalized quadratically.  Must be > 1/target_N to
+        avoid penalizing ALL active positions (self-defeating).  With 50-80
+        target positions and w_max=0.05, w_bar=0.03 is appropriate.
     :param phi (float): Concentration penalty weight
     :param kappa_1 (float): Linear turnover penalty
     :param kappa_2 (float): Quadratic turnover penalty
@@ -472,23 +495,37 @@ class PortfolioConfig:
     :param cardinality_method (str): Strategy for semi-continuous enforcement.
         "auto" (best available), "sequential" (original), "gradient" (Taylor approx),
         "miqp" (single MOSEK MIQP), "two_stage" (DVT §4.7 decomposition)
-    :param alpha_grid (list): Grid of alpha values for frontier
+    :param alpha_grid (list): Grid of alpha values for variance-entropy
+        frontier.  Needs >= 10 points with log-uniform spacing for
+        reliable Kneedle elbow detection (Satopaa et al. 2011).
     :param momentum_enabled (bool): Enable cross-sectional momentum signal
     :param momentum_lookback (int): Lookback window in trading days (12 months)
     :param momentum_skip (int): Skip period in trading days (1 month reversal)
-    :param momentum_weight (float): Scaling factor for momentum signal (γ_mom)
+    :param momentum_weight (float): Scaling factor for momentum signal (γ_mom).
+        Calibrated so E[|w^T μ|] ≈ lambda_risk × E[w^T Σ w].  With λ_risk=252
+        and daily variance ~5e-4, momentum_weight=0.02 gives a return term
+        ~0.02, comparable to the risk term ~0.04.
+    :param entropy_idio_weight (float): Weight for idiosyncratic entropy layer
+        in two-layer entropy formulation.  0.0 = factor-only entropy
+        (recommended when eigenvalues are truncated to signal dimensions).
+        1.0 = idiosyncratic-only.  Default 0.0 = factor-only entropy.
+        The parameter remains available for experimentation.
+    :param target_enb (float): Target effective number of bets (ENB = exp(H)).
+        When > 0, select the smallest α on the frontier where ENB >= target_enb.
+        When 0.0, use Kneedle elbow detection (legacy).
+        Recommended: n_signal / 2 (e.g. 2.5 for 5 signal factors).
     """
 
-    lambda_risk: float = 1.0
+    lambda_risk: float = 252.0
     w_max: float = 0.05
     w_min: float = 0.001
     w_bar: float = 0.03
-    phi: float = 25.0
+    phi: float = 5.0
     kappa_1: float = 0.1
     kappa_2: float = 7.5
     delta_bar: float = 0.01
     tau_max: float = 0.30
-    n_starts: int = 3
+    n_starts: int = 5
     sca_max_iter: int = 100
     sca_tol: float = 1e-8
     armijo_c: float = 1e-4
@@ -498,12 +535,17 @@ class PortfolioConfig:
     entropy_eps: float = 1e-30
     cardinality_method: str = "auto"
     alpha_grid: list[float] = field(
-        default_factory=lambda: [0, 0.01, 0.05, 0.1, 0.5, 1.0]
+        default_factory=lambda: [
+            0, 0.001, 0.005, 0.01, 0.02, 0.05,
+            0.1, 0.2, 0.5, 1.0, 2.0, 5.0,
+        ]
     )
     momentum_enabled: bool = False
     momentum_lookback: int = 252
     momentum_skip: int = 21
-    momentum_weight: float = 0.5
+    momentum_weight: float = 0.02
+    entropy_idio_weight: float = 0.0
+    target_enb: float = 0.0
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -512,12 +554,12 @@ class PortfolioConfig:
                         lo=0, hi=1, lo_exclusive=True)
         _validate_range("tau_max", self.tau_max, default=0.30,
                         lo=0, hi=1, lo_exclusive=True)
-        _validate_range("lambda_risk", self.lambda_risk, default=1.0,
+        _validate_range("lambda_risk", self.lambda_risk, default=252.0,
                         lo=0, lo_exclusive=True)
-        _validate_range("phi", self.phi, default=25.0, lo=0)
+        _validate_range("phi", self.phi, default=5.0, lo=0)
         _validate_range("kappa_1", self.kappa_1, default=0.1, lo=0)
         _validate_range("kappa_2", self.kappa_2, default=7.5, lo=0)
-        _validate_range("n_starts", self.n_starts, default=3, lo=1)
+        _validate_range("n_starts", self.n_starts, default=5, lo=1)
         _validate_range("sca_max_iter", self.sca_max_iter, default=100, lo=1)
         _validate_range("sca_tol", self.sca_tol, default=1e-8,
                         lo=0, lo_exclusive=True)
@@ -526,9 +568,20 @@ class PortfolioConfig:
                 "Invalid parameter 'alpha_grid':\n"
                 "  Current value : [] (empty)\n"
                 "  Requirement   : must contain at least 1 element\n"
-                "  Suggested     : [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]"
+                "  Suggested     : [0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]"
             )
         _validate_pair("w_min", self.w_min, "w_max", self.w_max, strict=True)
+        _validate_pair("w_min", self.w_min, "w_bar", self.w_bar, strict=True)
+        if self.w_bar < 2.0 * self.w_min:
+            import warnings
+            warnings.warn(
+                f"w_bar={self.w_bar} is close to w_min={self.w_min} — "
+                f"concentration penalty may penalize ALL active positions "
+                f"(self-defeating).  Recommended: w_bar >= 1/target_N "
+                f"(e.g. 0.03 for ~33 positions).",
+                UserWarning,
+                stacklevel=2,
+            )
         _validate_in("cardinality_method", self.cardinality_method,
                      {"auto", "sequential", "gradient", "miqp", "two_stage"},
                      default="auto")
@@ -537,7 +590,11 @@ class PortfolioConfig:
         _validate_range("momentum_skip", self.momentum_skip,
                         default=21, lo=0)
         _validate_range("momentum_weight", self.momentum_weight,
-                        default=0.5, lo=0)
+                        default=0.02, lo=0)
+        _validate_range("target_enb", self.target_enb,
+                        default=0.0, lo=0)
+        _validate_range("entropy_idio_weight", self.entropy_idio_weight,
+                        default=0.2, lo=0.0, hi=1.0)
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"

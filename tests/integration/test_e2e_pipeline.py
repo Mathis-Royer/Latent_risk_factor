@@ -241,7 +241,7 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     if z_hat.shape[0] == 0:
         pytest.skip("No valid dates for factor regression")
 
-    Sigma_z = estimate_sigma_z(z_hat)
+    Sigma_z, _ = estimate_sigma_z(z_hat)
     eigenvalues_z = np.linalg.eigvalsh(Sigma_z)
     assert np.all(eigenvalues_z >= -1e-10), (
         f"INV-007: Sigma_z not PSD: min eigenvalue = {eigenvalues_z.min():.2e}"

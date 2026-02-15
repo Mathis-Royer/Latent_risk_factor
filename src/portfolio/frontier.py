@@ -42,6 +42,7 @@ def compute_variance_entropy_frontier(
     seed: int = 42,
     entropy_eps: float = 1e-30,
     mu: np.ndarray | None = None,
+    idio_weight: float = 0.2,
 ) -> pd.DataFrame:
     """
     Compute variance-entropy frontier for a grid of α values.
@@ -72,11 +73,21 @@ def compute_variance_entropy_frontier(
     if alpha_grid is None:
         alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
 
-    results: list[dict[str, float]] = []
-    n_alphas = len(alpha_grid)
+    # Sort ascending so warm-start flows from low-alpha to high-alpha
+    sorted_grid = sorted(alpha_grid)
 
-    for idx, alpha in enumerate(alpha_grid):
+    results: list[dict[str, float]] = []
+    n_alphas = len(sorted_grid)
+    prev_w: np.ndarray | None = None
+
+    for idx, alpha in enumerate(sorted_grid):
         logger.info("    Frontier alpha %d/%d (alpha=%.3f)...", idx + 1, n_alphas, alpha)
+
+        # Warm-start: use previous alpha's solution as an additional starting
+        # point. Solutions at adjacent alpha values are typically close, so
+        # this reduces the number of SCA iterations needed.
+        warm_start_w = prev_w
+
         w_opt, f_opt, H_opt = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
@@ -98,10 +109,15 @@ def compute_variance_entropy_frontier(
             is_first=is_first,
             entropy_eps=entropy_eps,
             mu=mu,
+            warm_start_w=warm_start_w,
+            idio_weight=idio_weight,
         )
 
+        prev_w = w_opt
+
         variance = float(w_opt @ Sigma_assets @ w_opt)
-        entropy = compute_entropy_only(w_opt, B_prime, eigenvalues, entropy_eps)
+        entropy = compute_entropy_only(w_opt, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                                       idio_weight=idio_weight)
         n_active = int(np.sum(w_opt > w_min))
 
         results.append({
@@ -116,23 +132,24 @@ def compute_variance_entropy_frontier(
 
 def select_operating_alpha(
     frontier: pd.DataFrame,
+    target_enb: float = 0.0,
 ) -> float:
     """
-    Select α at the elbow of the variance-entropy frontier (Kneedle method).
+    Select operating α from the variance-entropy frontier.
 
-    Normalizes both axes to [0, 1], then finds the frontier point with maximum
-    perpendicular distance from the chord connecting the first (min-var) and
-    last (max-entropy) points. This is scale-invariant and requires no
-    arbitrary threshold.
+    Two modes:
+    1. target_enb > 0: Select smallest α where ENB = exp(H) >= target_enb.
+       Recommended: n_signal / 2 (e.g. 2.5 for 5 signal factors).
+       Reference: Meucci (2009), "Managing Diversification".
+    2. target_enb == 0: Kneedle elbow detection (legacy fallback).
+       Reference: Satopaa et al. (2011), "Finding a 'Kneedle' in a Haystack".
 
     Fallback: if the frontier is degenerate (flat or single-point), returns
     the α that achieves maximum entropy.
 
-    Reference: Satopaa et al. (2011), "Finding a 'Kneedle' in a Haystack".
-    DVT §4.7: "The elbow of the variance-entropy frontier is the natural
-    operating point."
-
     :param frontier (pd.DataFrame): Frontier with columns alpha, variance, entropy
+    :param target_enb (float): Target effective number of bets (ENB = exp(H)).
+        0.0 = use Kneedle (legacy).
 
     :return alpha_opt (float): Selected operating α
     """
@@ -144,6 +161,31 @@ def select_operating_alpha(
     H = np.asarray(df["entropy"], dtype=np.float64)
     V = np.asarray(df["variance"], dtype=np.float64)
 
+    # Target ENB mode: select smallest alpha achieving ENB >= target
+    if target_enb > 0.0:
+        enb = np.exp(H)
+        for i in range(len(df)):
+            if enb[i] >= target_enb:
+                alpha_sel = float(df["alpha"].iloc[i])
+                logger.info(
+                    "select_operating_alpha (target ENB=%.2f): α*=%.4g "
+                    "(ENB=%.2f, H=%.4f, Var=%.4e).",
+                    target_enb, alpha_sel, float(enb[i]),
+                    float(H[i]), float(V[i]),
+                )
+                return alpha_sel
+
+        # No point reaches target: use highest ENB with warning
+        best_idx = int(np.argmax(enb))
+        alpha_sel = float(df["alpha"].iloc[best_idx])
+        logger.warning(
+            "select_operating_alpha: no frontier point reaches target ENB=%.2f "
+            "(max ENB=%.2f at α=%.4g). Using max-ENB point.",
+            target_enb, float(enb[best_idx]), alpha_sel,
+        )
+        return alpha_sel
+
+    # Kneedle fallback
     H_range = float(H.max() - H.min())
     V_range = float(V.max() - V.min())
 
@@ -172,7 +214,6 @@ def select_operating_alpha(
 
     # Signed perpendicular distance from each point to the chord.
     # Positive = above the chord (more entropy per unit variance).
-    # cross = (P1 - P0) × (P - P0) / |P1 - P0|
     signed_dist = (dx * (H_n - H_n[0]) - dy * (V_n - V_n[0])) / chord_len
 
     best_idx = int(np.argmax(signed_dist))

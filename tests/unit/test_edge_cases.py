@@ -245,7 +245,7 @@ class TestNearSingularCovariance:
         ])
 
         # Ledoit-Wolf should handle this
-        Sigma_z = estimate_sigma_z(z_hat)
+        Sigma_z, _ = estimate_sigma_z(z_hat)
 
         # Verify PSD: all eigenvalues >= 0
         eigvals = np.linalg.eigvalsh(Sigma_z)

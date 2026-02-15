@@ -226,15 +226,17 @@ def generate_diagnostic_markdown(
     lines.append("## 4. Risk Model Quality")
     lines.append("")
     lines.append(
-        f"- **Variance targeting scale (sys)**: {_fmt(risk.get('vt_scale_sys', 1.0))}"
+        f"- **Variance targeting**: sys={_fmt(risk.get('vt_scale_sys', 1.0))}, "
+        f"idio={_fmt(risk.get('vt_scale_idio', 1.0))}"
     )
-    lines.append(
-        f"- **Variance targeting scale (idio)**: {_fmt(risk.get('vt_scale_idio', 1.0))}"
-    )
-    lines.append(
-        f"- **Variance ratio (OOS)**: {_fmt(risk.get('var_ratio_oos', 0))} "
-        f"(target: [0.5, 2.0])"
-    )
+    var_ratio_val = risk.get("var_ratio_oos", float("nan"))
+    if np.isnan(var_ratio_val):
+        lines.append("- **Variance ratio (OOS)**: N/A (insufficient data)")
+    else:
+        lines.append(
+            f"- **Variance ratio (OOS)**: {_fmt(var_ratio_val)} "
+            f"(target: [0.5, 2.0])"
+        )
     lines.append(
         f"- **Rank correlation (OOS)**: {_fmt(risk.get('corr_rank_oos', 0))}"
     )
@@ -340,6 +342,21 @@ def generate_diagnostic_markdown(
     lines.append(
         f"- **Normalized entropy (H_norm)**: {_fmt(portfolio.get('H_norm_oos', 0))}"
     )
+    h_norm_signal = portfolio.get("H_norm_signal", 0.0)
+    enb = portfolio.get("enb", 0.0)
+    n_signal_rep = portfolio.get("n_signal", 0)
+    h_norm_eff = portfolio.get("H_norm_eff", 0.0)
+    n_eff_eig = portfolio.get("n_eff_eigenvalue", 0.0)
+    if h_norm_signal > 0:
+        lines.append(
+            f"- **H_norm_signal (vs n_signal)**: {_fmt(h_norm_signal)} "
+            f"(n_signal = {n_signal_rep}, ENB = {enb:.2f})"
+        )
+    if h_norm_eff > 0:
+        lines.append(
+            f"- **H_norm_eff (vs effective dims)**: {_fmt(h_norm_eff)} "
+            f"(n_eff = {n_eff_eig:.1f})"
+        )
     lines.append("")
 
     # Benchmark comparison table
@@ -468,8 +485,13 @@ def _generate_recommendations(diagnostics: dict[str, Any]) -> list[str]:
         )
 
     # Risk model recommendations
-    var_ratio = risk.get("var_ratio_oos", 1.0)
-    if var_ratio < 0.5:
+    var_ratio = risk.get("var_ratio_oos", float("nan"))
+    if np.isnan(var_ratio):
+        recs.append(
+            "**Variance ratio not computed**: insufficient OOS data for held positions. "
+            "Check that portfolio weights and OOS returns overlap."
+        )
+    elif var_ratio < 0.5:
         recs.append(
             f"**Covariance overestimation** (var_ratio = {var_ratio:.3f}): "
             "the model predicts much more risk than observed. "
@@ -539,11 +561,15 @@ def generate_diagnostic_json(diagnostics: dict[str, Any]) -> dict[str, Any]:
     """
     Generate JSON-serializable diagnostic data.
 
+    Excludes ``_raw_*`` keys which hold large numpy arrays / dicts
+    intended only for in-memory notebook consumption.
+
     :param diagnostics (dict): Full diagnostics from collect_diagnostics()
 
     :return json_data (dict): JSON-safe diagnostic data
     """
-    return serialize_for_json(diagnostics)  # type: ignore[return-value]
+    filtered = {k: v for k, v in diagnostics.items() if not k.startswith("_raw")}
+    return serialize_for_json(filtered)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------

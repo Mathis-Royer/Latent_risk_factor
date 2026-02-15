@@ -347,6 +347,7 @@ def portfolio_metrics(
     AU: int = 0,
     K: int = 0,
     Sigma_hat: np.ndarray | None = None,
+    n_signal: int = 0,
 ) -> dict[str, float]:
     """
     Complete portfolio metrics (primary + diagnostic).
@@ -358,6 +359,7 @@ def portfolio_metrics(
     :param AU (int): Active units
     :param K (int): Total latent capacity (for scale-invariant H_norm)
     :param Sigma_hat (np.ndarray | None): Predicted covariance
+    :param n_signal (int): Number of signal eigenvalues from DGJ
 
     :return metrics (dict): Portfolio performance metrics
     """
@@ -399,12 +401,17 @@ def portfolio_metrics(
     downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if len(downside) > 1 else 1e-10
     sortino = ann_return / max(downside_vol, 1e-10)
 
-    # Normalized entropy: primary uses log(K) for cross-fold comparability,
-    # secondary uses log(AU) for efficiency-of-usage diagnostic
+    # Normalized entropy:
+    # - H_norm_signal uses ln(n_signal) — the correct denominator after DGJ
+    #   eigenvalue truncation. n_signal is the number of real signal factors.
+    # - H_norm_au uses ln(AU) — secondary diagnostic
+    # - H_norm uses ln(K) — legacy, for cross-fold comparability (K=200)
     denom_K = max(np.log(max(K, 1)), 1e-10) if K > 0 else 1e-10
     denom_AU = max(np.log(max(AU, 1)), 1e-10) if AU > 0 else 1e-10
+    denom_signal = max(np.log(max(n_signal, 2)), 1e-10) if n_signal > 1 else denom_AU
     H_norm = H_oos / denom_K if K > 0 else H_oos / denom_AU
     H_norm_au = H_oos / denom_AU if AU > 0 else 0.0
+    H_norm_signal = H_oos / denom_signal if n_signal > 1 else H_norm_au
 
     # Effective number of positions
     eff_n = float(1.0 / np.sum(w_active ** 2)) if np.sum(w_active ** 2) > 0 else 0.0
@@ -436,6 +443,8 @@ def portfolio_metrics(
         "n_active_positions": float(n_active_positions),
         "n_days_oos": float(n_days),
         "H_norm_au": H_norm_au,
+        "H_norm_signal": H_norm_signal,
+        "n_signal": float(n_signal),
     }
 
 
