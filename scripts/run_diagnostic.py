@@ -409,6 +409,10 @@ def run_diagnostic(
         config_dict=config_dict,
     )
 
+    # Expose raw data for notebook consumption (not serialized to reports)
+    diagnostics["_raw_weights"] = w_vae
+    diagnostics["_raw_state"] = state_bag
+
     # ---- Step 4: Generate reports ----
     logger.info("Step 4/4: Generating reports...")
     os.makedirs(output_dir, exist_ok=True)

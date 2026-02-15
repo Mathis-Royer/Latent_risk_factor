@@ -147,6 +147,16 @@ def get_amp_config(device: torch.device) -> dict[str, object]:
     device_type = device.type
 
     if device_type == "cuda":
+        # Prefer bfloat16: same exponent range as float32 (max ~3.4e38)
+        # so no overflow risk in intermediate Conv1d activations or exp().
+        # float16 max is only 65504 — easily overflows with deep CNNs.
+        if torch.cuda.is_bf16_supported():
+            return {
+                "use_amp": True,
+                "device_type": device_type,
+                "dtype": torch.bfloat16,
+                "use_scaler": False,  # bfloat16 doesn't need loss scaling
+            }
         return {
             "use_amp": True,
             "device_type": device_type,
