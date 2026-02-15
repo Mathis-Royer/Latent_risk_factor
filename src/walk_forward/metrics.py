@@ -348,6 +348,7 @@ def portfolio_metrics(
     K: int = 0,
     Sigma_hat: np.ndarray | None = None,
     n_signal: int = 0,
+    H_factor: float = 0.0,
 ) -> dict[str, float]:
     """
     Complete portfolio metrics (primary + diagnostic).
@@ -355,11 +356,13 @@ def portfolio_metrics(
     :param w (np.ndarray): Portfolio weights (n,)
     :param returns_oos (pd.DataFrame): OOS returns (dates × stocks)
     :param universe (list[int]): Stock identifiers (permnos)
-    :param H_oos (float): OOS factor entropy
+    :param H_oos (float): OOS combined two-layer entropy
     :param AU (int): Active units
     :param K (int): Total latent capacity (for scale-invariant H_norm)
     :param Sigma_hat (np.ndarray | None): Predicted covariance
     :param n_signal (int): Number of signal eigenvalues from DGJ
+    :param H_factor (float): Factor-only entropy (no idiosyncratic layer).
+        Used for H_norm_signal to ensure it stays in [0, 1].
 
     :return metrics (dict): Portfolio performance metrics
     """
@@ -402,16 +405,19 @@ def portfolio_metrics(
     sortino = ann_return / max(downside_vol, 1e-10)
 
     # Normalized entropy:
-    # - H_norm_signal uses ln(n_signal) — the correct denominator after DGJ
-    #   eigenvalue truncation. n_signal is the number of real signal factors.
-    # - H_norm_au uses ln(AU) — secondary diagnostic
-    # - H_norm uses ln(K) — legacy, for cross-fold comparability (K=200)
+    # - H_norm_signal uses H_factor / ln(n_signal) — factor-only entropy
+    #   ensures the metric stays in [0, 1].  Using H_combined would exceed
+    #   1.0 because the idiosyncratic layer inflates H beyond ln(n_signal).
+    # - H_norm_au uses H_combined / ln(AU) — secondary diagnostic
+    # - H_norm uses H_combined / ln(K) — legacy, for cross-fold comparability
     denom_K = max(np.log(max(K, 1)), 1e-10) if K > 0 else 1e-10
     denom_AU = max(np.log(max(AU, 1)), 1e-10) if AU > 0 else 1e-10
     denom_signal = max(np.log(max(n_signal, 2)), 1e-10) if n_signal > 1 else denom_AU
     H_norm = H_oos / denom_K if K > 0 else H_oos / denom_AU
     H_norm_au = H_oos / denom_AU if AU > 0 else 0.0
-    H_norm_signal = H_oos / denom_signal if n_signal > 1 else H_norm_au
+    # Use factor-only entropy for H_norm_signal (Meucci 2009)
+    H_for_signal = H_factor if H_factor > 0.0 else H_oos
+    H_norm_signal = H_for_signal / denom_signal if n_signal > 1 else H_norm_au
 
     # Effective number of positions
     eff_n = float(1.0 / np.sum(w_active ** 2)) if np.sum(w_active ** 2) > 0 else 0.0

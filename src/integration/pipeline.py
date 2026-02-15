@@ -38,6 +38,7 @@ from src.inference.active_units import (
 from src.inference.composite import aggregate_profiles, infer_latent_trajectories
 from src.integration.reporting import generate_report, format_summary_table
 from src.portfolio.cardinality import enforce_cardinality
+from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.frontier import (
     compute_variance_entropy_frontier,
     select_operating_alpha,
@@ -88,9 +89,39 @@ BENCHMARK_CLASSES: dict[str, type] = {
     "sp500_index": SP500TotalReturn,
 }
 
-# Variance-targeting scale bounds (safety clamps)
-_VT_SCALE_MIN = 0.01
-_VT_SCALE_MAX = 100.0
+# Variance-targeting: Bayesian shrinkage toward 1.0 (Barra USE4 §4).
+# nu_prior acts as the number of "virtual observations" where VT = 1.0.
+# With nu_prior=60, a holdout of 400 days barely shrinks (400/(400+60)=0.87),
+# while a short holdout of 20 days shrinks aggressively (20/(20+60)=0.25).
+_VT_PRIOR_STRENGTH = 60
+# Safety clamps after shrinkage (very wide — the shrinkage does the work)
+_VT_SCALE_MIN = 0.1
+_VT_SCALE_MAX = 10.0
+
+
+def _align_weights_by_stock_id(
+    w_old: np.ndarray,
+    old_ids: list[int],
+    new_ids: list[int],
+) -> np.ndarray:
+    """
+    Re-index portfolio weights from a previous fold's universe to the current
+    fold's universe.  Stocks present in both get their old weight; new stocks
+    get weight 0; exited stocks are dropped.
+
+    :param w_old (np.ndarray): Previous weights (n_old,)
+    :param old_ids (list[int]): Stock IDs for w_old
+    :param new_ids (list[int]): Stock IDs for the current fold
+
+    :return w_aligned (np.ndarray): Aligned weights (n_new,)
+    """
+    old_map = {sid: i for i, sid in enumerate(old_ids)}
+    w_aligned = np.zeros(len(new_ids), dtype=np.float64)
+    for j, sid in enumerate(new_ids):
+        idx = old_map.get(sid)
+        if idx is not None:
+            w_aligned[j] = w_old[idx]
+    return w_aligned
 
 
 class FullPipeline:
@@ -249,7 +280,11 @@ class FullPipeline:
 
         # Step 1: Cap K based on AU_max_stat (binding downstream constraint)
         n_obs = T_annee * 252
-        au_max = compute_au_max_stat(n_obs=n_obs, r_min=self.config.inference.r_min)
+        au_max = compute_au_max_stat(
+            n_obs=n_obs,
+            r_min=self.config.inference.r_min,
+            ewma_half_life=self.config.risk_model.sigma_z_ewma_half_life,
+        )
         K_adapted = min(K_config, max(2 * au_max, 10))
 
         # Step 2: Compute capacity ratio
@@ -540,7 +575,9 @@ class FullPipeline:
         # Rolling realized vol for windowing (21-day)
         rolling_vol = compute_rolling_realized_vol(returns, rolling_window=21)
 
-        # Benchmark w_old trackers (per benchmark)
+        # Weight trackers for turnover measurement (inter-fold)
+        w_old_vae: np.ndarray | None = None
+        w_old_vae_ids: list[int] | None = None
         bench_w_old: dict[str, np.ndarray | None] = {
             name: None for name in BENCHMARK_CLASSES
         }
@@ -581,12 +618,41 @@ class FullPipeline:
                 is_holdout=False,
             )
 
-            vae_metrics, w_vae = self._run_single_fold(
+            vae_metrics, w_vae, vae_ids = self._run_single_fold(
                 fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, best_config, e_star, torch_device,
                 use_early_stopping=skip_phase_a,
                 pretrained_model=loaded_model,
+                w_old=w_old_vae,
+                is_first=(fold_idx == 0),
+                w_old_ids=w_old_vae_ids,
             )
+
+            # Turnover measurement and net-of-cost Sharpe
+            # (DeMiguel et al. 2009, Novy-Marx & Velikov 2016)
+            # Align by stock ID to handle universe changes between folds.
+            tc_bps = self.config.portfolio.transaction_cost_bps
+            if w_old_vae is not None and w_old_vae_ids is not None and w_vae is not None:
+                w_old_aligned = _align_weights_by_stock_id(
+                    w_old_vae, w_old_vae_ids, vae_ids,
+                )
+                turnover = 0.5 * float(np.sum(np.abs(w_vae - w_old_aligned)))
+                vae_metrics["turnover"] = turnover
+                tc_cost = (tc_bps / 1e4) * turnover
+                vae_metrics["transaction_cost"] = tc_cost
+                n_oos_days = vae_metrics.get("n_days_oos", 126.0)
+                ann_tc = tc_cost * (252.0 / max(n_oos_days, 1.0))
+                ann_return_net = vae_metrics.get("ann_return", 0.0) - ann_tc
+                ann_vol = max(vae_metrics.get("ann_vol_oos", 1e-10), 1e-10)
+                vae_metrics["sharpe_net"] = ann_return_net / ann_vol
+            else:
+                vae_metrics["turnover"] = 0.0
+                vae_metrics["transaction_cost"] = 0.0
+                vae_metrics["sharpe_net"] = vae_metrics.get("sharpe", 0.0)
+            if w_vae is not None:
+                w_old_vae = w_vae.copy()
+                w_old_vae_ids = vae_ids
+
             self.record_vae_result(fold_id, vae_metrics, e_star)
 
             # Benchmarks
@@ -626,11 +692,14 @@ class FullPipeline:
             else:
                 holdout_config = {"mode": "P", "learning_rate": self.config.training.learning_rate, "alpha": 1.0}
 
-            holdout_metrics, _ = self._run_single_fold(
+            holdout_metrics, _, _ = self._run_single_fold(
                 holdout_fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, holdout_config, e_star_holdout, torch_device,
                 use_early_stopping=skip_phase_a,
                 pretrained_model=loaded_model,
+                w_old=w_old_vae,
+                is_first=(w_old_vae is None),
+                w_old_ids=w_old_vae_ids,
             )
             self.record_vae_result(holdout_id, holdout_metrics, e_star_holdout)
 
@@ -831,7 +900,7 @@ class FullPipeline:
                 e_star = int(ckpt_fit.get("best_epoch", 0))
 
         state_bag: dict[str, Any] = {}
-        vae_metrics, w_vae = self._run_single_fold(
+        vae_metrics, w_vae, _ = self._run_single_fold(
             fold, returns, trailing_vol, rolling_vol, stock_data,
             vix_data, hp_config, e_star, torch_device,
             use_early_stopping=True,
@@ -1175,6 +1244,7 @@ class FullPipeline:
         residuals_by_stock: dict[int, list[float]] | None = None,
         B_A_by_date: dict[str, np.ndarray] | None = None,
         valid_dates: list[str] | None = None,
+        holdout_start: int | None = None,
         holdout_fraction: float = 0.2,
     ) -> tuple[float, float]:
         """
@@ -1183,6 +1253,10 @@ class FullPipeline:
         Uses the available z_hat (factor returns) and stock-level residuals
         to independently estimate realized systematic and idiosyncratic
         variances of the EW portfolio, then scales each block to match.
+
+        When holdout_start is provided, the holdout is disjoint from the
+        estimation period used for Sigma_z/D_eps.  This avoids look-ahead
+        bias in the VT calibration (Barra USE4 Section 4).
 
         For each holdout day t:
           r_sys_t = w_eq^T @ B_A_t @ z_hat_t  (systematic EW return)
@@ -1203,7 +1277,11 @@ class FullPipeline:
         :param residuals_by_stock (dict | None): stock_id -> list of residuals
         :param B_A_by_date (dict | None): date_str -> B_A matrix
         :param valid_dates (list[str] | None): Dates with valid factor returns
+        :param holdout_start (int | None): Index into valid_dates where VT
+            holdout begins.  Dates [holdout_start:] are used for VT.
+            When None, falls back to fraction-based holdout.
         :param holdout_fraction (float): Fraction of training for holdout
+            (only used when holdout_start is None)
 
         :return vt_sys (float): Systematic block scale, clamped to [0.01, 100]
         :return vt_idio (float): Idiosyncratic block scale, clamped to [0.01, 100]
@@ -1219,16 +1297,32 @@ class FullPipeline:
         if pred_sys_var <= 1e-12 and pred_idio_var <= 1e-12:
             return 1.0, 1.0
 
-        # Realized EW portfolio returns on holdout
+        # Realized EW portfolio returns on holdout.
+        # Filter days by coverage (>= 90%) instead of fillna(0) which biases
+        # variance downward for delisted/suspended stocks.
         available = [s for s in stock_ids[:n_port] if s in train_returns.columns]
         if len(available) < 10:
             return 1.0, 1.0
-        R_full = train_returns[available].fillna(0.0).to_numpy()
+        R_df = train_returns[available]
+        coverage = R_df.notna().mean(axis=1)
+        R_df = R_df.loc[coverage >= 0.90]  # type: ignore[arg-type]
+        R_arr = R_df.to_numpy()
+        # Fill residual NaN with cross-sectional mean (market-neutral)
+        row_means = np.nanmean(R_arr, axis=1, keepdims=True)
+        nan_mask = np.isnan(R_arr)
+        if np.any(nan_mask):
+            R_arr = np.where(nan_mask, np.broadcast_to(row_means, R_arr.shape), R_arr)
+        R_full = R_arr
         n_total = R_full.shape[0]
         if n_total < 40:
             return 1.0, 1.0
 
-        n_holdout = max(20, int(n_total * holdout_fraction))
+        # Determine holdout dates: use explicit holdout_start if provided,
+        # otherwise fallback to fraction-based split
+        if holdout_start is not None and valid_dates is not None:
+            n_holdout = len(valid_dates) - holdout_start
+        else:
+            n_holdout = max(20, int(n_total * holdout_fraction))
         R = R_full[-n_holdout:]
         n_avail = len(available)
         w_sub = np.ones(n_avail) / n_avail
@@ -1239,23 +1333,32 @@ class FullPipeline:
             z_hat is not None
             and B_A_by_date is not None
             and valid_dates is not None
-            and len(valid_dates) > n_holdout
+            and n_holdout >= 20
         )
 
         if can_decompose:
             assert z_hat is not None and B_A_by_date is not None and valid_dates is not None
-            # Use the last n_holdout valid dates
-            holdout_dates = valid_dates[-n_holdout:]
+            # Use holdout dates (disjoint from estimation when holdout_start is set)
+            if holdout_start is not None:
+                holdout_dates = valid_dates[holdout_start:]
+            else:
+                holdout_dates = valid_dates[-n_holdout:]
             r_sys_list: list[float] = []
             r_idio_list: list[float] = []
 
             # Pre-build date → z_hat index lookup (O(1) per date instead of O(n))
             date_to_zidx = {d: i for i, d in enumerate(valid_dates)}
 
-            for t_idx, date_str in enumerate(holdout_dates):
+            # Date-keyed EW returns for robust alignment
+            r_ew_by_date: dict[str, float] = {}
+            for i_d, d_val in enumerate(train_returns.index):
+                if isinstance(d_val, pd.Timestamp):
+                    r_ew_by_date[str(d_val.date())] = float(R_full[i_d] @ w_sub)
+                else:
+                    r_ew_by_date[str(d_val)] = float(R_full[i_d] @ w_sub)
+
+            for date_str in holdout_dates:
                 if date_str not in B_A_by_date:
-                    continue
-                if t_idx >= z_hat.shape[0]:
                     continue
                 z_idx = date_to_zidx.get(date_str)
                 if z_idx is None or z_idx >= z_hat.shape[0]:
@@ -1271,7 +1374,7 @@ class FullPipeline:
                 else:
                     w_eq_t = np.ones(n_b) / n_b  # normalized for this date's universe
                     r_sys_t = float(w_eq_t @ (B_A_t @ z_t))
-                r_total_t = float(r_ew[t_idx]) if t_idx < len(r_ew) else 0.0
+                r_total_t = r_ew_by_date.get(date_str, 0.0)
                 r_idio_t = r_total_t - r_sys_t
 
                 r_sys_list.append(r_sys_t)
@@ -1281,12 +1384,19 @@ class FullPipeline:
                 realized_sys_var = float(np.var(r_sys_list, ddof=1))
                 realized_idio_var = float(np.var(r_idio_list, ddof=1))
 
-                # Independent block scales
-                vt_sys = realized_sys_var / max(pred_sys_var, 1e-15)
-                vt_idio = realized_idio_var / max(pred_idio_var, 1e-15)
+                # Independent block scales with Bayesian shrinkage toward 1.0
+                vt_sys_raw = realized_sys_var / max(pred_sys_var, 1e-15)
+                vt_idio_raw = realized_idio_var / max(pred_idio_var, 1e-15)
 
-                vt_sys = float(np.clip(vt_sys, _VT_SCALE_MIN, _VT_SCALE_MAX))
-                vt_idio = float(np.clip(vt_idio, _VT_SCALE_MIN, _VT_SCALE_MAX))
+                n_obs = len(r_sys_list)
+                vt_sys = float(np.clip(
+                    (n_obs * vt_sys_raw + _VT_PRIOR_STRENGTH) / (n_obs + _VT_PRIOR_STRENGTH),
+                    _VT_SCALE_MIN, _VT_SCALE_MAX,
+                ))
+                vt_idio = float(np.clip(
+                    (n_obs * vt_idio_raw + _VT_PRIOR_STRENGTH) / (n_obs + _VT_PRIOR_STRENGTH),
+                    _VT_SCALE_MIN, _VT_SCALE_MAX,
+                ))
 
                 if not np.isfinite(vt_sys):
                     vt_sys = 1.0
@@ -1314,7 +1424,10 @@ class FullPipeline:
             return 1.0, 1.0
 
         overall_ratio = realized_var / pred_total
-        vt_scalar = float(np.clip(overall_ratio, _VT_SCALE_MIN, _VT_SCALE_MAX))
+        vt_scalar = float(np.clip(
+            (n_holdout * overall_ratio + _VT_PRIOR_STRENGTH) / (n_holdout + _VT_PRIOR_STRENGTH),
+            _VT_SCALE_MIN, _VT_SCALE_MAX,
+        ))
 
         logger.info(
             "  Variance targeting (scalar fallback, %d holdout days): "
@@ -1344,7 +1457,10 @@ class FullPipeline:
         use_early_stopping: bool = False,
         _state_bag: dict[str, Any] | None = None,
         pretrained_model: Any = None,
-    ) -> tuple[dict[str, float], np.ndarray]:
+        w_old: np.ndarray | None = None,
+        is_first: bool = True,
+        w_old_ids: list[int] | None = None,
+    ) -> tuple[dict[str, float], np.ndarray, list[int]]:
         """
         Run Phase B for a single fold: train → infer → risk model → portfolio → metrics.
 
@@ -1362,9 +1478,15 @@ class FullPipeline:
         :param device (torch.device): Compute device
         :param use_early_stopping (bool): Enable early stopping (when Phase A is skipped)
         :param pretrained_model (Any): Pre-loaded VAEModel to skip training. None = train.
+        :param w_old (np.ndarray | None): Previous fold weights for turnover
+            constraints (INV-012 symmetry with benchmarks).
+        :param is_first (bool): First rebalancing flag (no turnover penalty).
+        :param w_old_ids (list[int] | None): Stock IDs for w_old.  Used to
+            align w_old to the current fold's universe when stocks enter/exit.
 
         :return metrics (dict): Fold metrics
-        :return w (np.ndarray): Portfolio weights
+        :return w (np.ndarray): Portfolio weights (n_port,)
+        :return inferred_stock_ids (list[int]): Stock IDs corresponding to w
         """
         train_start = str(fold["train_start"])
         train_end = str(fold["train_end"])
@@ -1392,7 +1514,7 @@ class FullPipeline:
         )
 
         if windows.shape[0] < 10:
-            return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids)
+            return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids), stock_ids
 
         logger.info(
             "  [Fold %d] Windowing: %d train windows (stride=%d) from %d stocks, %d days",
@@ -1560,6 +1682,7 @@ class FullPipeline:
         au_max = compute_au_max_stat(
             n_obs=train_days,
             r_min=self.config.inference.r_min,
+            ewma_half_life=self.config.risk_model.sigma_z_ewma_half_life,
         )
         # Cross-sectional identification: AU must be < n_stocks for OLS regression
         if au_max >= n_stocks:
@@ -1571,7 +1694,7 @@ class FullPipeline:
         AU, active_dims = truncate_active_dims(AU, kl_per_dim, active_dims, au_max)
 
         if AU == 0:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks
+            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids
 
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
@@ -1679,6 +1802,27 @@ class FullPipeline:
             ),
         )
 
+        # Market intercept (Barra USE4): append a column of ones to B_A
+        # AFTER dual rescaling so the intercept is not affected by vol ratios.
+        # This adds an explicit market factor with unit exposure for all
+        # stocks, fixing the variance targeting pathology where z-scored
+        # factors give beta_eq ~ 0 for the EW portfolio.
+        if self.config.risk_model.market_intercept:
+            for date_str in B_A_by_date:
+                n_active = B_A_by_date[date_str].shape[0]
+                intercept = np.ones((n_active, 1), dtype=np.float64)
+                B_A_by_date[date_str] = np.hstack(
+                    [B_A_by_date[date_str], intercept]
+                )
+            intercept_port = np.ones(
+                (B_A_port.shape[0], 1), dtype=np.float64
+            )
+            B_A_port = np.hstack([B_A_port, intercept_port])
+            logger.info(
+                "  [Fold %d] Market intercept added: n_factors=%d (AU=%d + 1)",
+                fold_id, B_A_port.shape[1], AU,
+            )
+
         logger.info("  [Fold %d] Dual rescaling done", fold_id)
 
         # 6. Factor regression → z_hat
@@ -1688,26 +1832,39 @@ class FullPipeline:
             universe_snapshots,
             conditioning_threshold=self.config.risk_model.conditioning_threshold,
             ridge_scale=self.config.risk_model.ridge_scale,
+            use_wls=self.config.risk_model.use_wls,
         )
 
-        if z_hat.shape[0] < AU:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks
+        n_factors = z_hat.shape[1] if z_hat.shape[0] > 0 else AU
+        if z_hat.shape[0] < n_factors:
+            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids
 
-        # Residuals for D_eps
+        # Split z_hat into estimation (80%) / holdout (20%) for unbiased VT.
+        # Sigma_z and D_eps are estimated from estimation period only, so the
+        # VT holdout compares realized vs predicted without look-ahead bias.
+        # (Barra USE4 Section 4, Shephard & Sheppard 2010)
+        n_z = z_hat.shape[0]
+        n_vt_holdout = max(20, int(n_z * 0.2))
+        n_est = n_z - n_vt_holdout  # estimation period end index
+        z_hat_est = z_hat[:n_est]
+        valid_dates_est = valid_dates[:n_est]
+
+        # Residuals from estimation period only (for D_eps)
         residuals = compute_residuals(
-            B_A_by_date, z_hat,
+            B_A_by_date, z_hat_est,
             returns.loc[train_start:train_end],
-            universe_snapshots, valid_dates,
+            universe_snapshots, valid_dates_est,
             inferred_stock_ids,
         )
 
-        # 7. Covariance: Σ_z, D_ε, Σ_assets
+        # 7. Covariance: Σ_z, D_ε, Σ_assets (from estimation period)
         logger.info(
-            "  [Fold %d] Factor regression done (%d valid dates). Covariance estimation...",
-            fold_id, z_hat.shape[0],
+            "  [Fold %d] Factor regression done (%d valid dates, %d estimation / %d VT holdout). "
+            "Covariance estimation...",
+            fold_id, n_z, n_est, n_vt_holdout,
         )
         Sigma_z, n_signal = estimate_sigma_z(
-            z_hat,
+            z_hat_est,
             eigenvalue_pct=self.config.risk_model.sigma_z_eigenvalue_pct,
             shrinkage_method=self.config.risk_model.sigma_z_shrinkage,
             ewma_half_life=self.config.risk_model.sigma_z_ewma_half_life,
@@ -1725,40 +1882,103 @@ class FullPipeline:
         eigenvalues = risk_model["eigenvalues"]
         B_prime_port = risk_model["B_prime_port"]
 
-        # Truncate to signal eigenvalues only: entropy should diversify
-        # across real factors, not noise dimensions (DGJ BBP threshold).
+        # Split eigenvalues: full set for Sigma_assets (risk), signal-only
+        # for entropy.  DGJ (2018) Theorem 2.2: noise eigenvalues should be
+        # sigma_sq (not 0) for optimal Frobenius-loss estimation.  Keeping
+        # them in Sigma_assets prevents systematic risk underestimation.
+        # Entropy only diversifies across n_signal real factors.
         n_signal = max(1, min(n_signal, len(eigenvalues)))
+        eigenvalues_signal = eigenvalues[:n_signal].copy()
+        B_prime_signal = B_prime_port[:, :n_signal].copy()
         if n_signal < len(eigenvalues):
-            eigenvalues = eigenvalues[:n_signal]
-            B_prime_port = B_prime_port[:, :n_signal]
-            # Rebuild Sigma_assets with truncated systematic block
-            Sigma_sys_trunc = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
-            Sigma_assets = Sigma_sys_trunc + np.diag(D_eps_port)
-            Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)  # ensure symmetry
-            risk_model["Sigma_assets"] = Sigma_assets
-            risk_model["eigenvalues"] = eigenvalues
-            risk_model["B_prime_port"] = B_prime_port
             logger.info(
-                "  [Fold %d] Eigenvalue truncation: n_signal=%d/%d",
-                fold_id, n_signal, AU,
+                "  [Fold %d] Eigenvalue split: n_signal=%d/%d "
+                "(signal for entropy, full for risk)",
+                fold_id, n_signal, len(eigenvalues),
             )
 
-        # Block-level variance targeting: separate scales for systematic
-        # and idiosyncratic blocks (Barra USE4 methodology).
-        # Applied AFTER all eigenvalue transformations (DGJ/power) to avoid
-        # the old ordering bug where dual VT was invalidated by subsequent
-        # power shrinkage.
-        vt_sys, vt_idio = self._block_variance_targeting(
-            B_prime_port, eigenvalues, D_eps_port,
-            returns.loc[train_start:train_end],
-            inferred_stock_ids, n_port,
-            z_hat=z_hat,
-            residuals_by_stock=residuals,
-            B_A_by_date=B_A_by_date,
-            valid_dates=valid_dates,
-        )
-        eigenvalues = eigenvalues * vt_sys
-        D_eps_port = D_eps_port * vt_idio
+        # Per-factor variance targeting (Barra USE4 methodology):
+        # Calibrate each eigenvalue independently using holdout z_hat
+        # projected into the principal factor basis.  This eliminates
+        # the dependency on the EW portfolio that caused instability
+        # when B_A is z-scored (beta_eq ≈ 0 for latent factors).
+        # Reference: Menchero, Orr & Wang (2011), §4.
+        V = risk_model["V"]
+        z_hat_principal = z_hat @ V  # (n_dates, AU) in principal basis
+        z_holdout_principal = z_hat_principal[n_est:]
+        n_holdout_vt = z_holdout_principal.shape[0]
+
+        if n_holdout_vt >= 20:
+            # Per-factor VT with Bayesian shrinkage toward 1.0
+            # (Barra USE4, Menchero et al. 2011 §4).
+            # vt_shrunk = (n·vt_raw + ν·1.0) / (n + ν) pulls extreme
+            # ratios toward unity, with strength inversely proportional
+            # to holdout sample size.
+            vt_factors = np.ones(len(eigenvalues), dtype=np.float64)
+            for k in range(len(eigenvalues)):
+                realized_k = float(np.var(z_holdout_principal[:, k], ddof=1))
+                pred_k = max(float(eigenvalues[k]), 1e-15)
+                vt_raw_k = realized_k / pred_k
+                vt_shrunk_k = (
+                    n_holdout_vt * vt_raw_k + _VT_PRIOR_STRENGTH * 1.0
+                ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
+                vt_factors[k] = float(np.clip(
+                    vt_shrunk_k, _VT_SCALE_MIN, _VT_SCALE_MAX,
+                ))
+            eigenvalues = eigenvalues * vt_factors
+            eigenvalues_signal = eigenvalues[:n_signal].copy()
+
+            # Idiosyncratic VT: compute holdout residuals and compare
+            # per-stock realized idio variance with D_eps.
+            residuals_holdout = compute_residuals(
+                B_A_by_date, z_hat[n_est:],
+                returns.loc[train_start:train_end],
+                universe_snapshots, valid_dates[n_est:],
+                inferred_stock_ids,
+            )
+            idio_ratios: list[float] = []
+            for i, sid in enumerate(inferred_stock_ids[:n_port]):
+                resids_h = residuals_holdout.get(sid, [])
+                if len(resids_h) >= 10 and D_eps_port[i] > 1e-12:
+                    realized_idio = float(np.var(resids_h, ddof=1))
+                    idio_ratios.append(realized_idio / float(D_eps_port[i]))
+            if len(idio_ratios) >= 10:
+                vt_idio_raw = float(np.median(idio_ratios))
+                n_idio_obs = len(idio_ratios)
+                vt_idio_shrunk = (
+                    n_idio_obs * vt_idio_raw + _VT_PRIOR_STRENGTH * 1.0
+                ) / (n_idio_obs + _VT_PRIOR_STRENGTH)
+                vt_idio = float(np.clip(
+                    vt_idio_shrunk, _VT_SCALE_MIN, _VT_SCALE_MAX,
+                ))
+            else:
+                vt_idio = 1.0
+            D_eps_port = D_eps_port * vt_idio
+
+            logger.info(
+                "  Variance targeting (per-factor, %d holdout days): "
+                "vt_factors=[%.3f..%.3f], median=%.3f, vt_idio=%.3f",
+                n_holdout_vt,
+                float(np.min(vt_factors)), float(np.max(vt_factors)),
+                float(np.median(vt_factors)), vt_idio,
+            )
+            vt_sys = float(np.median(vt_factors))  # summary for state_bag
+        else:
+            # Fallback: scalar VT when holdout is too short
+            vt_sys, vt_idio = self._block_variance_targeting(
+                B_prime_port, eigenvalues, D_eps_port,
+                returns.loc[train_start:train_end],
+                inferred_stock_ids, n_port,
+                z_hat=z_hat,
+                residuals_by_stock=residuals,
+                B_A_by_date=B_A_by_date,
+                valid_dates=valid_dates,
+                holdout_start=n_est,
+            )
+            eigenvalues = eigenvalues * vt_sys
+            eigenvalues_signal = eigenvalues_signal * vt_sys
+            D_eps_port = D_eps_port * vt_idio
+
         Sigma_sys_vt = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
         Sigma_assets = Sigma_sys_vt + np.diag(D_eps_port)
         Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)  # ensure symmetry
@@ -1813,24 +2033,74 @@ class FullPipeline:
                 int(np.sum(np.abs(mu) > 1e-10)),
             )
 
+        idio_weight = pc.entropy_idio_weight
+
+        # Align w_old to the current fold's universe when stock IDs differ.
+        # This prevents misaligned turnover penalties in the SCA optimizer
+        # when stocks enter or exit the inferred universe between folds.
+        if w_old is not None and w_old_ids is not None:
+            w_old = _align_weights_by_stock_id(
+                w_old, w_old_ids, inferred_stock_ids[:n_port],
+            )
+            if w_old.shape[0] != n_port:
+                logger.warning(
+                    "  [Fold %d] w_old alignment size mismatch: %d vs n_port=%d",
+                    fold_id, w_old.shape[0], n_port,
+                )
+                w_old = None
+
         logger.info(
             "  [Fold %d] Frontier: %d alphas × %d starts...",
             fold_id, len(pc.alpha_grid), pc.n_starts,
         )
         t_port = time.monotonic()
-        frontier = compute_variance_entropy_frontier(
-            Sigma_assets, B_prime_port, eigenvalues, D_eps_port,
+        frontier, frontier_weights = compute_variance_entropy_frontier(
+            Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
             alpha_grid=pc.alpha_grid,
             lambda_risk=pc.lambda_risk,
             w_max=pc.w_max, w_min=pc.w_min,
             w_bar=pc.w_bar, phi=pc.phi,
-            w_old=None, is_first=True,
+            w_old=w_old, is_first=is_first,
             n_starts=pc.n_starts, seed=self.config.seed,
             entropy_eps=pc.entropy_eps,
             mu=mu,
-            idio_weight=pc.entropy_idio_weight,
+            idio_weight=idio_weight,
         )
-        alpha_opt = select_operating_alpha(frontier, target_enb=pc.target_enb)
+        # Dynamic target_enb: when config is 0.0 (default), use n_signal / 2
+        # for a robust diversification target (Meucci 2009).
+        # Set config to -1.0 to force Kneedle legacy mode.
+        effective_target_enb = pc.target_enb
+        if pc.target_enb == 0.0:
+            effective_target_enb = max(2.0, n_signal / 2.0)
+            logger.info(
+                "  [Fold %d] Dynamic target_enb=%.1f (n_signal=%d / 2)",
+                fold_id, effective_target_enb, n_signal,
+            )
+        elif pc.target_enb < 0.0:
+            # Legacy Kneedle mode: pass 0.0 to select_operating_alpha
+            effective_target_enb = 0.0
+        alpha_opt = select_operating_alpha(frontier, target_enb=effective_target_enb)
+
+        # Guard: alpha=0 means entropy had no effect (min-var under
+        # concentration constraints). Force minimum alpha to ensure the
+        # entropy term contributes to diversification.
+        if alpha_opt <= 0.0:
+            alpha_opt = min(a for a in frontier["alpha"] if a > 0.0)
+            logger.warning(
+                "  [Fold %d] alpha_opt was 0 — forced to %.4g to ensure "
+                "entropy contributes to diversification.",
+                fold_id, alpha_opt,
+            )
+            # Re-fetch weights for the new alpha
+            if alpha_opt in frontier_weights:
+                pass  # will be used below
+            else:
+                # Nearest alpha in frontier
+                frontier_alphas = sorted(frontier_weights.keys())
+                alpha_opt = min(
+                    (a for a in frontier_alphas if a > 0.0),
+                    default=frontier_alphas[-1],
+                )
 
         if _state_bag is not None:
             _state_bag["alpha_opt"] = alpha_opt
@@ -1838,29 +2108,24 @@ class FullPipeline:
             if mu is not None:
                 _state_bag["mu"] = mu
 
+        # Reuse weights from frontier computation (avoids redundant SCA solve)
+        w_opt = frontier_weights[alpha_opt]
+        H_opt = compute_entropy_only(
+            w_opt, B_prime_signal, eigenvalues_signal, pc.entropy_eps,
+            D_eps=D_eps_port, idio_weight=idio_weight,
+        )
+        # Factor-only entropy for H_norm_signal (stays in [0, 1])
+        H_factor = compute_entropy_only(
+            w_opt, B_prime_signal, eigenvalues_signal, pc.entropy_eps,
+            D_eps=None, idio_weight=0.0,
+        )
+
         logger.info(
-            "  [Fold %d] Frontier done (%.1fs), alpha*=%.3f. Final SCA (%d starts)...",
-            fold_id, time.monotonic() - t_port, alpha_opt, pc.n_starts,
+            "  [Fold %d] Frontier done (%.1fs), alpha*=%.3f, H=%.4f.",
+            fold_id, time.monotonic() - t_port, alpha_opt, H_opt,
         )
 
-        w_opt, f_opt, H_opt = multi_start_optimize(
-            Sigma_assets=Sigma_assets,
-            B_prime=B_prime_port,
-            eigenvalues=eigenvalues,
-            D_eps=D_eps_port,
-            alpha=alpha_opt,
-            n_starts=pc.n_starts,
-            seed=self.config.seed,
-            lambda_risk=pc.lambda_risk,
-            w_max=pc.w_max, w_min=pc.w_min,
-            w_bar=pc.w_bar, phi=pc.phi,
-            w_old=None, is_first=True,
-            entropy_eps=pc.entropy_eps,
-            mu=mu,
-            idio_weight=pc.entropy_idio_weight,
-        )
-
-        logger.info("  [Fold %d] SCA done. Cardinality enforcement...", fold_id)
+        logger.info("  [Fold %d] Cardinality enforcement...", fold_id)
 
         # Cardinality enforcement
         logger.info("  [Fold %d] Cardinality enforcement (max %d eliminations)...",
@@ -1868,23 +2133,23 @@ class FullPipeline:
         L_sigma = _safe_cholesky(Sigma_assets)
         sca_kwargs = {
             "Sigma_assets": Sigma_assets,
-            "B_prime": B_prime_port,
-            "eigenvalues": eigenvalues,
+            "B_prime": B_prime_signal,
+            "eigenvalues": eigenvalues_signal,
             "alpha": alpha_opt,
             "lambda_risk": pc.lambda_risk,
             "phi": pc.phi, "w_bar": pc.w_bar,
             "w_max": pc.w_max,
-            "w_old": None, "is_first": True,
+            "w_old": w_old, "is_first": is_first,
             "kappa_1": pc.kappa_1, "kappa_2": pc.kappa_2,
             "delta_bar": pc.delta_bar, "tau_max": pc.tau_max,
             "entropy_eps": pc.entropy_eps,
             "_L_sigma": L_sigma,
             "mu": mu,
             "D_eps": D_eps_port,
-            "idio_weight": pc.entropy_idio_weight,
+            "idio_weight": idio_weight,
         }
         w_final = enforce_cardinality(
-            w_opt, B_prime_port, eigenvalues,
+            w_opt, B_prime_signal, eigenvalues_signal,
             w_min=pc.w_min,
             sca_solver_fn=sca_optimize,
             sca_kwargs=sca_kwargs,
@@ -1892,7 +2157,7 @@ class FullPipeline:
             entropy_eps=pc.entropy_eps,
             method=pc.cardinality_method,
             D_eps=D_eps_port,
-            idio_weight=pc.entropy_idio_weight,
+            idio_weight=idio_weight,
         )
 
         t_fold = time.monotonic() - t0
@@ -1910,6 +2175,7 @@ class FullPipeline:
             H_oos=H_opt, AU=AU, K=self.config.vae.K,
             Sigma_hat=Sigma_assets,
             n_signal=n_signal,
+            H_factor=H_factor,
         )
         metrics["AU"] = float(AU)
         metrics["e_star"] = float(e_star)
@@ -1975,7 +2241,7 @@ class FullPipeline:
             torch.cuda.reset_peak_memory_stats(device)
         clear_device_cache(device)
 
-        return metrics, w_final
+        return metrics, w_final, inferred_stock_ids
 
     # -------------------------------------------------------------------
     # Benchmarks

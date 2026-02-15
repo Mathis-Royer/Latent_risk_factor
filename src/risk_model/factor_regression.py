@@ -1,50 +1,48 @@
 """
-Cross-sectional OLS factor regression.
+Cross-sectional factor regression (OLS / iterative WLS).
 
-At each date t: ẑ_t = (B̃_{A,t}^T B̃_{A,t})^{-1} B̃_{A,t}^T r_t
+At each date t: z_hat_t = solve(B_A_t, r_t) via SVD-based lstsq.
+
+When use_wls=True, a two-pass approach corrects for heteroscedasticity:
+  Pass 1: OLS -> z_hat_ols, residuals -> per-stock sigma_eps^2
+  Pass 2: WLS with weights = 1/sigma_eps^2 (BLUE estimates)
 
 Uses date-specific rescaling (estimation, NOT portfolio).
-Conditioning guard applied when κ(B^T B) > 10^6.
 
 Reference: ISD Section MOD-007 — Sub-task 2.
+Literature: Fama & MacBeth (1973), Barra USE4 (Menchero et al. 2011).
 """
 
 import numpy as np
 import pandas as pd
 
-from src.risk_model.conditioning import safe_solve
+from src.risk_model.conditioning import safe_solve, safe_solve_wls
+
+# Type alias for pre-computed date data
+_DateTuple = tuple[str, np.ndarray, np.ndarray, list[int]]
 
 
-def estimate_factor_returns(
+def _prepare_regression_data(
     B_A_by_date: dict[str, np.ndarray],
     returns: pd.DataFrame,
     universe_snapshots: dict[str, list[int]],
-    conditioning_threshold: float = 1e6,
-    ridge_scale: float = 1e-6,
-) -> tuple[np.ndarray, list[str]]:
+) -> list[_DateTuple]:
     """
-    Cross-sectional OLS at each date t using date-specific rescaled exposures.
+    Pre-compute valid (date, B_t, r_t, stock_ids) tuples for regression.
 
-    ẑ_t = (B̃_t^T B̃_t)^{-1} B̃_t^T r_t
+    Filters out dates with insufficient stocks or NaN returns.
+    Shared between OLS and WLS passes to avoid redundant computation.
 
-    :param B_A_by_date (dict): date_str → B̃_{A,t} (n_active_t, AU)
-    :param returns (pd.DataFrame): Log-returns (dates × stocks)
-    :param universe_snapshots (dict): date_str → list of active stock_ids (permnos)
-    :param conditioning_threshold (float): κ threshold for ridge fallback
-    :param ridge_scale (float): Ridge scale factor
+    :param B_A_by_date (dict): date_str -> B_A_t (n_active_t, AU)
+    :param returns (pd.DataFrame): Log-returns (dates x stocks)
+    :param universe_snapshots (dict): date_str -> list of active stock_ids
 
-    :return z_hat (np.ndarray): Factor returns (n_dates, AU)
-    :return dates (list[str]): Dates for which z_hat was estimated
+    :return date_data (list): Valid (date_str, B_t, r_t, stock_ids) tuples
     """
     sorted_dates = sorted(B_A_by_date.keys())
-    z_hat_list: list[np.ndarray] = []
-    valid_dates: list[str] = []
-
-    # Pre-extract returns as numpy for fast row access
     ret_matrix = returns.values  # (n_dates, n_stocks)
     ret_dates = returns.index
     ret_col_to_idx = {col: j for j, col in enumerate(returns.columns)}
-    # Build date lookup dict (handles "2024-01-01 00:00:00" and "2024-01-01" formats)
     ret_date_to_loc: dict[str, int] = {}
     for i, d in enumerate(ret_dates):
         if isinstance(d, str):
@@ -55,6 +53,7 @@ def estimate_factor_returns(
         else:
             ret_date_to_loc[str(d)] = i
 
+    date_data: list[_DateTuple] = []
     for date_str in sorted_dates:
         B_t = B_A_by_date[date_str]  # (n_active, AU)
         if B_t.shape[0] < B_t.shape[1]:
@@ -65,38 +64,104 @@ def estimate_factor_returns(
         if date_loc is None:
             continue
 
-        # Vectorized column lookup
-        col_indices = [ret_col_to_idx[s] for s in active_stocks
-                       if s in ret_col_to_idx]
+        # Filter to stocks with return data
+        avail_stocks = [s for s in active_stocks if s in ret_col_to_idx]
+        col_indices = [ret_col_to_idx[s] for s in avail_stocks]
         if len(col_indices) < B_t.shape[1]:
             continue
 
         r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
-        # Handle NaN in returns: drop stocks with NaN
+        # Handle NaN in returns
         valid_mask = ~np.isnan(r_t)
         if valid_mask.sum() < B_t.shape[1]:
             continue
 
         r_t_valid = r_t[valid_mask]
         B_t_valid = B_t[valid_mask]
+        valid_sids = [avail_stocks[j] for j in range(len(avail_stocks))
+                      if valid_mask[j]]
 
-        # OLS with conditioning guard
-        z_hat_t = safe_solve(
-            B_t_valid, r_t_valid,
-            conditioning_threshold=conditioning_threshold,
-            ridge_scale=ridge_scale,
-        )
+        date_data.append((date_str, B_t_valid, r_t_valid, valid_sids))
 
-        z_hat_list.append(z_hat_t)
-        valid_dates.append(date_str)
+    return date_data
 
-    if not z_hat_list:
+
+def estimate_factor_returns(
+    B_A_by_date: dict[str, np.ndarray],
+    returns: pd.DataFrame,
+    universe_snapshots: dict[str, list[int]],
+    conditioning_threshold: float = 1e6,
+    ridge_scale: float = 1e-6,
+    use_wls: bool = False,
+) -> tuple[np.ndarray, list[str]]:
+    """
+    Cross-sectional regression at each date t for factor returns z_hat_t.
+
+    When use_wls=False (default): standard OLS via SVD-based lstsq.
+    When use_wls=True: iterative two-pass WLS (Fama-MacBeth 1973):
+      Pass 1: OLS -> z_hat_ols, eps = r - B z_hat -> per-stock sigma_eps^2
+      Pass 2: WLS with weights = 1/sigma_eps^2 (BLUE estimates)
+
+    The conditioning_threshold and ridge_scale parameters are retained
+    for API compatibility but no longer used internally.
+
+    :param B_A_by_date (dict): date_str -> B_A_t (n_active_t, AU)
+    :param returns (pd.DataFrame): Log-returns (dates x stocks)
+    :param universe_snapshots (dict): date_str -> list of active stock_ids
+    :param conditioning_threshold (float): Unused (kept for API compat)
+    :param ridge_scale (float): Unused (kept for API compat)
+    :param use_wls (bool): If True, use iterative WLS for BLUE estimates
+
+    :return z_hat (np.ndarray): Factor returns (n_dates, AU)
+    :return dates (list[str]): Dates for which z_hat was estimated
+    """
+    date_data = _prepare_regression_data(
+        B_A_by_date, returns, universe_snapshots,
+    )
+
+    if not date_data:
         AU = next(iter(B_A_by_date.values())).shape[1] if B_A_by_date else 0
         return np.empty((0, AU), dtype=np.float64), []
 
-    z_hat = np.stack(z_hat_list, axis=0)  # (n_dates, AU)
-    return z_hat, valid_dates
+    # --- Pass 1: OLS ---
+    z_hat_ols: list[np.ndarray] = []
+    for _, B_t, r_t, _ in date_data:
+        z_hat_ols.append(safe_solve(B_t, r_t))
+
+    if not use_wls:
+        return np.stack(z_hat_ols, axis=0), [d[0] for d in date_data]
+
+    # --- WLS: compute per-stock residual variance from OLS ---
+    stock_ss: dict[int, float] = {}   # sum of squared residuals
+    stock_n: dict[int, int] = {}      # observation count
+
+    for t_idx, (_, B_t, r_t, sids) in enumerate(date_data):
+        eps_t = r_t - B_t @ z_hat_ols[t_idx]
+        for i, sid in enumerate(sids):
+            stock_ss[sid] = stock_ss.get(sid, 0.0) + float(eps_t[i] ** 2)
+            stock_n[sid] = stock_n.get(sid, 0) + 1
+
+    # Per-stock idiosyncratic variance (unbiased estimator)
+    stock_var: dict[int, float] = {}
+    for sid in stock_ss:
+        n = stock_n[sid]
+        stock_var[sid] = stock_ss[sid] / max(n - 1, 1)
+
+    # Floor at 1% of median to prevent extreme weights on low-vol stocks
+    var_vals = np.array(list(stock_var.values()), dtype=np.float64)
+    var_floor = max(float(np.median(var_vals)) * 0.01, 1e-20)
+
+    # --- Pass 2: WLS with weights = 1/sigma_eps^2 ---
+    z_hat_wls: list[np.ndarray] = []
+    for _, B_t, r_t, sids in date_data:
+        w = np.array([
+            1.0 / max(stock_var.get(sid, var_floor), var_floor)
+            for sid in sids
+        ], dtype=np.float64)
+        z_hat_wls.append(safe_solve_wls(B_t, r_t, w))
+
+    return np.stack(z_hat_wls, axis=0), [d[0] for d in date_data]
 
 
 def compute_residuals(
@@ -108,18 +173,18 @@ def compute_residuals(
     stock_ids: list[int],
 ) -> dict[int, list[float]]:
     """
-    Compute idiosyncratic residuals: ε_{i,t} = r_{i,t} - B̃_{A,i,t} ẑ_t
+    Compute idiosyncratic residuals: eps_{i,t} = r_{i,t} - B_A_{i,t} z_hat_t
 
     Uses date-specific rescaling (estimation), NOT portfolio rescaling.
 
-    :param B_A_by_date (dict): date_str → B̃_{A,t} (n_active_t, AU)
+    :param B_A_by_date (dict): date_str -> B_A_t (n_active_t, AU)
     :param z_hat (np.ndarray): Factor returns (n_dates, AU)
-    :param returns (pd.DataFrame): Log-returns (dates × stocks)
-    :param universe_snapshots (dict): date_str → active stock_ids (permnos)
+    :param returns (pd.DataFrame): Log-returns (dates x stocks)
+    :param universe_snapshots (dict): date_str -> active stock_ids (permnos)
     :param dates (list[str]): Dates corresponding to z_hat rows
     :param stock_ids (list[int]): All stock IDs (for residual aggregation)
 
-    :return residuals_by_stock (dict): stock_id → list of residuals
+    :return residuals_by_stock (dict): stock_id -> list of residuals
     """
     residuals_by_stock: dict[int, list[float]] = {sid: [] for sid in stock_ids}
 
@@ -152,7 +217,7 @@ def compute_residuals(
         col_indices = [ret_col_to_idx[s] for s in available_cols]
         r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
-        # ε_{i,t} = r_{i,t} - B̃_{A,i,t} ẑ_t
+        # eps_{i,t} = r_{i,t} - B_A_{i,t} z_hat_t
         predicted = B_t[:len(available_cols)] @ z_hat[t_idx]
         residuals = r_t[:len(predicted)] - predicted
 

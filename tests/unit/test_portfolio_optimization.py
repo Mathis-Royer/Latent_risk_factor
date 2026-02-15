@@ -476,7 +476,8 @@ class TestCardinality:
             w_old=None, kappa_1=0.1, kappa_2=7.5,
             delta_bar=0.01, is_first=True,
         )
-        assert f_after >= f_before * 0.5, (
+        # Allow up to 50% degradation (absolute, handles negative objectives)
+        assert f_after >= f_before - abs(f_before) * 0.5, (
             f"Cardinality enforcement destroyed > 50% of objective: "
             f"f_before={f_before:.6f}, f_after={f_after:.6f}"
         )
@@ -561,7 +562,7 @@ class TestCardinality:
             kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
             is_first=True,
         )
-        assert f_after >= f_before * 0.5, (
+        assert f_after >= f_before - abs(f_before) * 0.5, (
             f"Gradient cardinality destroyed > 50% of objective: "
             f"f_before={f_before:.6f}, f_after={f_after:.6f}"
         )
@@ -602,7 +603,7 @@ class TestCardinality:
             kappa_2=sca_kwargs["kappa_2"], delta_bar=sca_kwargs["delta_bar"],
             is_first=True,
         )
-        assert f_after >= f_before * 0.5, (
+        assert f_after >= f_before - abs(f_before) * 0.5, (
             f"Sequential cardinality destroyed > 50% of objective: "
             f"f_before={f_before:.6f}, f_after={f_after:.6f}"
         )

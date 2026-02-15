@@ -43,7 +43,7 @@ def compute_variance_entropy_frontier(
     entropy_eps: float = 1e-30,
     mu: np.ndarray | None = None,
     idio_weight: float = 0.2,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict[float, np.ndarray]]:
     """
     Compute variance-entropy frontier for a grid of α values.
 
@@ -69,6 +69,7 @@ def compute_variance_entropy_frontier(
     :param mu (np.ndarray | None): Expected return signal (n,)
 
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
+    :return weights_by_alpha (dict[float, np.ndarray]): Optimal weights for each α
     """
     if alpha_grid is None:
         alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
@@ -77,6 +78,7 @@ def compute_variance_entropy_frontier(
     sorted_grid = sorted(alpha_grid)
 
     results: list[dict[str, float]] = []
+    weights_by_alpha: dict[float, np.ndarray] = {}
     n_alphas = len(sorted_grid)
     prev_w: np.ndarray | None = None
 
@@ -95,7 +97,7 @@ def compute_variance_entropy_frontier(
             D_eps=D_eps,
             alpha=alpha,
             n_starts=n_starts,
-            seed=seed,
+            seed=seed + idx,
             lambda_risk=lambda_risk,
             w_max=w_max,
             w_min=w_min,
@@ -114,20 +116,31 @@ def compute_variance_entropy_frontier(
         )
 
         prev_w = w_opt
+        weights_by_alpha[alpha] = w_opt.copy()
 
         variance = float(w_opt @ Sigma_assets @ w_opt)
         entropy = compute_entropy_only(w_opt, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
                                        idio_weight=idio_weight)
+        # Factor-only entropy for alpha selection (Meucci 2009):
+        # ENB target must apply to H_factor alone, not the combined
+        # two-layer entropy.  The idiosyncratic layer (n >> AU terms)
+        # trivially inflates ENB, making the target too easy to reach
+        # and collapsing the portfolio to near min-variance.
+        entropy_factor = compute_entropy_only(
+            w_opt, B_prime, eigenvalues, entropy_eps,
+            D_eps=None, idio_weight=0.0,
+        )
         n_active = int(np.sum(w_opt > w_min))
 
         results.append({
             "alpha": alpha,
             "variance": variance,
             "entropy": entropy,
+            "entropy_factor": entropy_factor,
             "n_active": float(n_active),
         })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), weights_by_alpha
 
 
 def select_operating_alpha(
@@ -138,7 +151,9 @@ def select_operating_alpha(
     Select operating α from the variance-entropy frontier.
 
     Two modes:
-    1. target_enb > 0: Select smallest α where ENB = exp(H) >= target_enb.
+    1. target_enb > 0: Select smallest α where ENB_factor = exp(H_factor)
+       >= target_enb.  Uses FACTOR-ONLY entropy (not combined two-layer)
+       to prevent the idiosyncratic layer from trivially inflating ENB.
        Recommended: n_signal / 2 (e.g. 2.5 for 5 signal factors).
        Reference: Meucci (2009), "Managing Diversification".
     2. target_enb == 0: Kneedle elbow detection (legacy fallback).
@@ -147,9 +162,10 @@ def select_operating_alpha(
     Fallback: if the frontier is degenerate (flat or single-point), returns
     the α that achieves maximum entropy.
 
-    :param frontier (pd.DataFrame): Frontier with columns alpha, variance, entropy
-    :param target_enb (float): Target effective number of bets (ENB = exp(H)).
-        0.0 = use Kneedle (legacy).
+    :param frontier (pd.DataFrame): Frontier with columns alpha, variance,
+        entropy, and optionally entropy_factor (factor-only entropy).
+    :param target_enb (float): Target effective number of bets
+        (ENB_factor = exp(H_factor)).  0.0 = use Kneedle (legacy).
 
     :return alpha_opt (float): Selected operating α
     """
@@ -161,16 +177,33 @@ def select_operating_alpha(
     H = np.asarray(df["entropy"], dtype=np.float64)
     V = np.asarray(df["variance"], dtype=np.float64)
 
-    # Target ENB mode: select smallest alpha achieving ENB >= target
+    # For ENB target selection, use factor-only entropy (not combined).
+    # The idiosyncratic layer (n >> AU terms) trivially inflates ENB,
+    # making the target too easy to reach.  With H_combined, the
+    # portfolio collapses to near min-variance because even α=0.001
+    # satisfies the ENB threshold.  Using H_factor forces the optimizer
+    # to actually diversify across latent factors.
+    # Reference: Meucci (2009), Roncalli (2013 Ch. 7).
+    if "entropy_factor" in df.columns:
+        H_factor = np.asarray(df["entropy_factor"], dtype=np.float64)
+    else:
+        H_factor = H  # backward compatibility
+
+    # Target ENB mode: select smallest alpha achieving ENB >= target.
+    # Apply cumulative max envelope to handle non-monotonic frontiers
+    # (SCA may find different local optima at adjacent alpha values).
     if target_enb > 0.0:
-        enb = np.exp(H)
+        enb = np.exp(H_factor)
+        enb_mono = np.maximum.accumulate(enb)
         for i in range(len(df)):
-            if enb[i] >= target_enb:
+            if enb_mono[i] >= target_enb:
                 alpha_sel = float(df["alpha"].iloc[i])
                 logger.info(
-                    "select_operating_alpha (target ENB=%.2f): α*=%.4g "
-                    "(ENB=%.2f, H=%.4f, Var=%.4e).",
+                    "select_operating_alpha (target ENB_factor=%.2f): α*=%.4g "
+                    "(ENB_factor=%.2f, ENB_mono=%.2f, H_factor=%.4f, "
+                    "H_combined=%.4f, Var=%.4e).",
                     target_enb, alpha_sel, float(enb[i]),
+                    float(enb_mono[i]), float(H_factor[i]),
                     float(H[i]), float(V[i]),
                 )
                 return alpha_sel
@@ -179,8 +212,9 @@ def select_operating_alpha(
         best_idx = int(np.argmax(enb))
         alpha_sel = float(df["alpha"].iloc[best_idx])
         logger.warning(
-            "select_operating_alpha: no frontier point reaches target ENB=%.2f "
-            "(max ENB=%.2f at α=%.4g). Using max-ENB point.",
+            "select_operating_alpha: no frontier point reaches target "
+            "ENB_factor=%.2f (max ENB_factor=%.2f at α=%.4g). "
+            "Using max-ENB point.",
             target_enb, float(enb[best_idx]), alpha_sel,
         )
         return alpha_sel

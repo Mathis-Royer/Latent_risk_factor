@@ -445,11 +445,13 @@ def _enforce_miqp(
     obj = cp.Maximize(entropy_term - risk_term - conc_penalty - turn_penalty)
 
     # Semi-continuous constraints: binary only for active stocks
+    # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
+    effective_cap = min(w_bar, w_max)
     active_list = active_idx.tolist()
     fixed_list = fixed_idx.tolist()
     cstr_list = [
         w_var[active_list] >= w_min * z_active,
-        w_var[active_list] <= w_max * z_active,
+        w_var[active_list] <= effective_cap * z_active,
         cp.sum(w_var) == 1,
     ]
     if len(fixed_list) > 0:
@@ -483,7 +485,7 @@ def _enforce_miqp(
                 if not np.any(np.isnan(result)):
                     # Clean numerical residuals from MI solver
                     result[result < w_min * 0.5] = 0.0
-                    result = np.clip(result, 0.0, w_max)
+                    result = np.clip(result, 0.0, effective_cap)
                     total = np.sum(result)
                     if total > 0:
                         result = result / total
@@ -598,6 +600,9 @@ def _enforce_two_stage(
         tracking_error + risk_reg + conc_penalty + turn_penalty
     )
 
+    # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
+    effective_cap = min(w_bar, w_max)
+
     # Constraints (with pre-screening for MI mode)
     if use_mi:
         # Pre-screening: w_min-aware threshold + hard cap
@@ -609,7 +614,7 @@ def _enforce_two_stage(
         fixed_list = fixed_idx.tolist()
         cstr_list = [
             w_var[active_list] >= w_min * z_active,
-            w_var[active_list] <= w_max * z_active,
+            w_var[active_list] <= effective_cap * z_active,
             cp.sum(w_var) == 1,
         ]
         if len(fixed_list) > 0:
@@ -617,7 +622,7 @@ def _enforce_two_stage(
     else:
         cstr_list = [
             w_var >= 0,
-            w_var <= w_max,
+            w_var <= effective_cap,
             cp.sum(w_var) == 1,
         ]
 
@@ -652,7 +657,7 @@ def _enforce_two_stage(
                     # Clean numerical residuals from solver
                     if use_mi:
                         result[result < w_min * 0.5] = 0.0
-                    result = np.clip(result, 0.0, w_max)
+                    result = np.clip(result, 0.0, effective_cap)
                     total = np.sum(result)
                     if total > 0:
                         result = result / total

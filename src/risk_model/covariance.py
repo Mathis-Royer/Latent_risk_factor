@@ -265,11 +265,46 @@ def estimate_sigma_z(
         n_signal = _estimate_n_signal_from_gap(Sigma_z_anl)
         return Sigma_z_anl, n_signal
 
-    # Default: "spiked" (DGJ) — applied to RAW sample covariance
+    # Default: "spiked" (DGJ) — applied to sample covariance.
     # DGJ assumes unbiased sample eigenvalues as input; applying LW first
     # would inflate the bulk noise estimate (sigma_sq) and raise the BBP
     # transition threshold, misclassifying signal eigenvalues as noise.
-    # Pass n_eff (not n_samples) so DGJ gamma = p/n_eff is correct under EWMA.
+    #
+    # When EWMA is active, signal detection and covariance estimation are
+    # DECOUPLED:
+    #   1. n_signal is determined from the RAW (unweighted) covariance with
+    #      gamma = p/n_samples.  This uses the full sample for maximum
+    #      statistical power (lower BBP threshold).
+    #   2. Sigma_z is the EWMA-weighted covariance with DGJ eigenvalue
+    #      correction using gamma = p/n_eff (correct for EWMA magnitudes).
+    #
+    # Without this decoupling, EWMA n_eff inflates gamma by ~5x (e.g.
+    # n_eff=500 vs n_raw=2500), raising the BBP threshold by ~33% and
+    # misclassifying secondary signal factors as noise.
+    # Reference: DGJ (2018) assumes i.i.d. observations; n_eff is a
+    # heuristic (Kish 1965) that is too aggressive for signal detection.
+
+    if ewma_half_life > 0 and n_eff < n_samples:
+        # Signal detection on RAW covariance (full i.i.d. sample)
+        Sigma_raw = np.cov(z_hat, rowvar=False, ddof=1)
+        eigs_raw = np.linalg.eigvalsh(Sigma_raw)[::-1]
+        eigs_raw = np.maximum(eigs_raw, 0.0)
+        if eigs_raw.sum() > 0.0:
+            _, n_signal = _spiked_shrinkage(eigs_raw, n_samples, p_dims)
+            logger.info(
+                "  DGJ signal detection (raw): n_signal=%d "
+                "(gamma_raw=%.4f vs gamma_ewma=%.4f)",
+                n_signal, p_dims / n_samples, p_dims / n_eff,
+            )
+        else:
+            n_signal = 0
+
+        # Covariance estimation on EWMA-weighted data (with n_eff)
+        Sigma_z_ewma = np.cov(z_input, rowvar=False, ddof=1)
+        Sigma_shrunk, _ = _spiked_shrinkage_matrix(Sigma_z_ewma, n_eff, p_dims)
+        return Sigma_shrunk, n_signal
+
+    # No EWMA: standard DGJ on raw covariance
     Sigma_z_sample = np.cov(z_input, rowvar=False, ddof=1)
     return _spiked_shrinkage_matrix(Sigma_z_sample, n_eff, p_dims)
 
@@ -416,20 +451,26 @@ def estimate_d_eps(
 
     # James-Stein shrinkage: D_eps_shrunk = (1 - alpha) * D_eps + alpha * d_bar
     #
-    # Correct formula for variance shrinkage (Ledoit-Wolf 2004, §3.4):
+    # Kurtosis-corrected formula for variance shrinkage:
     #   alpha = sum_i Var(d_hat_i) / sum_i (d_hat_i - d_bar)^2
-    # where Var(d_hat_i) = 2 * d_hat_i^2 / (T_i - 1) for chi-squared
-    # distributed sample variances with T_i observations.
+    # where Var(d_hat_i) = d_hat_i^2 * (kappa4_i + 2) / (T_i - 1).
     #
-    # The old formula (p+2)/(n * sum((d/d_bar - 1)^2)) is Stein's shrinkage
-    # for normal means — incorrect for variances which have heavier tails.
+    # Under normality, kappa4=0 and this reduces to the chi-squared formula
+    # Var = 2*d^2/(T-1) from Ledoit-Wolf (2004, §3.4).  For leptokurtic
+    # financial returns (typical excess kurtosis 3-10), the chi-squared
+    # formula underestimates Var(d_hat) by 2-6x, resulting in insufficient
+    # shrinkage.  The kurtosis correction gives proper shrinkage intensity.
+    #
+    # Reference: DasGupta (2008), "Asymptotic Theory of Statistics and
+    # Probability", Chapter 7 — variance of sample variance under
+    # non-normality.
     if shrink_toward_mean:
         valid_mask = D_eps > d_eps_floor
         n_valid = int(np.sum(valid_mask))
         if n_valid >= 3:
             d_bar = float(np.mean(D_eps[valid_mask]))
             if d_bar > 1e-15:
-                # Compute per-stock T_i from residuals
+                # Compute per-stock T_i and excess kurtosis from residuals
                 d_valid = D_eps[valid_mask]
                 valid_sids = [stock_ids[i] for i in range(len(stock_ids)) if valid_mask[i]]
                 T_per_stock = np.array([
@@ -437,8 +478,20 @@ def estimate_d_eps(
                     for sid in valid_sids
                 ], dtype=np.float64)
 
-                # Var(d_hat_i) = 2 * d_i^2 / (T_i - 1) for chi-squared
-                var_d_hat = 2.0 * d_valid ** 2 / np.maximum(T_per_stock - 1.0, 1.0)
+                # Excess kurtosis per stock (Fisher definition, kappa4=0 for Gaussian)
+                kappa4 = np.zeros(len(valid_sids), dtype=np.float64)
+                for j, sid in enumerate(valid_sids):
+                    resids = residuals_by_stock.get(sid, [])
+                    if len(resids) >= 4:
+                        r_arr = np.asarray(resids, dtype=np.float64)
+                        r_mean = np.mean(r_arr)
+                        r_var = np.var(r_arr, ddof=1)
+                        if r_var > 1e-20:
+                            m4 = float(np.mean((r_arr - r_mean) ** 4))
+                            kappa4[j] = max(m4 / (r_var ** 2) - 3.0, 0.0)
+
+                # Var(d_hat_i) = d_i^2 * (kappa4_i + 2) / (T_i - 1)
+                var_d_hat = d_valid ** 2 * (kappa4 + 2.0) / np.maximum(T_per_stock - 1.0, 1.0)
                 numerator = float(np.sum(var_d_hat))
                 denominator = float(np.sum((d_valid - d_bar) ** 2))
 
@@ -448,10 +501,13 @@ def estimate_d_eps(
                     alpha_js = 1.0
                 D_eps = (1.0 - alpha_js) * D_eps + alpha_js * d_bar
                 D_eps = np.maximum(D_eps, d_eps_floor)
+                median_kappa4 = float(np.median(kappa4))
                 logger.info(
-                    "  D_eps James-Stein shrinkage (LW04): alpha=%.4f, "
-                    "d_bar=%.4e, n_valid=%d, median_T=%.0f",
+                    "  D_eps James-Stein shrinkage (kurtosis-corrected): "
+                    "alpha=%.4f, d_bar=%.4e, n_valid=%d, median_T=%.0f, "
+                    "median_kappa4=%.2f",
                     alpha_js, d_bar, n_valid, float(np.median(T_per_stock)),
+                    median_kappa4,
                 )
 
     return D_eps

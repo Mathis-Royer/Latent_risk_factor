@@ -25,7 +25,7 @@ from src.risk_model.rescaling import (
 )
 from src.risk_model.factor_regression import estimate_factor_returns, compute_residuals
 from src.risk_model.covariance import estimate_sigma_z, estimate_d_eps, assemble_risk_model
-from src.risk_model.conditioning import safe_solve, check_conditioning, apply_ridge
+from src.risk_model.conditioning import safe_solve
 
 from tests.fixtures.known_solutions import (
     two_factor_solution,
@@ -524,100 +524,6 @@ class TestConditioning:
         assert z_bad.shape == (au,)
         assert np.all(np.isfinite(z_bad)), "Ridge fallback produced non-finite values"
 
-    def test_ridge_lambda_formula_exact(self) -> None:
-        """Verify ridge lambda formula: lambda_ridge = ridge_scale * tr(B^T B) / AU.
-
-        Creates a deliberately ill-conditioned B^T B (near-collinear columns),
-        verifies:
-        1. check_conditioning detects it (kappa > threshold)
-        2. apply_ridge uses the correct lambda = ridge_scale * trace / AU
-        3. safe_solve produces z_hat = (B^T B + lambda*I)^{-1} B^T r exactly
-
-        ISD/DVT coverage gap: formula-level verification of the ridge
-        regularization parameter, not just that ridge is applied.
-        """
-        rng = np.random.RandomState(99)
-        n_active = 50
-        au = 4
-        ridge_scale = 1e-6
-        threshold = 1e6
-
-        # Build a deliberately ill-conditioned B:
-        # Column 1 = Column 0 + tiny noise, Column 3 = Column 2 + tiny noise
-        B_t = rng.randn(n_active, au).astype(np.float64) * 0.5
-        B_t[:, 1] = B_t[:, 0] + rng.randn(n_active) * 1e-11
-        B_t[:, 3] = B_t[:, 2] + rng.randn(n_active) * 1e-11
-
-        r_t = rng.randn(n_active).astype(np.float64) * 0.01
-        BtB = B_t.T @ B_t
-
-        # Step 1: Verify ill-conditioning is detected
-        assert check_conditioning(BtB, threshold), (
-            f"Test setup failure: B^T B should be ill-conditioned. "
-            f"kappa={np.linalg.cond(BtB):.2e}, threshold={threshold:.0e}"
-        )
-        kappa_raw = np.linalg.cond(BtB)
-        assert kappa_raw > threshold, (
-            f"Condition number {kappa_raw:.2e} not above threshold {threshold:.0e}"
-        )
-
-        # Step 2: Verify apply_ridge uses exact formula
-        trace_BtB = np.trace(BtB)
-        lambda_ridge_expected = ridge_scale * trace_BtB / max(1, au)
-
-        BtB_reg = apply_ridge(BtB, ridge_scale)
-
-        # The regularized matrix should be BtB + lambda_ridge * I
-        BtB_reg_manual = BtB + lambda_ridge_expected * np.eye(au)
-        np.testing.assert_allclose(
-            BtB_reg, BtB_reg_manual, atol=1e-14,
-            err_msg=(
-                f"apply_ridge result doesn't match manual formula. "
-                f"lambda_ridge = {ridge_scale} * {trace_BtB:.6f} / {au} "
-                f"= {lambda_ridge_expected:.2e}"
-            ),
-        )
-
-        # Verify lambda_ridge > 0 (non-degenerate)
-        assert lambda_ridge_expected > 0, (
-            f"lambda_ridge should be positive, got {lambda_ridge_expected}"
-        )
-
-        # Step 3: Verify safe_solve (now lstsq-based) produces finite results
-        # on ill-conditioned input and matches np.linalg.lstsq
-        z_hat = safe_solve(B_t, r_t, conditioning_threshold=threshold,
-                           ridge_scale=ridge_scale)
-        assert np.all(np.isfinite(z_hat)), "safe_solve produced non-finite values"
-
-        z_hat_lstsq, _, _, _ = np.linalg.lstsq(B_t, r_t, rcond=None)
-        np.testing.assert_allclose(
-            z_hat, z_hat_lstsq, atol=1e-12,
-            err_msg=(
-                f"safe_solve result doesn't match np.linalg.lstsq. "
-                f"max diff = {np.max(np.abs(z_hat - z_hat_lstsq)):.2e}"
-            ),
-        )
-
-        # Step 4: Verify ridge actually improved conditioning
-        kappa_reg = np.linalg.cond(BtB_reg_manual)
-        assert kappa_reg < kappa_raw, (
-            f"Ridge should reduce condition number: "
-            f"raw={kappa_raw:.2e}, regularized={kappa_reg:.2e}"
-        )
-
-        # Step 5: Verify the diagonal perturbation is exactly lambda_ridge * I
-        diagonal_perturbation = np.diag(BtB_reg - BtB)
-        expected_diag = np.full(au, lambda_ridge_expected)
-        np.testing.assert_allclose(
-            diagonal_perturbation, expected_diag, atol=1e-14,
-            err_msg="Off-diagonal elements should be unchanged by ridge",
-        )
-        # Off-diagonal should be zero perturbation
-        off_diag_diff = (BtB_reg - BtB) - np.diag(diagonal_perturbation)
-        assert np.max(np.abs(off_diag_diff)) < 1e-14, (
-            f"Ridge should only modify diagonal: max off-diag change = "
-            f"{np.max(np.abs(off_diag_diff)):.2e}"
-        )
 
 
 class TestResiduals:

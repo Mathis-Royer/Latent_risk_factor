@@ -91,18 +91,49 @@ def measure_active_units(
 def compute_au_max_stat(
     n_obs: int,
     r_min: int = 2,
+    ewma_half_life: int = 0,
 ) -> int:
     """
     Statistical upper bound on AU.
 
-    AU_max_stat = floor(sqrt(2 × N_obs / r_min))
+    AU_max_stat = floor(sqrt(2 × N_eff / r_min))
+
+    When ewma_half_life > 0, uses the Kish (1965) effective sample size
+    N_eff = 1 / sum(w_i^2) instead of raw N_obs.  This ensures AU is
+    consistent with the effective data richness used by the DGJ spiked
+    shrinker for Sigma_z estimation.
 
     :param n_obs (int): Number of historical days (observations)
     :param r_min (int): Minimum observations-per-parameter ratio
+    :param ewma_half_life (int): EWMA half-life in days.  0 = no EWMA
+        (uses raw n_obs).
 
     :return au_max (int): Statistical upper bound on AU
     """
-    return int(math.floor(math.sqrt(2.0 * n_obs / r_min)))
+    n_eff = n_obs
+    if ewma_half_life > 0 and n_obs > ewma_half_life:
+        n_eff = compute_ewma_n_eff(n_obs, ewma_half_life)
+    return int(math.floor(math.sqrt(2.0 * n_eff / r_min)))
+
+
+def compute_ewma_n_eff(
+    n_obs: int,
+    ewma_half_life: int,
+) -> int:
+    """
+    Kish (1965) effective sample size for EWMA weights.
+
+    N_eff = 1 / sum(w_i^2) where w_i = exp(-decay*(n-1-i)) / sum(w).
+
+    :param n_obs (int): Number of raw observations
+    :param ewma_half_life (int): EWMA half-life in days
+
+    :return n_eff (int): Effective sample size (>= 2)
+    """
+    decay = math.log(2.0) / ewma_half_life
+    raw_w = np.exp(-decay * np.arange(n_obs - 1, -1, -1, dtype=np.float64))
+    raw_w /= raw_w.sum()
+    return max(2, int(1.0 / float(np.sum(raw_w ** 2))))
 
 
 def truncate_active_dims(

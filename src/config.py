@@ -415,6 +415,23 @@ class RiskModelConfig:
         Each column of B_A is standardized to mean=0, std=1.  This corrects
         the unconstrained VAE encoder output scale and ensures factors are
         comparable.  Default: True.
+    :param use_wls (bool): If True, use iterative two-pass weighted least
+        squares for cross-sectional factor regression instead of OLS.
+        Pass 1: OLS -> z_hat, residuals -> per-stock sigma_eps^2.
+        Pass 2: WLS with weights = 1/sigma_eps^2 (BLUE estimates).
+        Corrects heteroscedasticity: stocks with higher idiosyncratic
+        variance get lower weight.  Standard in Barra USE4 and
+        Fama-MacBeth (1973).  Default: True.
+    :param market_intercept (bool): If True, append a column of ones to B_A
+        after z-scoring and dual rescaling.  This adds an explicit market
+        factor with unit exposure for all stocks, which is standard in
+        production factor models (Barra USE4, Axioma, Fama-French).
+        Without it, z-scored B_A has zero cross-sectional mean per factor,
+        making the EW portfolio beta ~ 0 and breaking variance targeting
+        calibration.  The market column is NOT z-scored and NOT affected
+        by vol-ratio rescaling.  Default: True.
+        Reference: Menchero, Orr & Wang (2011), "The Barra US Equity
+        Model (USE4)", Sections 2-3.
     """
 
     winsorize_lo: float = 5.0
@@ -426,7 +443,9 @@ class RiskModelConfig:
     sigma_z_eigenvalue_pct: float = 0.95
     sigma_z_ewma_half_life: int = 252
     b_a_shrinkage_alpha: float = 0.0
+    use_wls: bool = True
     b_a_normalize: bool = True
+    market_intercept: bool = True
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
@@ -473,13 +492,22 @@ class PortfolioConfig:
         (O(0.01-0.1)).  252 = annualization (risk aversion γ=1 on annual
         variance); use 252-2520 for γ in [1, 10].  Literature: Garlappi
         et al. (2007), DeMiguel et al. (2009).
-    :param w_max (float): Maximum weight per stock (hard cap)
+    :param w_max (float): Maximum weight per stock (hard cap).
+        NOTE: The binding upper bound is min(w_bar, w_max).  With default
+        w_bar=0.03 and w_max=0.05, w_bar dominates and w_max has no effect.
+        Only relevant when w_bar > w_max (unusual configuration).
     :param w_min (float): Minimum active weight (semi-continuous)
-    :param w_bar (float): Concentration penalty threshold.  Positions with
-        w_i > w_bar are penalized quadratically.  Must be > 1/target_N to
-        avoid penalizing ALL active positions (self-defeating).  With 50-80
-        target positions and w_max=0.05, w_bar=0.03 is appropriate.
-    :param phi (float): Concentration penalty weight
+    :param w_bar (float): Hard per-stock weight cap (effective upper bound).
+        The binding constraint is min(w_bar, w_max).  With w_bar=0.03 and
+        w_max=0.05, no position can exceed 3%.  This replaces the old soft
+        concentration penalty (phi * P_conc) with a hard constraint, which
+        simplifies the objective and avoids interference with entropy
+        diversification (Jagannathan & Ma 2003, Roncalli 2013 Chapter 4).
+        Must be > w_min for feasibility.
+    :param phi (float): Concentration penalty weight (legacy, default 0.0).
+        Set to 0.0 to disable the soft penalty and rely solely on the
+        w_bar hard cap.  Non-zero values add a soft quadratic penalty
+        on positions exceeding w_bar for backward compatibility.
     :param kappa_1 (float): Linear turnover penalty
     :param kappa_2 (float): Quadratic turnover penalty
     :param delta_bar (float): Turnover penalty threshold
@@ -506,21 +534,32 @@ class PortfolioConfig:
         and daily variance ~5e-4, momentum_weight=0.02 gives a return term
         ~0.02, comparable to the risk term ~0.04.
     :param entropy_idio_weight (float): Weight for idiosyncratic entropy layer
-        in two-layer entropy formulation.  0.0 = factor-only entropy
-        (recommended when eigenvalues are truncated to signal dimensions).
-        1.0 = idiosyncratic-only.  Default 0.0 = factor-only entropy.
-        The parameter remains available for experimentation.
+        in two-layer entropy formulation.
+        0.2 (default): fixed weight — robust default that balances factor
+            and idiosyncratic diversification without circular EW dependency.
+        -1.0 = **auto**: dynamically calibrated per fold as
+            idio_risk / (sys_risk + idio_risk) using the EW portfolio.
+            Not recommended: EW risk decomposition is a poor proxy for the
+            optimal portfolio's decomposition (Meucci 2009, Roncalli 2013).
+        0.0 = factor-only entropy (no idiosyncratic layer).
+        (0, 1] = fixed weight for idiosyncratic layer.
     :param target_enb (float): Target effective number of bets (ENB = exp(H)).
         When > 0, select the smallest α on the frontier where ENB >= target_enb.
-        When 0.0, use Kneedle elbow detection (legacy).
-        Recommended: n_signal / 2 (e.g. 2.5 for 5 signal factors).
+        When 0.0 (default), dynamically set to n_signal / 2 at runtime, where
+        n_signal is the number of DGJ-selected eigenvalues.  This targets half
+        the maximum possible diversification — a robust default per Meucci
+        (2009, "Managing Diversification").
+        Set to -1.0 to force Kneedle elbow detection (legacy, not recommended).
+    :param transaction_cost_bps (float): One-way transaction cost in basis points.
+        Used to compute net-of-cost returns: r_net = r_gross - cost × turnover.
+        Default 10 bps for large-cap US equities (Novy-Marx & Velikov 2016).
     """
 
     lambda_risk: float = 252.0
     w_max: float = 0.05
     w_min: float = 0.001
     w_bar: float = 0.03
-    phi: float = 5.0
+    phi: float = 0.0
     kappa_1: float = 0.1
     kappa_2: float = 7.5
     delta_bar: float = 0.01
@@ -536,7 +575,7 @@ class PortfolioConfig:
     cardinality_method: str = "auto"
     alpha_grid: list[float] = field(
         default_factory=lambda: [
-            0, 0.001, 0.005, 0.01, 0.02, 0.05,
+            0.001, 0.005, 0.01, 0.02, 0.05,
             0.1, 0.2, 0.5, 1.0, 2.0, 5.0,
         ]
     )
@@ -544,8 +583,9 @@ class PortfolioConfig:
     momentum_lookback: int = 252
     momentum_skip: int = 21
     momentum_weight: float = 0.02
-    entropy_idio_weight: float = 0.0
+    entropy_idio_weight: float = 0.05
     target_enb: float = 0.0
+    transaction_cost_bps: float = 10.0
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -556,7 +596,7 @@ class PortfolioConfig:
                         lo=0, hi=1, lo_exclusive=True)
         _validate_range("lambda_risk", self.lambda_risk, default=252.0,
                         lo=0, lo_exclusive=True)
-        _validate_range("phi", self.phi, default=5.0, lo=0)
+        _validate_range("phi", self.phi, default=0.0, lo=0)
         _validate_range("kappa_1", self.kappa_1, default=0.1, lo=0)
         _validate_range("kappa_2", self.kappa_2, default=7.5, lo=0)
         _validate_range("n_starts", self.n_starts, default=5, lo=1)
@@ -576,8 +616,8 @@ class PortfolioConfig:
             import warnings
             warnings.warn(
                 f"w_bar={self.w_bar} is close to w_min={self.w_min} — "
-                f"concentration penalty may penalize ALL active positions "
-                f"(self-defeating).  Recommended: w_bar >= 1/target_N "
+                f"hard cap leaves very narrow feasible range per position.  "
+                f"Recommended: w_bar >= 1/target_N "
                 f"(e.g. 0.03 for ~33 positions).",
                 UserWarning,
                 stacklevel=2,
@@ -592,9 +632,9 @@ class PortfolioConfig:
         _validate_range("momentum_weight", self.momentum_weight,
                         default=0.02, lo=0)
         _validate_range("target_enb", self.target_enb,
-                        default=0.0, lo=0)
+                        default=0.0, lo=-1.0)
         _validate_range("entropy_idio_weight", self.entropy_idio_weight,
-                        default=0.2, lo=0.0, hi=1.0)
+                        default=-1.0, lo=-1.0, hi=1.0)
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"
