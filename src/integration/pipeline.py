@@ -1642,6 +1642,17 @@ class FullPipeline:
         eigenvalues = eigenvalues * vt_scale_sys
         D_eps_port = D_eps_port * vt_scale_idio
 
+        # Eigenvalue power shrinkage (compress dominant eigenvalues)
+        eig_power = self.config.risk_model.eigenvalue_power
+        if eig_power < 1.0:
+            eigenvalues = np.power(eigenvalues, eig_power)
+            Sigma_sys_compressed = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+            Sigma_assets = Sigma_sys_compressed + np.diag(D_eps_port)
+            logger.info(
+                "  [Fold %d] Eigenvalue power shrinkage: p=%.2f",
+                fold_id, eig_power,
+            )
+
         # Update risk_model dict with variance-targeted values so that
         # downstream consumers (diagnostics, state_bag) see the scaled
         # covariance matrix, not the raw assembly output.
@@ -1671,6 +1682,26 @@ class FullPipeline:
 
         # 8. Portfolio optimization: frontier → α*, SCA → w*
         pc = self.config.portfolio
+
+        # Cross-sectional momentum signal (optional)
+        mu: np.ndarray | None = None
+        if pc.momentum_enabled:
+            from src.portfolio.momentum import compute_momentum_signal
+            mu_raw = compute_momentum_signal(
+                returns.loc[:train_end],
+                inferred_stock_ids,
+                lookback=pc.momentum_lookback,
+                skip=pc.momentum_skip,
+            )
+            mu = mu_raw * pc.momentum_weight
+            logger.info(
+                "  [Fold %d] Momentum signal: weight=%.2f, "
+                "range=[%.2f, %.2f], n_nonzero=%d",
+                fold_id, pc.momentum_weight,
+                float(np.min(mu)), float(np.max(mu)),
+                int(np.sum(np.abs(mu) > 1e-10)),
+            )
+
         logger.info(
             "  [Fold %d] Frontier: %d alphas × %d starts...",
             fold_id, len(pc.alpha_grid), pc.n_starts,
@@ -1685,12 +1716,15 @@ class FullPipeline:
             w_old=None, is_first=True,
             n_starts=pc.n_starts, seed=self.config.seed,
             entropy_eps=pc.entropy_eps,
+            mu=mu,
         )
         alpha_opt = select_operating_alpha(frontier)
 
         if _state_bag is not None:
             _state_bag["alpha_opt"] = alpha_opt
             _state_bag["frontier"] = frontier
+            if mu is not None:
+                _state_bag["mu"] = mu
 
         logger.info(
             "  [Fold %d] Frontier done (%.1fs), alpha*=%.3f. Final SCA (%d starts)...",
@@ -1710,6 +1744,7 @@ class FullPipeline:
             w_bar=pc.w_bar, phi=pc.phi,
             w_old=None, is_first=True,
             entropy_eps=pc.entropy_eps,
+            mu=mu,
         )
 
         logger.info("  [Fold %d] SCA done. Cardinality enforcement...", fold_id)

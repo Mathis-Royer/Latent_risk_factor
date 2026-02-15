@@ -82,12 +82,18 @@ class PCAVolRiskParity(PCAFactorRiskParity):
         R_centered = R_augmented - R_augmented.mean(axis=0, keepdims=True)
 
         T_est, n_aug = R_centered.shape
+        n_orig = len(available)
 
         # PCA via SVD on augmented matrix
         U, S, Vt = np.linalg.svd(R_centered, full_matrices=False)
 
-        # Bai-Ng IC₂
-        k_star = self._bai_ng_ic2(R_centered, k_max=min(k_max, min(T_est, n_aug) - 1))
+        # Bai-Ng IC₂ on returns-only matrix (not augmented).
+        # Using augmented dimensions (2n) changes the penalty coefficient
+        # in ways not calibrated by the original Bai-Ng (2002) paper.
+        R_z_centered = R_z - R_z.mean(axis=0, keepdims=True)
+        k_star = self._bai_ng_ic2(
+            R_z_centered, k_max=min(k_max, min(T_est, n_orig) - 1),
+        )
         k_star = max(1, k_star)
         self.k = k_star
 
@@ -95,7 +101,6 @@ class PCAVolRiskParity(PCAFactorRiskParity):
         # Unscaled eigenvectors in z-scored space, then rescale to original
         # return space by multiplying each row i by the stock's std.
         # This ensures B @ diag(eigenvalues) @ B^T is in original variance units.
-        n_orig = len(available)
         B_z = Vt[:k_star, :n_orig].T  # (n, k) — z-scored-space eigenvectors
         self.B_PCA = B_z * R_std.reshape(-1, 1)  # (n, k) — original-scale loadings
 

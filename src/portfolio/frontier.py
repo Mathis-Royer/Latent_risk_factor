@@ -1,9 +1,11 @@
 """
 Variance-entropy frontier computation.
 
-For each α in a grid, solve the optimization (μ=0) and record
+For each α in a grid, solve the optimization and record
 (variance, entropy, n_active_positions). The elbow of the frontier
 determines the operating point.
+
+Supports optional expected return signal μ (e.g. cross-sectional momentum).
 
 Reference: ISD Section MOD-008 — Sub-task 5.
 """
@@ -39,6 +41,7 @@ def compute_variance_entropy_frontier(
     n_starts: int = 5,
     seed: int = 42,
     entropy_eps: float = 1e-30,
+    mu: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Compute variance-entropy frontier for a grid of α values.
@@ -62,6 +65,7 @@ def compute_variance_entropy_frontier(
     :param n_starts (int): Multi-start count
     :param seed (int): Random seed
     :param entropy_eps (float): Numerical stability
+    :param mu (np.ndarray | None): Expected return signal (n,)
 
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
     """
@@ -93,6 +97,7 @@ def compute_variance_entropy_frontier(
             tau_max=tau_max,
             is_first=is_first,
             entropy_eps=entropy_eps,
+            mu=mu,
         )
 
         variance = float(w_opt @ Sigma_assets @ w_opt)

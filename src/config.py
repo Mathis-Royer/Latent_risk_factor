@@ -394,6 +394,11 @@ class RiskModelConfig:
         behavior).  0.1 = 10% shrinkage — reduces spurious cross-stock
         correlations embedded in the systematic block B·Σ_z·B^T.
         Range: [0, 1].
+    :param eigenvalue_power (float): Power shrinkage exponent for
+        eigenvalues.  Applied after variance targeting in the pipeline:
+        eigenvalues = eigenvalues^p.  1.0 = no change (original behavior).
+        0.5 = square root (compresses dominant eigenvalues, reduces
+        concentration of top factors in the risk model).  Range: (0, 1].
     """
 
     winsorize_lo: float = 5.0
@@ -403,6 +408,7 @@ class RiskModelConfig:
     ridge_scale: float = 1e-6
     sigma_z_eigenvalue_pct: float = 1.0
     b_a_shrinkage_alpha: float = 0.0
+    eigenvalue_power: float = 1.0
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
@@ -424,6 +430,10 @@ class RiskModelConfig:
         _validate_range("b_a_shrinkage_alpha",
                         self.b_a_shrinkage_alpha,
                         default=0.0, lo=0, hi=1)
+        _validate_range("eigenvalue_power",
+                        self.eigenvalue_power,
+                        default=1.0, lo=0, hi=1,
+                        lo_exclusive=True)
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +468,10 @@ class PortfolioConfig:
         "auto" (best available), "sequential" (original), "gradient" (Taylor approx),
         "miqp" (single MOSEK MIQP), "two_stage" (DVT §4.7 decomposition)
     :param alpha_grid (list): Grid of alpha values for frontier
+    :param momentum_enabled (bool): Enable cross-sectional momentum signal
+    :param momentum_lookback (int): Lookback window in trading days (12 months)
+    :param momentum_skip (int): Skip period in trading days (1 month reversal)
+    :param momentum_weight (float): Scaling factor for momentum signal (γ_mom)
     """
 
     lambda_risk: float = 1.0
@@ -481,6 +495,10 @@ class PortfolioConfig:
     alpha_grid: list[float] = field(
         default_factory=lambda: [0, 0.01, 0.05, 0.1, 0.5, 1.0]
     )
+    momentum_enabled: bool = False
+    momentum_lookback: int = 252
+    momentum_skip: int = 21
+    momentum_weight: float = 0.5
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -509,6 +527,18 @@ class PortfolioConfig:
         _validate_in("cardinality_method", self.cardinality_method,
                      {"auto", "sequential", "gradient", "miqp", "two_stage"},
                      default="auto")
+        _validate_range("momentum_lookback", self.momentum_lookback,
+                        default=252, lo=1)
+        _validate_range("momentum_skip", self.momentum_skip,
+                        default=21, lo=0)
+        _validate_range("momentum_weight", self.momentum_weight,
+                        default=0.5, lo=0)
+        if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
+            raise ValueError(
+                f"Invalid parameter pair:\n"
+                f"  momentum_lookback ({self.momentum_lookback}) must be > "
+                f"momentum_skip ({self.momentum_skip})"
+            )
 
 
 # ---------------------------------------------------------------------------
