@@ -1714,6 +1714,20 @@ class FullPipeline:
                 float(np.min(col_stds)), float(np.max(col_stds)),
             )
 
+        # B_A exposure clipping (Barra USE4, Menchero et al. 2011 §3):
+        # cap extreme loadings at ±clip_threshold σ cross-sectionally.
+        # Extreme entries from VAE encoder variance dominate the quadratic
+        # form in Sigma_assets and distort covariance estimation.
+        clip_threshold = self.config.risk_model.b_a_clip_threshold
+        if clip_threshold > 0.0:
+            n_clipped = int(np.sum(np.abs(B_A) > clip_threshold))
+            if n_clipped > 0:
+                B_A = np.clip(B_A, -clip_threshold, clip_threshold)
+                logger.info(
+                    "  [Fold %d] B_A clipped %d entries at ±%.1fσ",
+                    fold_id, n_clipped, clip_threshold,
+                )
+
         # B_A shrinkage: reduce spurious cross-stock correlations
         shrinkage_alpha = self.config.risk_model.b_a_shrinkage_alpha
         if shrinkage_alpha > 0.0:
@@ -2008,6 +2022,8 @@ class FullPipeline:
             _state_bag["vt_scale_sys"] = vt_sys
             _state_bag["vt_scale_idio"] = vt_idio
             _state_bag["n_signal"] = n_signal_eff
+            _state_bag["eigenvalues_signal"] = eigenvalues_signal
+            _state_bag["B_prime_signal"] = B_prime_signal
             _state_bag["B_A_by_date"] = B_A_by_date
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots

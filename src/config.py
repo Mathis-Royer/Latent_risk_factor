@@ -422,6 +422,13 @@ class RiskModelConfig:
         Corrects heteroscedasticity: stocks with higher idiosyncratic
         variance get lower weight.  Standard in Barra USE4 and
         Fama-MacBeth (1973).  Default: True.
+    :param b_a_clip_threshold (float): Cross-sectional clipping threshold
+        (in standard deviations) applied to B_A after per-factor z-scoring.
+        Extreme loadings from VAE encoder variance dominate the quadratic
+        form in Sigma_assets and distort covariance estimation.
+        0.0 = no clipping.  3.5 = Barra USE4 standard.
+        Reference: Menchero, Orr & Wang (2011), "The Barra US Equity
+        Model (USE4)", Section 3.
     :param market_intercept (bool): If True, append a column of ones to B_A
         after z-scoring and dual rescaling.  This adds an explicit market
         factor with unit exposure for all stocks, which is standard in
@@ -443,6 +450,7 @@ class RiskModelConfig:
     sigma_z_eigenvalue_pct: float = 0.95
     sigma_z_ewma_half_life: int = 252
     b_a_shrinkage_alpha: float = 0.0
+    b_a_clip_threshold: float = 3.5
     use_wls: bool = True
     b_a_normalize: bool = True
     market_intercept: bool = True
@@ -470,6 +478,9 @@ class RiskModelConfig:
         _validate_range("b_a_shrinkage_alpha",
                         self.b_a_shrinkage_alpha,
                         default=0.0, lo=0, hi=1)
+        _validate_range("b_a_clip_threshold",
+                        self.b_a_clip_threshold,
+                        default=3.5, lo=0)
         _validate_range("sigma_z_ewma_half_life",
                         self.sigma_z_ewma_half_life,
                         default=0, lo=0)

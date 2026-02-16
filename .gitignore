@@ -7,3 +7,4 @@ keys.txt
 .DS_Store
 data/tiingo_raw/*.parquet
 Colab_config.txt
+mosek.lic

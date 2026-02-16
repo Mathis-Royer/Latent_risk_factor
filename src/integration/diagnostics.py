@@ -420,9 +420,19 @@ def portfolio_diagnostics(
     else:
         frontier = frontier_raw if isinstance(frontier_raw, list) else []
     risk_model: dict[str, Any] = state_bag.get("risk_model", {})
-    eigenvalues: np.ndarray = risk_model.get("eigenvalues", np.array([]))
-    B_prime_port: np.ndarray = risk_model.get("B_prime_port", np.array([]))
     n_signal: int = state_bag.get("n_signal", 0)
+
+    # Use signal-only eigenvalues/B_prime for entropy computation.
+    # The pipeline stores signal-only slices (excluding market PC1 and
+    # noise eigenvalues) separately from the full risk_model values.
+    # ENB and H_norm_signal must be computed on diversifiable signal
+    # factors only (Meucci 2009, "Managing Diversification").
+    eigenvalues = state_bag.get("eigenvalues_signal", np.array([]))
+    B_prime_port = state_bag.get("B_prime_signal", np.array([]))
+    if eigenvalues.size == 0:
+        eigenvalues = risk_model.get("eigenvalues", np.array([]))
+    if B_prime_port.size == 0:
+        B_prime_port = risk_model.get("B_prime_port", np.array([]))
 
     # Weight statistics
     w_pos = w_vae[w_vae > 1e-8]

@@ -106,9 +106,13 @@ class TestGetAmpConfig:
         assert cfg["use_scaler"] is False
 
     def test_cuda_amp_enabled(self) -> None:
-        """CUDA should have AMP enabled with float16."""
+        """CUDA should have AMP enabled (bfloat16 preferred, float16 fallback)."""
         cfg = get_amp_config(torch.device("cuda"))
         assert cfg["use_amp"] is True
         assert cfg["device_type"] == "cuda"
-        assert cfg["dtype"] is torch.float16
-        assert cfg["use_scaler"] is True
+        if torch.cuda.is_bf16_supported():
+            assert cfg["dtype"] is torch.bfloat16
+            assert cfg["use_scaler"] is False
+        else:
+            assert cfg["dtype"] is torch.float16
+            assert cfg["use_scaler"] is True
