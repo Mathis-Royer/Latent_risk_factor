@@ -16,7 +16,7 @@ from src.benchmarks.inverse_vol import InverseVolatility
 from src.benchmarks.min_variance import MinimumVariance
 from sklearn.covariance import LedoitWolf
 
-from src.benchmarks.erc import EqualRiskContribution, _newton_erc
+from src.benchmarks.erc import EqualRiskContribution, _newton_erc, _ccd_erc
 from src.benchmarks.pca_factor_rp import PCAFactorRiskParity
 from src.benchmarks.pca_vol import PCAVolRiskParity
 from src.portfolio.momentum import compute_momentum_signal
@@ -993,3 +993,92 @@ class TestMomentumWinsorization:
         mu = compute_momentum_signal(returns, stock_ids, lookback=252, skip=21)
 
         np.testing.assert_array_equal(mu, np.zeros(n))
+
+
+# ---------------------------------------------------------------------------
+# CCD ERC solver tests (Phase 13, Finding 2)
+# ---------------------------------------------------------------------------
+
+
+class TestCCDERC:
+    """Tests for cyclical coordinate descent ERC solver."""
+
+    def test_ccd_diagonal_known_solution(self) -> None:
+        """CCD on diag(1,4,9) gives w proportional to 1/sigma."""
+        Sigma = np.diag([1.0, 4.0, 9.0])
+        w = _ccd_erc(Sigma)
+
+        assert w is not None, "CCD should converge on diagonal Sigma"
+
+        sigmas = np.sqrt([1.0, 4.0, 9.0])
+        w_expected = (1.0 / sigmas) / np.sum(1.0 / sigmas)
+        np.testing.assert_allclose(w, w_expected, atol=1e-6)
+
+        rc = w * (Sigma @ w)
+        rc_norm = rc / np.sum(rc)
+        np.testing.assert_allclose(rc_norm, np.ones(3) / 3, atol=1e-6)
+
+    def test_ccd_large_n_lw_shrunk(self) -> None:
+        """CCD converges for n=200 with LW-shrunk Sigma (Newton-scale problem)."""
+        rng = np.random.RandomState(42)
+        n = 200
+        T = 500
+        R = rng.randn(T, n) * 0.02
+        # Heterogeneous vols: first 30 have 3x vol
+        R[:, :30] *= 3.0
+
+        lw = LedoitWolf()
+        lw.fit(R)
+        Sigma: np.ndarray = lw.covariance_  # type: ignore[assignment]
+
+        w = _ccd_erc(Sigma)
+        assert w is not None, "CCD should converge for n=200"
+        assert abs(np.sum(w) - 1.0) < 1e-8
+        assert np.all(w > 0)
+
+        # Risk contributions approximately equal
+        rc = w * (Sigma @ w)
+        rc_norm = rc / np.sum(rc)
+        rc_std = float(np.std(rc_norm))
+        assert rc_std < 0.05, (
+            f"RC std={rc_std:.6f} too high for n=200 (target < 5%)"
+        )
+
+    def test_ccd_not_equal_weight(self) -> None:
+        """CCD on non-uniform Sigma produces weights different from 1/N."""
+        rng = np.random.RandomState(42)
+        n = 50
+        T = 300
+        R = rng.randn(T, n) * 0.02
+        R[:, :10] *= 3.0
+
+        lw = LedoitWolf()
+        lw.fit(R)
+        Sigma: np.ndarray = lw.covariance_  # type: ignore[assignment]
+
+        w = _ccd_erc(Sigma)
+        assert w is not None
+
+        w_ew = np.ones(n) / n
+        max_diff = float(np.max(np.abs(w - w_ew)))
+        assert max_diff > 0.005, (
+            f"CCD ERC should differ from EW: max|w - w_ew|={max_diff:.6f}"
+        )
+
+        # High-vol stocks should get lower ERC weight
+        avg_w_highvol = float(np.mean(w[:10]))
+        avg_w_lowvol = float(np.mean(w[10:]))
+        assert avg_w_highvol < avg_w_lowvol, (
+            f"High-vol stocks should get lower weight: "
+            f"highvol={avg_w_highvol:.6f}, lowvol={avg_w_lowvol:.6f}"
+        )
+
+    def test_ccd_agrees_with_newton_small_n(self) -> None:
+        """CCD and Newton produce same weights for small n (both converge)."""
+        Sigma = np.diag([1.0, 2.0, 5.0, 3.0, 8.0])
+        w_ccd = _ccd_erc(Sigma)
+        w_newton = _newton_erc(Sigma)
+
+        assert w_ccd is not None
+        assert w_newton is not None
+        np.testing.assert_allclose(w_ccd, w_newton, atol=1e-6)

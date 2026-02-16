@@ -374,12 +374,13 @@ def _enforce_miqp(
     entropy_eps: float = 1e-30,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    mu: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     MIQP cardinality enforcement in a single solve.
 
     Linearizes H at the continuous SCA solution w and solves:
-        max  alpha * grad_H^T w  -  lambda * ||L^T w||^2
+        max  mu^T w  +  alpha * grad_H^T w  -  lambda * ||L^T w||^2
              - phi * P_conc  -  P_turn
         s.t. w_min * z_i <= w_i <= w_max * z_i,  z_i in {0,1}
              sum(w) = 1, turnover cap
@@ -409,6 +410,7 @@ def _enforce_miqp(
     :param L_sigma (np.ndarray | None): Pre-computed Cholesky factor
     :param entropy_eps (float): Numerical stability
     :param D_eps (np.ndarray | None): Idiosyncratic variances (n,)
+    :param mu (np.ndarray | None): Return signal (n,) — momentum-weighted z-scores
 
     :return w_miqp (np.ndarray): MIQP solution (n,)
     """
@@ -430,6 +432,7 @@ def _enforce_miqp(
 
     # Objective: same structure as SCA sub-problem but with fixed gradient
     # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
+    ret_term: cp.Expression | float = mu @ w_var if mu is not None else 0.0
     entropy_term = alpha * (grad_H @ w_var)
     risk_term = lambda_risk * cp.sum_squares(L.T @ w_var)
     conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
@@ -442,7 +445,7 @@ def _enforce_miqp(
         quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
         turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
-    obj = cp.Maximize(entropy_term - risk_term - conc_penalty - turn_penalty)
+    obj = cp.Maximize(ret_term + entropy_term - risk_term - conc_penalty - turn_penalty)
 
     # Semi-continuous constraints: binary only for active stocks
     # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
@@ -524,6 +527,7 @@ def _enforce_two_stage(
     use_mi: bool = True,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    mu: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Two-stage decomposition for cardinality enforcement (DVT Section 4.7).
@@ -534,7 +538,7 @@ def _enforce_two_stage(
 
     Stage 2: Project to asset space via MIQP (or continuous QP):
         min_w ||B'^T w - y*||^2 + lambda_risk * ||L^T w||^2
-              + phi * P_conc + P_turn
+              - mu^T w + phi * P_conc + P_turn
         s.t. semi-continuous constraints (MIQP) or w >= 0 (continuous)
 
     :param w (np.ndarray): Continuous SCA solution (n,)
@@ -556,6 +560,7 @@ def _enforce_two_stage(
     :param L_sigma (np.ndarray | None): Pre-computed Cholesky factor
     :param entropy_eps (float): Numerical stability
     :param use_mi (bool): Use MI variables for exact semi-continuous constraint
+    :param mu (np.ndarray | None): Return signal (n,) — momentum-weighted z-scores
 
     :return w_final (np.ndarray): Two-stage solution (n,)
     """
@@ -582,10 +587,11 @@ def _enforce_two_stage(
     # -----------------------------------------------------------------------
     w_var = cp.Variable(n)
 
-    # Tracking objective: minimize ||B'^T w - y*||^2 + regularization
+    # Tracking objective: minimize ||B'^T w - y*||^2 + regularization - mu^T w
     # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
     tracking_error = cp.sum_squares(B_prime.T @ w_var - y_star)
     risk_reg = lambda_risk * cp.sum_squares(L.T @ w_var)
+    ret_term: cp.Expression | float = mu @ w_var if mu is not None else 0.0
     conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
 
     turn_penalty: cp.Expression = cp.Constant(0.0)
@@ -597,7 +603,7 @@ def _enforce_two_stage(
         turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
     obj = cp.Minimize(
-        tracking_error + risk_reg + conc_penalty + turn_penalty
+        tracking_error + risk_reg - ret_term + conc_penalty + turn_penalty
     )
 
     # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
@@ -738,6 +744,7 @@ def enforce_cardinality(
         "tau_max": sca_kwargs.get("tau_max", 0.30),
         "is_first": sca_kwargs.get("is_first", True),
         "L_sigma": sca_kwargs.get("_L_sigma"),
+        "mu": sca_kwargs.get("mu"),
     }
 
     # ------------------------------------------------------------------

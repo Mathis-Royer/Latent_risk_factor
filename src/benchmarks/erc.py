@@ -86,9 +86,9 @@ def _newton_erc(
             )
             return None
 
-        # Damped Newton: ensure y stays positive
+        # Damped Newton: ensure y stays positive (50 halvings ≈ 1e-15)
         step = 1.0
-        for _ in range(20):
+        for _ in range(50):
             y_trial = y - step * delta
             if np.all(y_trial > 0):
                 break
@@ -107,6 +107,75 @@ def _newton_erc(
             max_iter, norm_F,
         )
         # Return best effort if residual is reasonable
+        if norm_F > 1.0:
+            return None
+
+    # Normalize to portfolio weights
+    w = y / np.sum(y)
+    return w
+
+
+def _ccd_erc(
+    Sigma: np.ndarray,
+    max_sweeps: int = 500,
+    tol: float = 1e-8,
+) -> np.ndarray | None:
+    """
+    Cyclical Coordinate Descent ERC solver (Roncalli 2013, Ch. 11, Algorithm 11.2).
+
+    Solves the ERC fixed-point equation (Σy)_i · y_i = c one coordinate at a
+    time. Guaranteed positivity by construction: each update uses the quadratic
+    formula with positive discriminant when σ_ii > 0.
+
+    More robust than Newton for large n (n > 200) or ill-conditioned Σ because
+    it avoids matrix inversion entirely.
+
+    Reference: Griveau-Billion, Richard & Roncalli (2013), "A Fast Algorithm
+    for Computing High-dimensional Risk Parity Portfolios".
+
+    :param Sigma (np.ndarray): Covariance matrix (n, n), must be PD
+    :param max_sweeps (int): Maximum coordinate sweeps
+    :param tol (float): Convergence tolerance on ||F(y)||
+
+    :return w (np.ndarray | None): ERC weights (n,), or None if failed
+    """
+    n = Sigma.shape[0]
+    diag_sigma = np.diag(Sigma)
+
+    if np.any(diag_sigma <= 0):
+        return None
+
+    # Initialize with inverse-volatility
+    y = 1.0 / np.sqrt(diag_sigma)
+    c = 1.0  # Budget scale (Spinu c=1)
+
+    for sweep in range(max_sweeps):
+        y_old = y.copy()
+
+        for i in range(n):
+            # r_i = (Σy)_i - σ_ii y_i (contribution from other assets)
+            r_i = float(Sigma[i] @ y) - diag_sigma[i] * y[i]
+
+            # Solve σ_ii y_i² + r_i y_i - c = 0 → positive root
+            discriminant = r_i * r_i + 4.0 * diag_sigma[i] * c
+            y[i] = (-r_i + np.sqrt(discriminant)) / (2.0 * diag_sigma[i])
+
+        # Check convergence: ||F(y)|| where F_i = y_i (Σy)_i - c
+        Sy = Sigma @ y
+        F = y * Sy - c
+        norm_F = float(np.linalg.norm(F))
+
+        if norm_F < tol:
+            logger.info(
+                "  [ERC/CCD] Converged in %d sweeps (||F||=%.2e)",
+                sweep + 1, norm_F,
+            )
+            break
+    else:
+        logger.warning(
+            "  [ERC/CCD] Did not converge after %d sweeps (||F||=%.2e)",
+            max_sweeps, norm_F,
+        )
         if norm_F > 1.0:
             return None
 
@@ -215,9 +284,22 @@ class EqualRiskContribution(BenchmarkModel):
                 w = w_newton
                 solved = True
                 solver_used = "Newton"
+
+        # CCD fallback when Newton also fails (robust for any PD Sigma)
+        if not solved:
+            logger.warning(
+                "  [ERC] Newton failed (n=%d) — trying CCD solver "
+                "(Griveau-Billion, Richard & Roncalli 2013)",
+                n,
+            )
+            w_ccd = _ccd_erc(self.Sigma_LW)
+            if w_ccd is not None:
+                w = w_ccd
+                solved = True
+                solver_used = "CCD"
             else:
                 logger.warning(
-                    "  [ERC] All solvers failed (CVXPY + Newton) — "
+                    "  [ERC] All solvers failed (CVXPY + Newton + CCD) — "
                     "falling back to 1/N"
                 )
                 return np.ones(n) / n

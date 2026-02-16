@@ -694,6 +694,71 @@ class TestCardinality:
         self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
         assert abs(np.sum(w_enforced) - 1.0) < 1e-6
 
+    def test_cardinality_preserves_momentum_tilt(self) -> None:
+        """MIQP/two_stage cardinality preserves momentum signal.
+
+        Creates a clear momentum signal where stocks 0-4 have high mu and
+        stocks 15-19 have low mu. After cardinality enforcement, the active
+        positions should show a higher average mu than the eliminated ones.
+
+        Phase 13, Finding 1: before this fix, MIQP/two_stage objectives
+        omitted mu, causing cardinality to erase momentum tilts entirely.
+        """
+        np.random.seed(SEED)
+        data = _make_portfolio_data()
+        w_min = 0.01
+
+        # Create momentum signal: first 5 stocks strongly positive,
+        # last 5 stocks strongly negative, middle stocks near zero
+        mu = np.zeros(N_STOCKS)
+        mu[:5] = 0.05    # High momentum
+        mu[15:] = -0.03  # Low momentum
+        mu[5:15] = np.linspace(0.02, -0.01, 10)
+
+        # Start with small-but-positive weights (to create violations)
+        rng = np.random.RandomState(SEED)
+        w = rng.dirichlet(np.ones(N_STOCKS)).astype(np.float64)
+        w = w / w.sum()
+
+        sca_kwargs: dict[str, Any] = {
+            "Sigma_assets": data["Sigma_assets"],
+            "B_prime": data["B_prime"],
+            "eigenvalues": data["eigenvalues"],
+            "alpha": 1.0,
+            "lambda_risk": 1.0,
+            "phi": 0.0,
+            "w_bar": 0.10,
+            "w_max": 0.10,
+            "w_old": None,
+            "is_first": True,
+            "kappa_1": 0.1,
+            "kappa_2": 7.5,
+            "delta_bar": 0.01,
+            "tau_max": 0.30,
+            "entropy_eps": 1e-30,
+            "mu": mu,
+        }
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=sca_optimize,
+            sca_kwargs=sca_kwargs,
+            method="gradient",
+        )
+
+        # Active stocks should have higher average momentum than eliminated ones
+        active_mask = w_enforced > 1e-8
+        if np.sum(active_mask) > 0 and np.sum(~active_mask) > 0:
+            avg_mu_active = float(np.mean(mu[active_mask]))
+            avg_mu_eliminated = float(np.mean(mu[~active_mask]))
+            assert avg_mu_active > avg_mu_eliminated, (
+                f"Active stocks should have higher avg mu than eliminated: "
+                f"active={avg_mu_active:.4f}, eliminated={avg_mu_eliminated:.4f}"
+            )
+
 
 class TestConstraints:
     """Tests for constraint checking and turnover (MOD-008 sub-task 4)."""
