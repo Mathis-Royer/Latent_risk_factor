@@ -546,6 +546,8 @@ def portfolio_diagnostics(
         "frontier": frontier_diag,
         # Risk decomposition
         "risk_decomposition": risk_decomp,
+        # Raw weights for health checks (non-trivial selection test)
+        "_weights_raw": w_vae,
     }
 
 
@@ -886,6 +888,35 @@ def run_health_checks(
         _add("Portfolio", "Max drawdown", "WARNING", mdd_context)
     else:
         _add("Portfolio", "Max drawdown", "OK", mdd_context)
+
+    # --- Non-trivial selection check (detect alphabetical/positional bias) ---
+    w_raw = portfolio.get("_weights_raw", np.array([]))
+    n_total_sel = portfolio.get("n_total_stocks", 0)
+    n_active_sel = portfolio.get("n_active_positions", 0)
+
+    if isinstance(w_raw, np.ndarray) and w_raw.size > 0 and n_total_sel >= 10 and n_active_sel >= 3:
+        active_indices = np.where(w_raw > 1e-8)[0]
+        n_act = len(active_indices)
+        if n_act >= 3:
+            mean_rank = float(np.mean(active_indices))
+            expected_mean = (n_total_sel - 1) / 2.0  # 0-indexed
+            rank_ratio = mean_rank / expected_mean if expected_mean > 0 else 1.0
+
+            # Fraction of active stocks in first quintile of sorted list
+            quintile_cutoff = max(1, n_total_sel // 5)
+            frac_first_q = float(np.sum(active_indices < quintile_cutoff)) / n_act
+
+            detail = (
+                f"Mean rank = {mean_rank:.0f}/{n_total_sel} "
+                f"(ratio={rank_ratio:.2f}), "
+                f"first quintile = {frac_first_q:.0%} of active"
+            )
+            if rank_ratio < 0.1 or frac_first_q > 0.9:
+                _add("Portfolio", "Selection non-trivial", "CRITICAL", detail)
+            elif rank_ratio < 0.3 or frac_first_q > 0.7:
+                _add("Portfolio", "Selection non-trivial", "WARNING", detail)
+            else:
+                _add("Portfolio", "Selection non-trivial", "OK", detail)
 
     # --- Data quality checks ---
     miss = data_quality.get("missing_pct", 0.0)

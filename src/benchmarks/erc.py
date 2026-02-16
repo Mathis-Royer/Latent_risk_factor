@@ -130,11 +130,20 @@ class EqualRiskContribution(BenchmarkModel):
             rc_std = float(np.std(rc_norm))
             rc_max = float(np.max(rc_norm))
             rc_min = float(np.min(rc_norm[rc_norm > 1e-10]))
+            rc_ratio = rc_max / max(rc_min, 1e-10)
+            eff_n_erc = 1.0 / max(float(np.sum(rc_norm ** 2)), 1e-10)
             logger.info(
                 "  [ERC] Risk contributions: std=%.6f, max/min=%.2f, "
                 "eff_n=%.1f/%d",
-                rc_std, rc_max / max(rc_min, 1e-10),
-                1.0 / max(float(np.sum(rc_norm ** 2)), 1e-10), n,
+                rc_std, rc_ratio, eff_n_erc, n,
             )
+            if rc_ratio < 1.5:
+                logger.warning(
+                    "  [ERC] Near-uniform risk contributions (max/min=%.2f < 1.5) "
+                    "— ERC is equivalent to 1/N under Ledoit-Wolf shrinkage "
+                    "on large universes. This is expected, not a bug "
+                    "(Maillard et al. 2010, Prop. 3).",
+                    rc_ratio,
+                )
 
         return self._project_to_constraints(w, w_old, is_first)

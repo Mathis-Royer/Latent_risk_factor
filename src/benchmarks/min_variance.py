@@ -54,6 +54,8 @@ class MinimumVariance(BenchmarkModel):
         """
         n = self.Sigma_LW.shape[0]
         w_max = self.constraint_params["w_max"]
+        w_bar = self.constraint_params.get("w_bar", w_max)
+        effective_cap = min(w_bar, w_max)
         tau_max = self.constraint_params["tau_max"]
 
         w = cp.Variable(n)
@@ -61,7 +63,7 @@ class MinimumVariance(BenchmarkModel):
 
         constraints = [
             w >= 0,
-            w <= w_max,
+            w <= effective_cap,
             cp.sum(w) == 1,
         ]
 

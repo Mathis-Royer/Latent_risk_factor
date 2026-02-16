@@ -208,8 +208,11 @@ def select_operating_alpha(
                 )
                 return alpha_sel
 
-        # No point reaches target: use highest ENB with warning
-        best_idx = int(np.argmax(enb))
+        # No point reaches target: use highest ENB (monotone envelope)
+        # with warning.  Using enb_mono instead of raw enb ensures we pick
+        # the highest-alpha point even if the frontier is non-monotonic
+        # (SCA local optima can produce ENB drops at intermediate alpha).
+        best_idx = int(np.argmax(enb_mono))
         alpha_sel = float(df["alpha"].iloc[best_idx])
         logger.warning(
             "select_operating_alpha: no frontier point reaches target "

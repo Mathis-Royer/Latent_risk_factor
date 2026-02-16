@@ -296,6 +296,7 @@ def run_diagnostic(
     profile_name: str = "custom",
     data_source_label: str = "unknown",
     seed: int = 42,
+    pretrained_model: str | None = None,
 ) -> dict[str, Any]:
     """
     Run comprehensive pipeline diagnostic.
@@ -318,6 +319,8 @@ def run_diagnostic(
     :param profile_name (str): Profile label for report metadata
     :param data_source_label (str): Data source label for report metadata
     :param seed (int): Random seed
+    :param pretrained_model (str | None): Path to checkpoint file.
+        When provided, skips VAE training and loads the encoder from disk.
 
     :return diagnostics (dict): Full diagnostic results dict
     """
@@ -368,6 +371,7 @@ def run_diagnostic(
         holdout_start=holdout_start,
         holdout_fraction=holdout_fraction,
         run_benchmarks=run_benchmarks,
+        pretrained_model=pretrained_model,
     )
 
     t_pipeline = time.monotonic() - t_run
