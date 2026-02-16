@@ -1,0 +1,48 @@
+======================================================================
+VAE LATENT RISK FACTOR — RESULTS REPORT
+======================================================================
+
+Scenario: C
+Recommendation: Adopt PCA (cost /100)
+
+E* epochs: mean=164.0, std=0.0, range=[164, 164]
+
+Statistical Tests (0 comparisons, alpha=0.05):
+--------------------------------------------------
+
+  vs equal_weight:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs inverse_vol:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs min_variance:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs erc:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs pca_factor_rp:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs pca_vol:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+  vs sp500_index:
+    ann_vol_oos: skipped (Too few paired observations (1))
+    max_drawdown_oos: skipped (Too few paired observations (1))
+    sharpe: skipped (Too few paired observations (1))
+
+======================================================================

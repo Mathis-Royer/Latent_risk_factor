@@ -2,7 +2,7 @@
 *.egg-info/
 __pycache__/
 .pytest_cache/
-results/
+# results/
 keys.txt
 .DS_Store
 data/tiingo_raw/*.parquet

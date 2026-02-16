@@ -1,0 +1,11 @@
+category,check,status,message
+Latent,Active units,OK,AU = 26 / K = 52 (50.0% utilization)
+Risk Model,Variance ratio,CRITICAL,"var_ratio = 2.742 — outside [0.5, 2.0]"
+Risk Model,Condition number,OK,cond(Sigma) = 2e+04
+Risk Model,Explanatory power,OK,"EP_oos = 0.3563, EP_is = 0.2190"
+Portfolio,Sharpe ratio,OK,Sharpe = 0.382
+Portfolio,Factor entropy,OK,"H_norm_signal = 0.399 (n_signal=12), ENB = 2.70, H_norm_eff = 0.566 (n_eff=5.8)"
+Portfolio,Max drawdown,WARNING,MDD = 35.3% (EW benchmark: 37.8%)
+Portfolio,Selection non-trivial,OK,"Mean rank = 272/639 (ratio=0.85), first quintile = 31% of active"
+Data,Missing data,WARNING,35.3% missing values
+Data,Universe size,OK,788 stocks

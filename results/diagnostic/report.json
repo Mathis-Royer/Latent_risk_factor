@@ -1,0 +1,164 @@
+{
+  "deployment": {
+    "scenario": "C",
+    "per_benchmark": {
+      "equal_weight": {
+        "wins": 0,
+        "total": 4
+      },
+      "inverse_vol": {
+        "wins": 0,
+        "total": 4
+      },
+      "min_variance": {
+        "wins": 0,
+        "total": 4
+      },
+      "erc": {
+        "wins": 0,
+        "total": 4
+      },
+      "pca_factor_rp": {
+        "wins": 0,
+        "total": 4
+      },
+      "pca_vol": {
+        "wins": 0,
+        "total": 4
+      },
+      "sp500_index": {
+        "wins": 0,
+        "total": 4
+      }
+    },
+    "recommendation": "Adopt PCA (cost /100)"
+  },
+  "statistical_tests": {
+    "pairwise": {
+      "equal_weight": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "inverse_vol": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "min_variance": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "erc": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "pca_factor_rp": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "pca_vol": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      },
+      "sp500_index": {
+        "ann_vol_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "max_drawdown_oos": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        },
+        "sharpe": {
+          "skipped": true,
+          "reason": "Too few paired observations (1)"
+        }
+      }
+    },
+    "n_tests": 0,
+    "alpha": 0.05
+  },
+  "regime_analysis": {
+    "available": false,
+    "reason": "No crisis fractions provided"
+  },
+  "e_star_summary": {
+    "values": [
+      164
+    ],
+    "mean": 164.0,
+    "std": 0.0,
+    "min": 164,
+    "max": 164
+  },
+  "n_folds": 1,
+  "n_benchmarks": 7,
+  "benchmark_names": [
+    "equal_weight",
+    "inverse_vol",
+    "min_variance",
+    "erc",
+    "pca_factor_rp",
+    "pca_vol",
+    "sp500_index"
+  ]
+}
