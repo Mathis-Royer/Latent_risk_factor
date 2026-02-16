@@ -66,7 +66,6 @@ from src.walk_forward.metrics import (
     factor_explanatory_power_dynamic,
     portfolio_metrics,
     realized_vs_predicted_correlation,
-    realized_vs_predicted_variance,
 )
 from src.utils import get_optimal_device, configure_backend, clear_device_cache
 from src.walk_forward.phase_a import select_best_config
@@ -1887,14 +1886,25 @@ class FullPipeline:
         # sigma_sq (not 0) for optimal Frobenius-loss estimation.  Keeping
         # them in Sigma_assets prevents systematic risk underestimation.
         # Entropy only diversifies across n_signal real factors.
+        #
+        # When market_intercept=True, PC1 captures the market factor (all
+        # stocks have unit exposure → lambda_1/lambda_2 >> 1).  The market
+        # is not a diversifiable bet (Meucci 2009), so we exclude it from
+        # the entropy objective.  Sigma_assets keeps all eigenvalues.
         n_signal = max(1, min(n_signal, len(eigenvalues)))
-        eigenvalues_signal = eigenvalues[:n_signal].copy()
-        B_prime_signal = B_prime_port[:, :n_signal].copy()
-        if n_signal < len(eigenvalues):
+        skip_pc1 = self.config.risk_model.market_intercept
+        signal_start = 1 if skip_pc1 else 0
+        signal_end = n_signal + (1 if skip_pc1 else 0)
+        signal_end = min(signal_end, len(eigenvalues))
+        eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
+        B_prime_signal = B_prime_port[:, signal_start:signal_end].copy()
+        n_signal_eff = len(eigenvalues_signal)  # actual count for ENB target
+        if n_signal < len(eigenvalues) or skip_pc1:
             logger.info(
                 "  [Fold %d] Eigenvalue split: n_signal=%d/%d "
-                "(signal for entropy, full for risk)",
-                fold_id, n_signal, len(eigenvalues),
+                "(signal for entropy, full for risk%s)",
+                fold_id, n_signal_eff, len(eigenvalues),
+                ", PC1 market excluded" if skip_pc1 else "",
             )
 
         # Per-factor variance targeting (Barra USE4 methodology):
@@ -1926,7 +1936,7 @@ class FullPipeline:
                     vt_shrunk_k, _VT_SCALE_MIN, _VT_SCALE_MAX,
                 ))
             eigenvalues = eigenvalues * vt_factors
-            eigenvalues_signal = eigenvalues[:n_signal].copy()
+            eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
 
             # Idiosyncratic VT: compute holdout residuals and compare
             # per-stock realized idio variance with D_eps.
@@ -1997,7 +2007,7 @@ class FullPipeline:
             _state_bag["B_A_port"] = B_A_port
             _state_bag["vt_scale_sys"] = vt_sys
             _state_bag["vt_scale_idio"] = vt_idio
-            _state_bag["n_signal"] = n_signal
+            _state_bag["n_signal"] = n_signal_eff
             _state_bag["B_A_by_date"] = B_A_by_date
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots
@@ -2066,15 +2076,16 @@ class FullPipeline:
             mu=mu,
             idio_weight=idio_weight,
         )
-        # Dynamic target_enb: when config is 0.0 (default), use n_signal / 2
-        # for a robust diversification target (Meucci 2009).
+        # Dynamic target_enb: when config is 0.0 (default), use
+        # n_signal_eff / 2 for a robust diversification target (Meucci 2009).
+        # n_signal_eff excludes PC1 (market) when market_intercept=True.
         # Set config to -1.0 to force Kneedle legacy mode.
         effective_target_enb = pc.target_enb
         if pc.target_enb == 0.0:
-            effective_target_enb = max(2.0, n_signal / 2.0)
+            effective_target_enb = max(2.0, n_signal_eff / 2.0)
             logger.info(
-                "  [Fold %d] Dynamic target_enb=%.1f (n_signal=%d / 2)",
-                fold_id, effective_target_enb, n_signal,
+                "  [Fold %d] Dynamic target_enb=%.1f (n_signal_eff=%d / 2)",
+                fold_id, effective_target_enb, n_signal_eff,
             )
         elif pc.target_enb < 0.0:
             # Legacy Kneedle mode: pass 0.0 to select_operating_alpha
@@ -2174,7 +2185,7 @@ class FullPipeline:
             universe=inferred_stock_ids,
             H_oos=H_opt, AU=AU, K=self.config.vae.K,
             Sigma_hat=Sigma_assets,
-            n_signal=n_signal,
+            n_signal=n_signal_eff,
             H_factor=H_factor,
         )
         metrics["AU"] = float(AU)
@@ -2190,23 +2201,34 @@ class FullPipeline:
             trainer.close()
 
         # Layer 2: realized vs predicted variance + correlation
-        # Use only active positions to avoid dropna("any") eliminating most
-        # OOS rows due to missing data in zero-weight stocks.
+        # Compute portfolio return directly via R @ w with fillna(0)
+        # instead of dropna("any") which eliminates most OOS rows when
+        # any single stock has a missing value on a given day.
         if returns_oos.shape[0] > 0:
             active_mask = w_final > 1e-8
             active_ids = [inferred_stock_ids[i] for i in range(n_port) if active_mask[i]]
-            oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
-            if len(oos_df) > 10 and len(active_ids) > 0:
+            if len(active_ids) > 0:
                 w_active = w_final[active_mask]
                 w_active = w_active / w_active.sum()
-                # Build the active-only sub-covariance
                 active_indices = np.where(active_mask)[0]
                 Sigma_active = Sigma_assets[np.ix_(active_indices, active_indices)]
-                oos_values = oos_df.values
-                var_ratio = realized_vs_predicted_variance(w_active, Sigma_active, oos_values)
-                metrics["var_ratio_oos"] = var_ratio
-                corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_values)
-                metrics["corr_rank_oos"] = corr_rank
+
+                # Portfolio return: fillna(0) means a missing stock
+                # contributes 0 return (as if not traded that day).
+                oos_active = returns_oos.reindex(columns=active_ids).fillna(0.0)
+                port_ret = oos_active.values @ w_active
+                if len(port_ret) > 10:
+                    realized_var = float(np.var(port_ret, ddof=1))
+                    predicted_var = float(w_active @ Sigma_active @ w_active)
+                    if predicted_var > 1e-15:
+                        var_ratio = realized_var / predicted_var
+                        metrics["var_ratio_oos"] = var_ratio
+
+                # Rank correlation still uses dropna for cross-sectional comparison
+                oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
+                if len(oos_df) > 10:
+                    corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_df.values)
+                    metrics["corr_rank_oos"] = corr_rank
 
         # Layer 3: crisis-period return
         if vix_data is not None and returns_oos.shape[0] > 0:

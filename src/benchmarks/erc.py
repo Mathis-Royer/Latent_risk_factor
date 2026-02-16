@@ -46,7 +46,16 @@ class EqualRiskContribution(BenchmarkModel):
         self.n = len(universe)
 
         available = [s for s in universe if s in returns.columns]
-        R = returns[available].dropna().values
+        R_df = returns[available]
+
+        # Filter stocks with >50% NaN, then fill residual NaN with 0.
+        # dropna() on 600+ stocks eliminates nearly all rows; this
+        # matches the MinVar benchmark NaN handling in pipeline.py.
+        valid_frac: pd.Series = R_df.notna().mean()  # type: ignore[assignment]
+        keep: list[str] = valid_frac[valid_frac > 0.5].index.tolist()  # type: ignore[assignment]
+        if len(keep) < 2:
+            keep = available
+        R: np.ndarray = R_df[keep].fillna(0.0).values  # type: ignore[assignment]
 
         lw = LedoitWolf()
         lw.fit(R)

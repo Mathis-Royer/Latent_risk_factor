@@ -299,8 +299,12 @@ def estimate_sigma_z(
         else:
             n_signal = 0
 
-        # Covariance estimation on EWMA-weighted data (with n_eff)
-        Sigma_z_ewma = np.cov(z_input, rowvar=False, ddof=1)
+        # Covariance estimation on EWMA-weighted data (with n_eff).
+        # z_input = sqrt(w) * z_centered where w sums to 1, so the EWMA
+        # covariance is z_input.T @ z_input = Σ w_i * z_i * z_i^T.
+        # Using np.cov would additionally divide by (n-1), making
+        # eigenvalues ~n times too small.
+        Sigma_z_ewma: np.ndarray = z_input.T @ z_input
         Sigma_shrunk, _ = _spiked_shrinkage_matrix(Sigma_z_ewma, n_eff, p_dims)
         return Sigma_shrunk, n_signal
 

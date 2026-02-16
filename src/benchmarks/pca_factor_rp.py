@@ -15,10 +15,15 @@ Reference: ISD Section MOD-014.
 import numpy as np
 import pandas as pd
 
+import logging
+
 from src.benchmarks.base import BenchmarkModel
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
+from src.portfolio.frontier import compute_variance_entropy_frontier, select_operating_alpha
 from src.portfolio.sca_solver import multi_start_optimize
 from src.risk_model.covariance import estimate_d_eps
+
+logger = logging.getLogger(__name__)
 
 
 class PCAFactorRiskParity(BenchmarkModel):
@@ -133,31 +138,56 @@ class PCAFactorRiskParity(BenchmarkModel):
         """
         SAME SCA solver as VAE. H(w) in principal PCA factor basis.
 
+        Uses the same variance-entropy frontier + alpha selection as the
+        VAE pipeline (INV-012: identical constraints and solver).
+
         Since Σ_z_PCA = Λ_k is diagonal, V=I, so B_prime = B_PCA.
 
         :return w (np.ndarray): Optimized weights (n,)
         """
-        n = self.Sigma_assets.shape[0]
+        cp = self.constraint_params
+        w_bar = float(cp.get("w_bar", 0.03))
+        alpha_grid = cp.get("alpha_grid")
+        # Default alpha grid matching pipeline.py
+        if alpha_grid is None:
+            alpha_grid = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
-        w_opt, _, _ = multi_start_optimize(
+        frontier, frontier_weights = compute_variance_entropy_frontier(
             Sigma_assets=self.Sigma_assets,
             B_prime=self.B_prime,
             eigenvalues=self.eigenvalues,
             D_eps=self.D_eps,
-            alpha=0.1,  # Default α, can be overridden via frontier
-            n_starts=5,
-            seed=42,
-            lambda_risk=self.constraint_params["lambda_risk"],
-            w_max=self.constraint_params["w_max"],
-            w_min=self.constraint_params["w_min"],
-            phi=self.constraint_params["phi"],
-            w_bar=0.03,
+            alpha_grid=alpha_grid,  # type: ignore[arg-type]
+            lambda_risk=float(cp["lambda_risk"]),
+            w_max=float(cp["w_max"]),
+            w_min=float(cp["w_min"]),
+            w_bar=w_bar,
+            phi=float(cp["phi"]),
             w_old=w_old,
-            kappa_1=self.constraint_params["kappa_1"],
-            kappa_2=self.constraint_params["kappa_2"],
-            delta_bar=self.constraint_params["delta_bar"],
-            tau_max=self.constraint_params["tau_max"],
+            kappa_1=float(cp.get("kappa_1", 0.1)),
+            kappa_2=float(cp.get("kappa_2", 7.5)),
+            delta_bar=float(cp.get("delta_bar", 0.01)),
+            tau_max=float(cp.get("tau_max", 0.30)),
             is_first=is_first,
+            n_starts=3,
+            seed=42,
         )
 
-        return w_opt
+        # Select alpha via ENB target = k/2 (Meucci 2009)
+        target_enb = max(2.0, self.k / 2.0)
+        alpha_opt = select_operating_alpha(frontier, target_enb=target_enb)
+
+        if alpha_opt in frontier_weights:
+            w_opt = frontier_weights[alpha_opt]
+        else:
+            # Fallback: nearest alpha in frontier
+            alphas = sorted(frontier_weights.keys())
+            nearest = min(alphas, key=lambda a: abs(a - alpha_opt))
+            w_opt = frontier_weights[nearest]
+
+        logger.info(
+            "  [PCA-RP] alpha*=%.4g (ENB target=%.1f, k=%d)",
+            alpha_opt, target_enb, self.k,
+        )
+
+        return self._project_to_constraints(w_opt, w_old, is_first)
