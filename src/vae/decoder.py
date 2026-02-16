@@ -18,7 +18,6 @@ import torch.nn.functional as F_torch
 # Fixed hyperparameters
 C_HEAD = 144
 K_BODY = 7
-DROPOUT = 0.1
 
 
 class TransposeResBlock(nn.Module):
@@ -31,7 +30,7 @@ class TransposeResBlock(nn.Module):
     Doubles temporal dimension at each block.
     """
 
-    def __init__(self, c_in: int, c_out: int, dropout: float = DROPOUT) -> None:
+    def __init__(self, c_in: int, c_out: int, dropout: float = 0.1) -> None:
         """
         :param c_in (int): Input channels
         :param c_out (int): Output channels
@@ -107,7 +106,7 @@ class Decoder(nn.Module):
         channels: list[int],
         T: int,
         T_compressed: int,
-        dropout: float = DROPOUT,
+        dropout: float = 0.1,
     ) -> None:
         """
         :param F (int): Number of output features

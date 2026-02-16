@@ -28,7 +28,6 @@ STRIDE = 2                   # Per-block downsampling
 ALPHA_PROJ = 1.3             # Projection ratio
 C_MIN_DEFAULT = 384          # Minimum final layer width (standard)
 C_MIN_SMALL = C_HEAD         # = 144, reduced C_min for small universes
-DROPOUT = 0.1                # Dropout rate
 
 
 def round_16(x: int) -> int:
@@ -281,7 +280,7 @@ def build_vae(
     beta: float = 1.0,
     learn_obs_var: bool = True,
     c_min: int = C_MIN_DEFAULT,
-    dropout: float = DROPOUT,
+    dropout: float = 0.1,
     sigma_sq_min: float = 1e-4,
     sigma_sq_max: float = 10.0,
 ) -> tuple[VAEModel, dict]:

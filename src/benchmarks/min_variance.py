@@ -54,16 +54,15 @@ class MinimumVariance(BenchmarkModel):
         """
         n = self.Sigma_LW.shape[0]
         w_max = self.constraint_params["w_max"]
-        w_bar = self.constraint_params.get("w_bar", w_max)
-        effective_cap = min(w_bar, w_max)
         tau_max = self.constraint_params["tau_max"]
 
         w = cp.Variable(n)
         objective = cp.Minimize(cp.quad_form(w, self.Sigma_LW))
 
+        # Uses w_max (hard cap) — w_bar is only for soft penalty in SCA
         constraints = [
             w >= 0,
-            w <= effective_cap,
+            w <= w_max,
             cp.sum(w) == 1,
         ]
 

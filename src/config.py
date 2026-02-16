@@ -504,21 +504,21 @@ class PortfolioConfig:
         variance); use 252-2520 for γ in [1, 10].  Literature: Garlappi
         et al. (2007), DeMiguel et al. (2009).
     :param w_max (float): Maximum weight per stock (hard cap).
-        NOTE: The binding upper bound is min(w_bar, w_max).  With default
-        w_bar=0.03 and w_max=0.05, w_bar dominates and w_max has no effect.
-        Only relevant when w_bar > w_max (unusual configuration).
+        Hard constraint in the CVXPY sub-problem: w_i <= w_max.
+        With w_max=0.05, ceil(1/0.05)=20 positions minimum.
     :param w_min (float): Minimum active weight (semi-continuous)
-    :param w_bar (float): Hard per-stock weight cap (effective upper bound).
-        The binding constraint is min(w_bar, w_max).  With w_bar=0.03 and
-        w_max=0.05, no position can exceed 3%.  This replaces the old soft
-        concentration penalty (phi * P_conc) with a hard constraint, which
-        simplifies the objective and avoids interference with entropy
-        diversification (Jagannathan & Ma 2003, Roncalli 2013 Chapter 4).
+    :param w_bar (float): Concentration penalty threshold (soft cap).
+        Controls the soft penalty: phi * sum(max(0, w_i - w_bar)^2).
+        Positions between w_bar and w_max are allowed but penalized.
+        With w_bar=0.03 and phi=5.0, positions above 3% incur a
+        quadratic cost, giving a gradual soft cap that encourages
+        diversification without the hard cliff of effective_cap
+        (DeMiguel et al. 2009, Brodie et al. 2009).
         Must be > w_min for feasibility.
-    :param phi (float): Concentration penalty weight (legacy, default 0.0).
-        Set to 0.0 to disable the soft penalty and rely solely on the
-        w_bar hard cap.  Non-zero values add a soft quadratic penalty
-        on positions exceeding w_bar for backward compatibility.
+    :param phi (float): Concentration penalty weight.
+        phi * sum(max(0, w_i - w_bar)^2).  With phi=5.0 and w_bar=0.03,
+        a position at 4% incurs penalty 5.0 * (0.01)^2 = 5e-4, comparable
+        to the entropy term.  Set to 0.0 to disable (only hard cap w_max).
     :param kappa_1 (float): Linear turnover penalty
     :param kappa_2 (float): Quadratic turnover penalty
     :param delta_bar (float): Turnover penalty threshold
@@ -570,7 +570,7 @@ class PortfolioConfig:
     w_max: float = 0.05
     w_min: float = 0.001
     w_bar: float = 0.03
-    phi: float = 0.0
+    phi: float = 5.0
     kappa_1: float = 0.1
     kappa_2: float = 7.5
     delta_bar: float = 0.01
@@ -593,10 +593,12 @@ class PortfolioConfig:
     momentum_enabled: bool = True
     momentum_lookback: int = 252
     momentum_skip: int = 21
-    momentum_weight: float = 0.05
+    momentum_weight: float = 0.30
     entropy_idio_weight: float = 0.05
     target_enb: float = 0.0
     transaction_cost_bps: float = 10.0
+    normalize_entropy_gradient: bool = True
+    entropy_budget_mode: str = "proportional"
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -646,6 +648,8 @@ class PortfolioConfig:
                         default=0.0, lo=-1.0)
         _validate_range("entropy_idio_weight", self.entropy_idio_weight,
                         default=-1.0, lo=-1.0, hi=1.0)
+        _validate_in("entropy_budget_mode", self.entropy_budget_mode,
+                     {"uniform", "proportional"}, default="proportional")
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"

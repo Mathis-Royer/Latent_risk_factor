@@ -12,6 +12,7 @@ import math
 import numpy as np
 import torch
 
+from src.utils import get_amp_config
 from src.vae.model import VAEModel
 
 
@@ -50,13 +51,13 @@ def measure_active_units(
     sum_kl_components = torch.zeros(K, device=device, dtype=torch.float32)
     n_samples = 0
 
-    # AMP autocast: 2-3x faster on CUDA/MPS Tensor Cores, no-op on CPU
-    _use_amp = device.type in ("cuda", "mps")
+    # AMP autocast: consistent with trainer (bfloat16 on CUDA when supported)
+    amp_cfg = get_amp_config(device)
 
     with torch.no_grad(), torch.amp.autocast(  # type: ignore[reportPrivateImportUsage]
-        device_type=device.type,
-        dtype=torch.float16,
-        enabled=_use_amp,
+        device_type=str(amp_cfg["device_type"]),
+        dtype=amp_cfg["dtype"],  # type: ignore[arg-type]
+        enabled=bool(amp_cfg["use_amp"]),
     ):
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)

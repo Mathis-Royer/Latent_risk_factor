@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
 from src.portfolio.frontier import select_operating_alpha, compute_adaptive_enb_target
-from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function, has_mi_solver
+from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function, has_mi_solver, _compute_alpha_eff, _safe_cholesky
 from src.portfolio.cardinality import enforce_cardinality
 from src.portfolio.constraints import (
     concentration_penalty,
@@ -1706,4 +1706,225 @@ class TestAlphaZeroMinVariance:
         assert var_sca <= var_mv * 1.05, (
             f"α=0 SCA variance ({var_sca:.8f}) should be ≤ analytical min-var "
             f"({var_mv:.8f}) within 5% tolerance"
+        )
+
+
+class TestEntropyGradientNormalization:
+    """Tests for adaptive entropy gradient normalization (Phase 14, F1).
+
+    Validates that _compute_alpha_eff produces a balance_ratio that keeps
+    entropy and risk gradient norms commensurate.
+    Reference: Michaud (1989), Goldfarb & Iyengar (2003).
+    """
+
+    def test_balance_ratio_bounded(self) -> None:
+        """balance_ratio should be in [1e-4, 100] for typical equity data."""
+        data = _make_portfolio_data(n=50, au=8)
+        Sigma = data["Sigma_assets"]
+        B_prime = data["B_prime"]
+        eigenvalues = data["eigenvalues"]
+        D_eps = data["D_eps"]
+        L_sigma = _safe_cholesky(Sigma)
+        w_ew = np.ones(50) / 50
+
+        alpha_eff = _compute_alpha_eff(
+            alpha=2.0,
+            w_ref=w_ew,
+            L_sigma=L_sigma,
+            B_prime=B_prime,
+            eigenvalues=eigenvalues,
+            lambda_risk=252.0,
+            D_eps=D_eps,
+            idio_weight=0.05,
+        )
+
+        balance_ratio = alpha_eff / 2.0
+        assert 1e-4 < balance_ratio < 100.0, (
+            f"balance_ratio={balance_ratio:.6f} outside [1e-4, 100]"
+        )
+
+    def test_alpha_zero_passthrough(self) -> None:
+        """alpha=0 should return 0 (no entropy term)."""
+        data = _make_portfolio_data()
+        L_sigma = _safe_cholesky(data["Sigma_assets"])
+        w_ew = np.ones(N_STOCKS) / N_STOCKS
+
+        alpha_eff = _compute_alpha_eff(
+            alpha=0.0, w_ref=w_ew, L_sigma=L_sigma,
+            B_prime=data["B_prime"], eigenvalues=data["eigenvalues"],
+            lambda_risk=252.0,
+        )
+        assert alpha_eff == 0.0
+
+    def test_normalization_reduces_entropy_dominance(self) -> None:
+        """With normalization, effective entropy gradient norm should be
+        within 10x of risk gradient norm (vs ~100-1000x without)."""
+        data = _make_portfolio_data(n=50, au=8)
+        Sigma = data["Sigma_assets"]
+        B_prime = data["B_prime"]
+        eigenvalues = data["eigenvalues"]
+        D_eps = data["D_eps"]
+        L_sigma = _safe_cholesky(Sigma)
+        w_ew = np.ones(50) / 50
+        lambda_risk = 252.0
+
+        alpha_eff = _compute_alpha_eff(
+            alpha=2.0, w_ref=w_ew, L_sigma=L_sigma,
+            B_prime=B_prime, eigenvalues=eigenvalues,
+            lambda_risk=lambda_risk, D_eps=D_eps, idio_weight=0.05,
+        )
+
+        _, grad_H = compute_entropy_and_gradient(
+            w_ew, B_prime, eigenvalues, D_eps=D_eps, idio_weight=0.05,
+        )
+        Lw = L_sigma.T @ w_ew
+        risk_grad = 2.0 * lambda_risk * (L_sigma @ Lw)
+
+        risk_norm = float(np.linalg.norm(risk_grad))
+        eff_entropy_norm = alpha_eff * float(np.linalg.norm(grad_H))
+
+        # After normalization, ratio should be close to 1
+        ratio = eff_entropy_norm / (risk_norm + 1e-15)
+        assert 0.1 < ratio < 10.0, (
+            f"Normalized entropy/risk ratio={ratio:.4f}, expected ~1.0"
+        )
+
+    def test_multi_start_uses_normalization(self) -> None:
+        """multi_start_optimize with normalization should produce lower
+        portfolio variance than without (entropy no longer dominates)."""
+        data = _make_portfolio_data(n=30, au=5)
+
+        common_kwargs: dict[str, Any] = dict(
+            Sigma_assets=data["Sigma_assets"],
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            D_eps=data["D_eps"],
+            alpha=2.0,
+            n_starts=3,
+            seed=SEED,
+            lambda_risk=252.0,
+            w_max=0.10,
+            w_min=0.001,
+            w_bar=0.10,
+            phi=0.0,
+            is_first=True,
+            max_iter=50,
+            idio_weight=0.05,
+        )
+
+        w_norm, _, _ = multi_start_optimize(
+            **common_kwargs, normalize_entropy_gradient=True,
+        )
+        w_raw, _, _ = multi_start_optimize(
+            **common_kwargs, normalize_entropy_gradient=False,
+        )
+
+        var_norm = float(w_norm @ data["Sigma_assets"] @ w_norm)
+        var_raw = float(w_raw @ data["Sigma_assets"] @ w_raw)
+
+        # Normalized version should have lower or comparable variance
+        # (entropy doesn't dominate -> optimizer can reduce risk)
+        assert var_norm <= var_raw * 1.15, (
+            f"Normalized variance ({var_norm:.6e}) should be ≤ "
+            f"raw variance ({var_raw:.6e}) within 15% tolerance"
+        )
+
+
+class TestTiltedEntropy:
+    """Tests for tilted entropy with eigenvalue-proportional budget (Phase 14, F2).
+
+    Validates that tilted entropy reduces to standard Shannon entropy when
+    the budget is uniform, and that it produces different portfolio tilts
+    when the eigenvalue spectrum is concentrated.
+    Reference: Roncalli (2013, Ch. 7, Proposition 7.3).
+    """
+
+    def test_uniform_budget_equals_standard(self) -> None:
+        """With uniform budget b = 1/K, tilted entropy = standard - ln(K)."""
+        data = _make_portfolio_data()
+        w = np.ones(N_STOCKS) / N_STOCKS
+        B_prime = data["B_prime"]
+        eigenvalues = data["eigenvalues"]
+
+        H_std = compute_entropy_only(w, B_prime, eigenvalues)
+        budget_uniform = np.ones(AU) / AU
+        H_tilted = compute_entropy_only(w, B_prime, eigenvalues, budget=budget_uniform)
+
+        # H_tilted = H_std - ln(K) for uniform budget
+        expected = H_std - np.log(AU)
+        assert abs(H_tilted - expected) < 1e-10, (
+            f"Tilted with uniform budget: H_tilted={H_tilted:.8f}, "
+            f"expected H_std - ln(K) = {expected:.8f}"
+        )
+
+    def test_tilted_gradient_matches_standard_uniform(self) -> None:
+        """With uniform budget, tilted gradient = standard gradient."""
+        data = _make_portfolio_data()
+        w = np.ones(N_STOCKS) / N_STOCKS
+        B_prime = data["B_prime"]
+        eigenvalues = data["eigenvalues"]
+
+        _, grad_std = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+        budget_uniform = np.ones(AU) / AU
+        _, grad_tilted = compute_entropy_and_gradient(
+            w, B_prime, eigenvalues, budget=budget_uniform,
+        )
+
+        # Gradients should be identical (budget=1/K adds constant to H)
+        np.testing.assert_allclose(grad_tilted, grad_std, atol=1e-10)
+
+    def test_concentrated_budget_changes_optimum(self) -> None:
+        """With concentrated eigenvalues, tilted entropy produces a different
+        portfolio than standard entropy — one that loads more on dominant
+        factors rather than equalizing contributions."""
+        data = _make_portfolio_data(n=30, au=5)
+        eigenvalues = data["eigenvalues"].copy()
+        # Make spectrum concentrated: first eigenvalue 10x the rest
+        eigenvalues[0] = eigenvalues[1:].sum() * 10.0
+        B_prime = data["B_prime"]
+        budget = eigenvalues / eigenvalues.sum()
+
+        w_uniform = np.ones(30) / 30
+
+        # Standard entropy gradient
+        _, grad_std = compute_entropy_and_gradient(
+            w_uniform, B_prime, eigenvalues,
+        )
+        # Tilted entropy gradient
+        _, grad_tilted = compute_entropy_and_gradient(
+            w_uniform, B_prime, eigenvalues, budget=budget,
+        )
+
+        # Gradients should differ significantly for concentrated spectra
+        diff_norm = float(np.linalg.norm(grad_tilted - grad_std))
+        std_norm = float(np.linalg.norm(grad_std))
+        assert diff_norm > 0.01 * std_norm, (
+            f"Tilted and standard gradients too similar: "
+            f"diff_norm={diff_norm:.6e}, std_norm={std_norm:.6e}"
+        )
+
+    def test_budget_at_optimum(self) -> None:
+        """At the tilted optimum (c_hat = budget), H_tilted = 0 and
+        the tilted gradient should push toward zero perturbation."""
+        au = 4
+        # Construct portfolio where c_hat exactly equals budget
+        eigenvalues = np.array([4.0, 2.0, 1.0, 0.5])
+        budget = eigenvalues / eigenvalues.sum()
+
+        # B_prime = identity for first AU stocks
+        n = au + 2
+        B_prime = np.zeros((n, au))
+        for k in range(au):
+            B_prime[k, k] = 1.0
+
+        # Set weights so (beta'_k)^2 * lambda_k ∝ lambda_k,
+        # i.e. beta'_k = 1 for all k -> w_i = 1/n for first au stocks
+        w = np.zeros(n)
+        w[:au] = 1.0 / au
+
+        H_tilted = compute_entropy_only(w, B_prime, eigenvalues, budget=budget)
+
+        # At c_hat = budget: H_tilted = -Σ b_k ln(b_k/b_k) = 0
+        assert abs(H_tilted) < 1e-10, (
+            f"H_tilted at budget optimum should be 0, got {H_tilted:.8f}"
         )

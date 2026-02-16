@@ -91,12 +91,12 @@ class BenchmarkModel(ABC):
         :return w_proj (np.ndarray): Projected weights (n,)
         """
         w_max = self.constraint_params["w_max"]
-        w_bar = self.constraint_params.get("w_bar", w_max)
-        effective_cap = min(w_bar, w_max)
         w_min = self.constraint_params["w_min"]
         tau_max = self.constraint_params["tau_max"]
 
-        w = project_to_constraints(w, effective_cap, w_min)
+        # Uses w_max (hard cap) for projection — w_bar is only for
+        # the soft concentration penalty in SCA-based optimizers.
+        w = project_to_constraints(w, w_max, w_min)
 
         # Enforce turnover constraint if not first
         if w_old is not None and not is_first:
@@ -105,7 +105,7 @@ class BenchmarkModel(ABC):
                 # Scale the change to fit within tau_max
                 alpha = tau_max / max(one_way, 1e-10)
                 w = w_old + alpha * (w - w_old)
-                w = np.clip(w, 0.0, effective_cap)
+                w = np.clip(w, 0.0, w_max)
                 total = np.sum(w)
                 if total > 0:
                     w = w / total

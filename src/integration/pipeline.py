@@ -28,6 +28,7 @@ from src.benchmarks.pca_factor_rp import PCAFactorRiskParity
 from src.benchmarks.pca_vol import PCAVolRiskParity
 from src.benchmarks.sp500_index import SP500TotalReturn
 from src.config import PipelineConfig
+from src.data_pipeline.crisis import compute_crisis_labels
 from src.data_pipeline.windowing import create_windows
 from src.data_pipeline.features import compute_rolling_realized_vol
 from src.inference.active_units import (
@@ -1073,6 +1074,7 @@ class FullPipeline:
                     raw_returns_train=train_raw,
                     window_metadata_train=train_metadata,
                     strata_train=train_strata,
+                    vix_data=vix_data,
                 )
                 config_results.append(result)
             except Exception as e:
@@ -1115,6 +1117,7 @@ class FullPipeline:
         raw_returns_train: torch.Tensor | None = None,
         window_metadata_train: pd.DataFrame | None = None,
         strata_train: np.ndarray | None = None,
+        vix_data: pd.Series | None = None,
     ) -> dict[str, Any]:
         """
         Evaluate a single HP config on nested validation.
@@ -1134,6 +1137,7 @@ class FullPipeline:
         :param raw_returns_train (torch.Tensor | None): Raw returns for training windows
         :param window_metadata_train (pd.DataFrame | None): Metadata for training windows
         :param strata_train (np.ndarray | None): Strata for training windows
+        :param vix_data (pd.Series | None): VIX data for crisis labels
 
         :return result (dict): Evaluation results
         """
@@ -1168,6 +1172,9 @@ class FullPipeline:
             lambda_co_max=self.config.loss.lambda_co_max,
             beta_fixed=self.config.loss.beta_fixed,
             warmup_fraction=self.config.loss.warmup_fraction,
+            weight_decay=self.config.training.weight_decay,
+            adam_betas=self.config.training.adam_betas,
+            adam_eps=self.config.training.adam_eps,
             patience=self.config.training.patience,
             es_min_delta=self.config.training.es_min_delta,
             lr_patience=self.config.training.lr_patience,
@@ -1183,10 +1190,19 @@ class FullPipeline:
             sigma_sq_max=self.config.vae.sigma_sq_max,
         )
 
+        # Crisis labels from VIX (if available)
+        crisis_fractions: torch.Tensor | None = None
+        if vix_data is not None and window_metadata_train is not None:
+            train_end_ts: pd.Timestamp = pd.Timestamp(str(fold["train_end"]))  # type: ignore[assignment]
+            crisis_fractions = compute_crisis_labels(
+                vix_data, window_metadata_train, train_end_ts,
+            )
+
         fit_result = trainer.fit(
             train_windows, val_windows,
             max_epochs=self.config.training.max_epochs,
             batch_size=self.config.training.batch_size,
+            crisis_fractions=crisis_fractions,
             raw_returns=raw_returns_train,
             window_metadata=window_metadata_train,
             strata=strata_train,
@@ -1572,6 +1588,9 @@ class FullPipeline:
                 lambda_co_max=self.config.loss.lambda_co_max,
                 beta_fixed=self.config.loss.beta_fixed,
                 warmup_fraction=self.config.loss.warmup_fraction,
+                weight_decay=self.config.training.weight_decay,
+                adam_betas=self.config.training.adam_betas,
+                adam_eps=self.config.training.adam_eps,
                 patience=patience,
                 es_min_delta=self.config.training.es_min_delta,
                 lr_patience=self.config.training.lr_patience,
@@ -1604,10 +1623,19 @@ class FullPipeline:
             train_metadata = metadata.iloc[:n_train].reset_index(drop=True)
             train_strata = window_strata[:n_train]
 
+            # Crisis labels from VIX (if available)
+            crisis_fractions_b: torch.Tensor | None = None
+            if vix_data is not None:
+                train_end_ts: pd.Timestamp = pd.Timestamp(train_end)  # type: ignore[assignment]
+                crisis_fractions_b = compute_crisis_labels(
+                    vix_data, train_metadata, train_end_ts,
+                )
+
             fit_result = trainer.fit(
                 train_w, val_w,
                 max_epochs=e_star,
                 batch_size=self.config.training.batch_size,
+                crisis_fractions=crisis_fractions_b,
                 raw_returns=train_raw,
                 window_metadata=train_metadata,
                 strata=train_strata,
@@ -2081,6 +2109,14 @@ class FullPipeline:
             fold_id, len(pc.alpha_grid), pc.n_starts,
         )
         t_port = time.monotonic()
+        # Compute factor risk budget for tilted entropy (Roncalli 2013, Ch. 7)
+        budget: np.ndarray | None = None
+        if pc.entropy_budget_mode == "proportional":
+            eig_sum = float(eigenvalues_signal.sum())
+            if eig_sum > 1e-30:
+                budget = eigenvalues_signal / eig_sum
+            else:
+                budget = None
         frontier, frontier_weights = compute_variance_entropy_frontier(
             Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
             alpha_grid=pc.alpha_grid,
@@ -2092,6 +2128,8 @@ class FullPipeline:
             entropy_eps=pc.entropy_eps,
             mu=mu,
             idio_weight=idio_weight,
+            normalize_entropy_gradient=pc.normalize_entropy_gradient,
+            budget=budget,
         )
         # Dynamic target_enb: when config is 0.0 (default), use
         # min(n_signal/2, ENB_spectrum * 0.7) for an achievable target.

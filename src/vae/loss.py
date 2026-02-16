@@ -210,7 +210,6 @@ def compute_loss(
 def compute_co_movement_loss(
     mu: torch.Tensor,
     raw_returns: torch.Tensor,
-    valid_mask: torch.Tensor | None = None,
     max_pairs: int = 2048,
 ) -> torch.Tensor:
     """
@@ -229,7 +228,6 @@ def compute_co_movement_loss(
 
     :param mu (torch.Tensor): Latent means (B, K)
     :param raw_returns (torch.Tensor): Raw returns for Spearman (B, T)
-    :param valid_mask (torch.Tensor | None): Boolean mask (B, T), True = valid
     :param max_pairs (int): Maximum number of pairs to sample
 
     :return L_co (torch.Tensor): Scalar co-movement loss
@@ -255,7 +253,7 @@ def compute_co_movement_loss(
     # Spearman rank correlation on raw returns (no gradient needed)
     with torch.no_grad():
         spearman_corr = _batch_spearman(
-            raw_returns[idx_i], raw_returns[idx_j], valid_mask, idx_i, idx_j,
+            raw_returns[idx_i], raw_returns[idx_j],
         )
         # Target distance: g(ρ) = 1 - ρ
         target_dist = 1.0 - spearman_corr
@@ -275,18 +273,12 @@ def compute_co_movement_loss(
 def _batch_spearman(
     returns_i: torch.Tensor,
     returns_j: torch.Tensor,
-    valid_mask: torch.Tensor | None,
-    idx_i: torch.Tensor,
-    idx_j: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute Spearman rank correlation for pairs of return series.
 
     :param returns_i (torch.Tensor): Returns for stock i (n_pairs, T)
     :param returns_j (torch.Tensor): Returns for stock j (n_pairs, T)
-    :param valid_mask (torch.Tensor | None): Boolean mask (B, T)
-    :param idx_i (torch.Tensor): Indices for i
-    :param idx_j (torch.Tensor): Indices for j
 
     :return rho (torch.Tensor): Spearman correlations (n_pairs,)
     """

@@ -430,36 +430,45 @@ def _enforce_miqp(
     w_var = cp.Variable(n)
     z_active = cp.Variable(n_active, boolean=True)  # type: ignore[call-overload]
 
-    # Objective: same structure as SCA sub-problem but with fixed gradient
-    # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
+    # Objective: same structure as SCA sub-problem but with fixed gradient.
+    # Auxiliary variables for DCP compliance (cp.square requires affine arg).
     ret_term: cp.Expression | float = mu @ w_var if mu is not None else 0.0
     entropy_term = alpha * (grad_H @ w_var)
     risk_term = lambda_risk * cp.sum_squares(L.T @ w_var)
-    conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
+
+    conc_penalty: cp.Expression = cp.Constant(0.0)
+    conc_constraints: list[cp.Constraint] = []
+    if phi > 0:
+        t_conc = cp.Variable(n, nonneg=True)
+        conc_constraints = [t_conc >= w_var - w_bar]  # type: ignore[list-item]
+        conc_penalty = phi * cp.sum_squares(t_conc)
 
     turn_penalty: cp.Expression = cp.Constant(0.0)
+    turn_constraints: list[cp.Constraint] = []
     if w_old is not None and not is_first:
         delta_w = cp.abs(w_var - w_old)
         linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-        excess_turn = cp.pos(delta_w - delta_bar)
-        quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+        t_turn = cp.Variable(n, nonneg=True)
+        turn_constraints = [t_turn >= delta_w - delta_bar]  # type: ignore[list-item]
+        quad_turn = kappa_2 * cp.sum_squares(t_turn)
         turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
     obj = cp.Maximize(ret_term + entropy_term - risk_term - conc_penalty - turn_penalty)
 
-    # Semi-continuous constraints: binary only for active stocks
-    # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
-    effective_cap = min(w_bar, w_max)
+    # Semi-continuous constraints: binary only for active stocks.
+    # Uses w_max (hard cap) — w_bar is only for soft concentration penalty.
     active_list = active_idx.tolist()
     fixed_list = fixed_idx.tolist()
     cstr_list = [
         w_var[active_list] >= w_min * z_active,
-        w_var[active_list] <= effective_cap * z_active,
+        w_var[active_list] <= w_max * z_active,
         cp.sum(w_var) == 1,
     ]
     if len(fixed_list) > 0:
         cstr_list.append(w_var[fixed_list] == 0)
     constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
+    constraints.extend(conc_constraints)
+    constraints.extend(turn_constraints)
 
     if w_old is not None and not is_first:
         turnover_cstr = 0.5 * cp.sum(cp.abs(w_var - w_old)) <= tau_max
@@ -488,7 +497,7 @@ def _enforce_miqp(
                 if not np.any(np.isnan(result)):
                     # Clean numerical residuals from MI solver
                     result[result < w_min * 0.5] = 0.0
-                    result = np.clip(result, 0.0, effective_cap)
+                    result = np.clip(result, 0.0, w_max)
                     total = np.sum(result)
                     if total > 0:
                         result = result / total
@@ -588,28 +597,34 @@ def _enforce_two_stage(
     w_var = cp.Variable(n)
 
     # Tracking objective: minimize ||B'^T w - y*||^2 + regularization - mu^T w
-    # Uses sum(square(pos(...))) instead of sum_squares(maximum(...)) for DCP
+    # Auxiliary variables for DCP compliance (cp.square requires affine arg).
     tracking_error = cp.sum_squares(B_prime.T @ w_var - y_star)
     risk_reg = lambda_risk * cp.sum_squares(L.T @ w_var)
     ret_term: cp.Expression | float = mu @ w_var if mu is not None else 0.0
-    conc_penalty = phi * cp.sum(cp.square(cp.pos(w_var - w_bar)))
+
+    conc_penalty: cp.Expression = cp.Constant(0.0)
+    conc_constraints: list[cp.Constraint] = []
+    if phi > 0:
+        t_conc = cp.Variable(n, nonneg=True)
+        conc_constraints = [t_conc >= w_var - w_bar]  # type: ignore[list-item]
+        conc_penalty = phi * cp.sum_squares(t_conc)
 
     turn_penalty: cp.Expression = cp.Constant(0.0)
+    turn_constraints: list[cp.Constraint] = []
     if w_old is not None and not is_first:
         delta_w = cp.abs(w_var - w_old)
         linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-        excess_turn = cp.pos(delta_w - delta_bar)
-        quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+        t_turn = cp.Variable(n, nonneg=True)
+        turn_constraints = [t_turn >= delta_w - delta_bar]  # type: ignore[list-item]
+        quad_turn = kappa_2 * cp.sum_squares(t_turn)
         turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
     obj = cp.Minimize(
         tracking_error + risk_reg - ret_term + conc_penalty + turn_penalty
     )
 
-    # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
-    effective_cap = min(w_bar, w_max)
-
-    # Constraints (with pre-screening for MI mode)
+    # Constraints (with pre-screening for MI mode).
+    # Uses w_max (hard cap) — w_bar is only for soft concentration penalty.
     if use_mi:
         # Pre-screening: w_min-aware threshold + hard cap
         active_idx, fixed_idx = _prescreen_active_stocks(w, w_min, "two_stage")
@@ -620,7 +635,7 @@ def _enforce_two_stage(
         fixed_list = fixed_idx.tolist()
         cstr_list = [
             w_var[active_list] >= w_min * z_active,
-            w_var[active_list] <= effective_cap * z_active,
+            w_var[active_list] <= w_max * z_active,
             cp.sum(w_var) == 1,
         ]
         if len(fixed_list) > 0:
@@ -628,11 +643,13 @@ def _enforce_two_stage(
     else:
         cstr_list = [
             w_var >= 0,
-            w_var <= effective_cap,
+            w_var <= w_max,
             cp.sum(w_var) == 1,
         ]
 
     constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
+    constraints.extend(conc_constraints)
+    constraints.extend(turn_constraints)
     if w_old is not None and not is_first:
         turnover_cstr = 0.5 * cp.sum(cp.abs(w_var - w_old)) <= tau_max
         constraints.append(turnover_cstr)  # type: ignore[arg-type]
@@ -663,7 +680,7 @@ def _enforce_two_stage(
                     # Clean numerical residuals from solver
                     if use_mi:
                         result[result < w_min * 0.5] = 0.0
-                    result = np.clip(result, 0.0, effective_cap)
+                    result = np.clip(result, 0.0, w_max)
                     total = np.sum(result)
                     if total > 0:
                         result = result / total

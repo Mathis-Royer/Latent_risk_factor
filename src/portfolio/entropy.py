@@ -37,15 +37,27 @@ import numpy as np
 def _entropy_on_contributions(
     contributions: np.ndarray,
     eps: float = 1e-30,
+    budget: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray, float]:
     """
     Compute Shannon entropy on a vector of risk contributions.
 
+    When budget is None (default): standard Shannon entropy H = -Σ ĉ ln(ĉ).
+    When budget is provided: tilted entropy H = -Σ ĉ ln(ĉ/b), which targets
+    risk contributions proportional to budget b instead of equal.  Maximizing
+    tilted entropy pushes ĉ toward b (minimizes KL(ĉ||b)).  With concentrated
+    eigenvalue spectra (λ₁/λ₂ >> 1), this avoids under-weighting dominant
+    factors that standard entropy imposes.
+
+    Reference: Roncalli (2013, Ch. 7, Proposition 7.3) — budget risk parity.
+
     :param contributions (np.ndarray): Risk contributions (m,), all >= 0
     :param eps (float): Numerical stability for log
+    :param budget (np.ndarray | None): Target budget distribution (m,),
+        must sum to 1.  None = uniform budget (standard Shannon entropy).
 
-    :return H (float): Entropy value
-    :return log_c_hat (np.ndarray): Log of normalized contributions (m,)
+    :return H (float): Entropy value (or tilted entropy if budget given)
+    :return log_term (np.ndarray): ln(ĉ) or ln(ĉ/b) used in gradient (m,)
     :return C (float): Total risk (sum of contributions)
     """
     C = float(np.sum(contributions))
@@ -54,6 +66,13 @@ def _entropy_on_contributions(
 
     c_hat = contributions / C
     log_c_hat = np.log(np.maximum(c_hat, eps))
+
+    if budget is not None:
+        log_budget = np.log(np.maximum(budget, eps))
+        log_ratio = log_c_hat - log_budget
+        H = float(-np.sum(c_hat * log_ratio))
+        return H, log_ratio, C
+
     H = float(-np.sum(c_hat * log_c_hat))
     return H, log_c_hat, C
 
@@ -65,6 +84,7 @@ def compute_entropy_and_gradient(
     eps: float = 1e-30,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    budget: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray]:
     """
     Compute two-layer Shannon entropy H(w) and its gradient.
@@ -78,6 +98,10 @@ def compute_entropy_and_gradient(
 
     When D_eps is None or idio_weight=0.0, returns factor-only entropy.
 
+    When budget is provided, H_factor uses tilted entropy (negative KL
+    divergence) targeting risk contributions proportional to budget instead
+    of equal.  Budget only applies to the factor layer, not idiosyncratic.
+
     :param w (np.ndarray): Portfolio weights (n,)
     :param B_prime (np.ndarray): Rotated exposures (n, AU)
     :param eigenvalues (np.ndarray): Principal eigenvalues (AU,)
@@ -86,6 +110,9 @@ def compute_entropy_and_gradient(
         When None, only systematic contributions are used.
     :param idio_weight (float): Weight for idiosyncratic entropy layer.
         0.0 = factor-only, 1.0 = idio-only.  Default 0.2.
+    :param budget (np.ndarray | None): Target factor risk budget (AU,),
+        must sum to 1.  None = uniform (standard Shannon entropy).
+        Recommended: eigenvalues / eigenvalues.sum().
 
     :return H (float): Combined entropy value
     :return grad_H (np.ndarray): Gradient (n,)
@@ -96,8 +123,8 @@ def compute_entropy_and_gradient(
     # Systematic risk contributions: c'_k = (β'_k)² · λ_k ≥ 0
     c_sys = (beta_prime ** 2) * eigenvalues  # (AU,)
 
-    # Factor entropy
-    H_factor, log_c_hat_sys, C_sys = _entropy_on_contributions(c_sys, eps)
+    # Factor entropy (tilted when budget is provided)
+    H_factor, log_c_hat_sys, C_sys = _entropy_on_contributions(c_sys, eps, budget=budget)
 
     # Factor gradient: -(2/C_sys) · B' · φ
     # Two-layer weights only apply when idiosyncratic layer is active
@@ -138,6 +165,7 @@ def compute_entropy_only(
     eps: float = 1e-30,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    budget: np.ndarray | None = None,
 ) -> float:
     """
     Compute two-layer entropy H(w) without gradient (faster for evaluation).
@@ -145,6 +173,7 @@ def compute_entropy_only(
     H = (1 - idio_weight) * H_factor + idio_weight * H_idio
 
     When D_eps is None or idio_weight=0.0, returns factor-only entropy.
+    When budget is provided, H_factor uses tilted entropy (factor layer only).
 
     :param w (np.ndarray): Portfolio weights (n,)
     :param B_prime (np.ndarray): Rotated exposures (n, AU)
@@ -153,13 +182,14 @@ def compute_entropy_only(
     :param D_eps (np.ndarray | None): Idiosyncratic variances (n,).
         When None, only systematic contributions are used.
     :param idio_weight (float): Weight for idiosyncratic entropy layer.
+    :param budget (np.ndarray | None): Target factor risk budget (AU,).
 
     :return H (float): Combined entropy value
     """
     beta_prime = B_prime.T @ w
     c_sys = (beta_prime ** 2) * eigenvalues
 
-    H_factor, _, _ = _entropy_on_contributions(c_sys, eps)
+    H_factor, _, _ = _entropy_on_contributions(c_sys, eps, budget=budget)
 
     if D_eps is not None and idio_weight > 0.0:
         w_factor = 1.0 - idio_weight

@@ -165,30 +165,43 @@ class _SCASubproblemBuilder:
         # Linearized entropy: parameter @ variable (DPP-affine)
         entropy_term = self._grad_param @ w
 
-        # Concentration penalty — sum(square(pos(...))) for DCP compliance
-        conc_penalty = phi * cp.sum(cp.square(cp.pos(w - w_bar)))
+        # Concentration penalty via auxiliary variable for DCP compliance.
+        # t_conc_i >= max(0, w_i - w_bar), minimizing sum_squares(t_conc)
+        # in the objective pushes t_conc to the exact soft excess.
+        conc_penalty: cp.Expression = cp.Constant(0.0)
+        conc_constraints: list[cp.Constraint] = []
+        if phi > 0:
+            t_conc = cp.Variable(n, nonneg=True)
+            conc_constraints = [t_conc >= w - w_bar]  # type: ignore[list-item]
+            conc_penalty = phi * cp.sum_squares(t_conc)
 
-        # Turnover penalty
+        # Turnover penalty via auxiliary variable for DCP compliance.
         turn_penalty: cp.Expression = cp.Constant(0.0)
+        turn_constraints: list[cp.Constraint] = []
         if w_old is not None and not is_first:
             delta_w = cp.abs(w - w_old)
             linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
-            excess_turn = cp.pos(delta_w - delta_bar)
-            quad_turn = kappa_2 * cp.sum(cp.square(excess_turn))
+            t_turn = cp.Variable(n, nonneg=True)
+            turn_constraints = [t_turn >= delta_w - delta_bar]  # type: ignore[list-item]
+            quad_turn = kappa_2 * cp.sum_squares(t_turn)
             turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
         obj = cp.Maximize(
             ret_term - risk_term + entropy_term - conc_penalty - turn_penalty
         )
 
-        # Effective cap: min(w_bar, w_max) — w_bar acts as hard constraint
-        effective_cap = min(w_bar, w_max)
+        # Hard cap uses w_max directly.  w_bar is only for the soft
+        # concentration penalty phi * sum(max(0, w_i - w_bar)^2).
+        # Separating them allows w_bar < w_max with phi > 0 for a gradual
+        # penalty instead of a hard cliff (DeMiguel et al. 2009).
         cstr_list = [
             w >= 0,
-            w <= effective_cap,
+            w <= w_max,
             cp.sum(w) == 1,
         ]
         constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
+        constraints.extend(conc_constraints)
+        constraints.extend(turn_constraints)
         if w_old is not None and not is_first:
             turnover_cstr = 0.5 * cp.sum(cp.abs(w - w_old)) <= tau_max
             constraints.append(turnover_cstr)  # type: ignore[arg-type]
@@ -223,6 +236,78 @@ class _SCASubproblemBuilder:
 
 
 # ---------------------------------------------------------------------------
+# Entropy gradient normalization (Michaud 1989, Goldfarb & Iyengar 2003)
+# ---------------------------------------------------------------------------
+
+def _compute_alpha_eff(
+    alpha: float,
+    w_ref: np.ndarray,
+    L_sigma: np.ndarray,
+    B_prime: np.ndarray,
+    eigenvalues: np.ndarray,
+    lambda_risk: float,
+    entropy_eps: float = 1e-30,
+    D_eps: np.ndarray | None = None,
+    idio_weight: float = 0.2,
+    budget: np.ndarray | None = None,
+) -> float:
+    """
+    Compute effective alpha by normalizing entropy gradient to risk gradient.
+
+    Without normalization, the entropy gradient dominates the risk gradient
+    by ~100-1000x in typical equity settings (lambda_risk=252, daily Sigma),
+    making the optimizer effectively a pure entropy maximizer regardless of
+    alpha.  This function re-scales alpha so that the two gradient norms
+    are commensurate, letting alpha control the *relative* trade-off rather
+    than being overwhelmed by scale differences.
+
+    Reference: Michaud (1989) "The Markowitz Optimization Enigma",
+               Goldfarb & Iyengar (2003) "Robust Portfolio Selection".
+
+    :param alpha (float): Raw entropy weight from the frontier grid
+    :param w_ref (np.ndarray): Reference weights for gradient evaluation (n,)
+    :param L_sigma (np.ndarray): Cholesky factor of Sigma_assets (n, n)
+    :param B_prime (np.ndarray): Rotated exposures (n, AU)
+    :param eigenvalues (np.ndarray): Principal eigenvalues (AU,)
+    :param lambda_risk (float): Risk aversion coefficient
+    :param entropy_eps (float): Numerical stability for entropy
+    :param D_eps (np.ndarray | None): Idiosyncratic variances (n,)
+    :param idio_weight (float): Idiosyncratic entropy weight
+
+    :return alpha_eff (float): Normalized alpha making gradients commensurate
+    """
+    if alpha <= 0:
+        return alpha
+
+    _, grad_H = compute_entropy_and_gradient(
+        w_ref, B_prime, eigenvalues, entropy_eps,
+        D_eps=D_eps, idio_weight=idio_weight, budget=budget,
+    )
+
+    Lw = L_sigma.T @ w_ref
+    risk_grad = 2.0 * lambda_risk * (L_sigma @ Lw)
+
+    risk_norm = float(np.linalg.norm(risk_grad))
+    entropy_norm = float(np.linalg.norm(grad_H))
+
+    if entropy_norm < 1e-15:
+        logger.debug("Entropy gradient near zero — skipping normalization.")
+        return alpha
+
+    balance_ratio = risk_norm / entropy_norm
+    alpha_eff = alpha * balance_ratio
+
+    logger.info(
+        "Entropy gradient normalization: balance_ratio=%.4f, "
+        "alpha=%.4g -> alpha_eff=%.6g "
+        "(||risk_grad||=%.4e, ||grad_H||=%.4e)",
+        balance_ratio, alpha, alpha_eff, risk_norm, entropy_norm,
+    )
+
+    return alpha_eff
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -245,6 +330,7 @@ def objective_function(
     _L_sigma: np.ndarray | None = None,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    budget: np.ndarray | None = None,
 ) -> float:
     """
     Full objective: f(w) = w^T μ - λ w^T Σ w + α H(w) - φ P_conc - P_turn
@@ -270,6 +356,9 @@ def objective_function(
     :param D_eps (np.ndarray | None): Idiosyncratic variances (n,) for
         entropy computation including idiosyncratic risk contributions.
     :param idio_weight (float): Weight for idiosyncratic entropy layer (0-1).
+    :param budget (np.ndarray | None): Target factor risk budget (AU,).
+        When provided, entropy uses tilted formulation targeting
+        eigenvalue-proportional contributions (Roncalli 2013, Ch. 7).
 
     :return f (float): Objective value (to maximize)
     """
@@ -285,9 +374,9 @@ def objective_function(
     else:
         risk_term = lambda_risk * float(w @ Sigma_assets @ w)
 
-    # Entropy term (two-layer: factor + idiosyncratic)
+    # Entropy term (two-layer: factor + idiosyncratic, tilted if budget given)
     H = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
-                             idio_weight=idio_weight)
+                             idio_weight=idio_weight, budget=budget)
 
     # Concentration penalty
     P_conc = concentration_penalty(w, w_bar)
@@ -367,6 +456,7 @@ def sca_optimize(
     _L_sigma: np.ndarray | None = None,
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    budget: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float, float, int]:
     """
     SCA optimization from a single starting point.
@@ -400,6 +490,8 @@ def sca_optimize(
     :param D_eps (np.ndarray | None): Idiosyncratic variances (n,) for
         entropy computation including idiosyncratic risk contributions.
     :param idio_weight (float): Weight for idiosyncratic entropy layer (0-1).
+    :param budget (np.ndarray | None): Target factor risk budget (AU,).
+        When provided, uses tilted entropy (Roncalli 2013, Ch. 7).
 
     :return w_final (np.ndarray): Optimized weights (n,)
     :return f_final (float): Final objective value
@@ -425,7 +517,7 @@ def sca_optimize(
             w_eval, Sigma_assets, B_prime, eigenvalues, alpha,
             lambda_risk, phi, w_bar, w_old, kappa_1, kappa_2,
             delta_bar, is_first, mu, entropy_eps, _L_sigma=L_sigma,
-            D_eps=D_eps, idio_weight=idio_weight,
+            D_eps=D_eps, idio_weight=idio_weight, budget=budget,
         )
 
     f_current = obj_fn(w)
@@ -434,7 +526,7 @@ def sca_optimize(
         # Compute entropy and gradient at current point
         H_current, grad_H = compute_entropy_and_gradient(
             w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
-            idio_weight=idio_weight,
+            idio_weight=idio_weight, budget=budget,
         )
 
         # Solve reusing pre-compiled parametric problem
@@ -467,13 +559,13 @@ def sca_optimize(
 
         # Ensure feasibility: clip-renormalize loop to prevent cap
         # violation from renormalization of a clipped vector.
-        effective_cap = min(w_bar, w_max)
+        # Uses w_max (hard cap) — w_bar is only for soft penalty.
         for _ in range(10):
-            w_new = np.clip(w_new, 0.0, effective_cap)
+            w_new = np.clip(w_new, 0.0, w_max)
             w_sum = np.sum(w_new)
             if w_sum > 0:
                 w_new = w_new / w_sum
-            if np.all(w_new <= effective_cap + 1e-10):
+            if np.all(w_new <= w_max + 1e-10):
                 break
 
         f_new = obj_fn(w_new)
@@ -488,7 +580,7 @@ def sca_optimize(
         f_current = f_new
 
     H_final = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
-                                    idio_weight=idio_weight)
+                                    idio_weight=idio_weight, budget=budget)
     return w, f_current, H_final, it + 1
 
 
@@ -539,8 +631,30 @@ def multi_start_optimize(
     w_min_val = kwargs.get("w_min", 0.001)
     w_min = float(w_min_val) if w_min_val is not None else 0.001
 
+    # Extract normalization flag (not forwarded to sca_optimize)
+    _nflag = kwargs.pop("normalize_entropy_gradient", None)
+    normalize_flag = _nflag is not False
+
     # Pre-compute Cholesky once for all starts
     L_sigma = _safe_cholesky(Sigma_assets)
+
+    # Normalize alpha: rescale so entropy and risk gradient norms are
+    # commensurate.  Evaluated at equal-weight (generic, data-independent
+    # reference point).  All starts share the same alpha_eff for comparable
+    # objective values across multi-start.
+    if normalize_flag and alpha > 0:
+        w_ew = np.ones(n) / n
+        _lr = float(kwargs.get("lambda_risk", 1.0) or 1.0)
+        _ee = float(kwargs.get("entropy_eps", 1e-30) or 1e-30)
+        _iw = float(kwargs.get("idio_weight", 0.2) or 0.2)
+        _budget_raw = kwargs.get("budget", None)
+        _budget = _budget_raw if isinstance(_budget_raw, np.ndarray) else None
+        alpha_eff = _compute_alpha_eff(
+            alpha, w_ew, L_sigma, B_prime, eigenvalues, _lr,
+            _ee, D_eps, _iw, budget=_budget,
+        )
+    else:
+        alpha_eff = alpha
 
     # Generate starting points
     starts: list[np.ndarray] = []
@@ -587,7 +701,7 @@ def multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
-            alpha=alpha,
+            alpha=alpha_eff,
             _L_sigma=L_sigma,
             D_eps=D_eps,
             **sca_kwargs,  # type: ignore[arg-type]

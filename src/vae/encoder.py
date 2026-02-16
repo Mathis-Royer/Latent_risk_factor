@@ -23,7 +23,6 @@ K_HEAD_KERNELS = (5, 21, 63)
 C_BRANCH = 48
 C_HEAD = 3 * C_BRANCH  # 144
 K_BODY = 7
-DROPOUT = 0.2
 
 
 class InceptionHead(nn.Module):
@@ -76,7 +75,7 @@ class ResBlock(nn.Module):
     Dropout(0.1) after activation.
     """
 
-    def __init__(self, c_in: int, c_out: int, dropout: float = DROPOUT) -> None:
+    def __init__(self, c_in: int, c_out: int, dropout: float = 0.2) -> None:
         """
         :param c_in (int): Input channels
         :param c_out (int): Output channels
@@ -144,7 +143,7 @@ class Encoder(nn.Module):
         F: int,
         K: int,
         channels: list[int],
-        dropout: float = DROPOUT,
+        dropout: float = 0.2,
     ) -> None:
         """
         :param F (int): Number of input features

@@ -113,23 +113,25 @@ class TestDiv02BetaMinFloor:
 
 
 class TestDiv03DropoutAsymmetry:
-    """Divergence #3: encoder.DROPOUT=0.2, decoder.DROPOUT=0.1, config=0.1.
-    divergences.md says: 'Bug mineur' and recommends aligning.
-    These tests document the CURRENT state.
+    """Divergence #3: encoder default dropout=0.2, decoder default dropout=0.1.
+    Module-level DROPOUT constants removed (dead code); defaults are now
+    literal values in constructor signatures.
     """
 
     def test_encoder_default_dropout_is_0_2(self) -> None:
-        """Encoder module-level default is 0.2 (Changelog #10)."""
-        from src.vae.encoder import DROPOUT as ENCODER_DROPOUT
-        assert ENCODER_DROPOUT == 0.2, (
-            f"encoder.DROPOUT should be 0.2 per divergences.md, got {ENCODER_DROPOUT}"
+        """Encoder ResBlock default dropout is 0.2."""
+        from src.vae.encoder import ResBlock
+        block = ResBlock(16, 32)
+        assert abs(block.dropout.p - 0.2) < 1e-6, (
+            f"ResBlock default dropout should be 0.2, got {block.dropout.p}"
         )
 
     def test_decoder_default_dropout_is_0_1(self) -> None:
-        """Decoder module-level default is 0.1."""
-        from src.vae.decoder import DROPOUT as DECODER_DROPOUT
-        assert DECODER_DROPOUT == 0.1, (
-            f"decoder.DROPOUT should be 0.1 per divergences.md, got {DECODER_DROPOUT}"
+        """Decoder TransposeResBlock default dropout is 0.1."""
+        from src.vae.decoder import TransposeResBlock
+        block = TransposeResBlock(32, 16)
+        assert abs(block.dropout.p - 0.1) < 1e-6, (
+            f"TransposeResBlock default dropout should be 0.1, got {block.dropout.p}"
         )
 
     def test_config_default_dropout_is_0_2(self) -> None:

@@ -43,6 +43,8 @@ def compute_variance_entropy_frontier(
     entropy_eps: float = 1e-30,
     mu: np.ndarray | None = None,
     idio_weight: float = 0.2,
+    normalize_entropy_gradient: bool = True,
+    budget: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, dict[float, np.ndarray]]:
     """
     Compute variance-entropy frontier for a grid of α values.
@@ -113,6 +115,8 @@ def compute_variance_entropy_frontier(
             mu=mu,
             warm_start_w=warm_start_w,
             idio_weight=idio_weight,
+            normalize_entropy_gradient=normalize_entropy_gradient,
+            budget=budget,
         )
 
         prev_w = w_opt
