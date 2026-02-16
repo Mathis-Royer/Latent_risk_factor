@@ -301,7 +301,7 @@ class TrainingConfig:
     curriculum_phase2_frac: float = 0.30
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
-    compile_model: bool = True
+    compile_model: bool = False  # Temporarily disabled due to MPS stride mismatch bug
 
     def __post_init__(self) -> None:
         _validate_range("max_epochs", self.max_epochs, default=250, lo=1)
@@ -446,9 +446,9 @@ class RiskModelConfig:
     d_eps_floor: float = 1e-6
     conditioning_threshold: float = 1e6
     ridge_scale: float = 1e-6
-    sigma_z_shrinkage: str = "spiked"
+    sigma_z_shrinkage: str = "analytical_nonlinear"  # Ledoit-Wolf 2020 (robust to non-spiked spectra)
     sigma_z_eigenvalue_pct: float = 0.95
-    sigma_z_ewma_half_life: int = 252
+    sigma_z_ewma_half_life: int = 126  # ~6 months (Barra USE4 §4.3 standard, reduces temporal leakage)
     b_a_shrinkage_alpha: float = 0.0
     b_a_clip_threshold: float = 3.5
     use_wls: bool = True
@@ -597,7 +597,7 @@ class PortfolioConfig:
     entropy_idio_weight: float = 0.05
     target_enb: float = 0.0
     transaction_cost_bps: float = 10.0
-    normalize_entropy_gradient: bool = True
+    normalize_entropy_gradient: bool = False  # Grid search on α suffisant (Meucci 2009, DeMiguel 2009)
     entropy_budget_mode: str = "proportional"
 
     def __post_init__(self) -> None:

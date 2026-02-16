@@ -112,7 +112,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "training": {
             "max_epochs": 500,
             "batch_size": 512,
-            "compile_model": True,
+            "compile_model": False,  # Disabled due to MPS stride mismatch bug
             "gradient_checkpointing": False,
         },
         "portfolio": {

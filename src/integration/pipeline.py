@@ -92,9 +92,10 @@ BENCHMARK_CLASSES: dict[str, type] = {
 
 # Variance-targeting: Bayesian shrinkage toward 1.0 (Barra USE4 §4).
 # nu_prior acts as the number of "virtual observations" where VT = 1.0.
-# With nu_prior=60, a holdout of 400 days barely shrinks (400/(400+60)=0.87),
-# while a short holdout of 20 days shrinks aggressively (20/(20+60)=0.25).
-_VT_PRIOR_STRENGTH = 60
+# With nu_prior=20, a holdout of 400 days barely shrinks (400/(400+20)=0.95),
+# while a short holdout of 20 days shrinks moderately (20/(20+20)=0.50).
+# Reduced from 60→20 to lower over-shrinkage when model has low predictive power (EP_oos~0.28).
+_VT_PRIOR_STRENGTH = 20
 # Safety clamps after shrinkage (very wide — the shrinkage does the work)
 _VT_SCALE_MIN = 0.1
 _VT_SCALE_MAX = 10.0
