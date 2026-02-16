@@ -65,7 +65,7 @@ def compute_momentum_signal(
     nan_mask = np.isnan(cum_ret_arr)
     cum_ret_arr[nan_mask] = 0.0
 
-    # Z-score cross-sectionally
+    # Z-score cross-sectionally with winsorization
     valid_mask = ~nan_mask
     n_valid = int(np.sum(valid_mask))
 
@@ -76,13 +76,37 @@ def compute_momentum_signal(
         )
         return mu
 
+    # Two-pass winsorization: compute raw stats, clip at ±3σ, then re-score.
+    # Extreme negative outliers (stock crashes) inflate std and compress
+    # the positive tail, making the signal non-differentiating.
+    # Reference: Asness, Moskowitz & Pedersen (2013, "Value and Momentum
+    # Everywhere") winsorize at 2nd/98th percentile before z-scoring.
+    valid_vals = cum_ret_arr[valid_mask]
+    raw_mean = float(np.mean(valid_vals))
+    raw_std = float(np.std(valid_vals, ddof=1))
+
+    if raw_std < 1e-12:
+        logger.warning(
+            "compute_momentum_signal: zero cross-sectional std. "
+            "Returning mu=0.",
+        )
+        return mu
+
+    clip_lo = raw_mean - 3.0 * raw_std
+    clip_hi = raw_mean + 3.0 * raw_std
+    n_clipped = int(np.sum(
+        (valid_vals < clip_lo) | (valid_vals > clip_hi)
+    ))
+    cum_ret_arr[valid_mask] = np.clip(valid_vals, clip_lo, clip_hi)
+
+    # Recompute mean/std after winsorization
     mean_val = float(np.mean(cum_ret_arr[valid_mask]))
     std_val = float(np.std(cum_ret_arr[valid_mask], ddof=1))
 
     if std_val < 1e-12:
         logger.warning(
-            "compute_momentum_signal: zero cross-sectional std. "
-            "Returning mu=0.",
+            "compute_momentum_signal: zero cross-sectional std after "
+            "winsorization. Returning mu=0.",
         )
         return mu
 
@@ -97,9 +121,10 @@ def compute_momentum_signal(
     n_nonzero = int(np.sum(np.abs(mu) > 1e-10))
     logger.info(
         "compute_momentum_signal: lookback=%d, skip=%d, "
-        "n_valid=%d/%d, z-score range=[%.2f, %.2f]",
+        "n_valid=%d/%d, z-score range=[%.2f, %.2f], "
+        "winsorized=%d at ±3σ",
         lookback, skip, n_nonzero, n,
-        float(np.min(mu)), float(np.max(mu)),
+        float(np.min(mu)), float(np.max(mu)), n_clipped,
     )
 
     return mu

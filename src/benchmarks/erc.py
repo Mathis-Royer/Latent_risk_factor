@@ -11,6 +11,9 @@ drops out at normalization.  Using c = n (as some implementations do)
 makes the barrier dominate the quadratic term for large n, pushing
 the solution toward 1/N regardless of Σ.
 
+When CVXPY solvers fail (common for n > 500), a direct Newton-based
+solver (Roncalli 2013, Ch. 11) is used as fallback.
+
 Post-hoc projection onto hard caps.
 
 Reference: ISD Section MOD-013.
@@ -26,6 +29,90 @@ from sklearn.covariance import LedoitWolf
 from src.benchmarks.base import BenchmarkModel
 
 logger = logging.getLogger(__name__)
+
+
+def _newton_erc(
+    Sigma: np.ndarray,
+    max_iter: int = 50,
+    tol: float = 1e-8,
+) -> np.ndarray | None:
+    """
+    Newton-based ERC solver (Roncalli 2013, Ch. 11, Algorithm 11.1).
+
+    Solves the fixed-point equation (Σy)_i · y_i = c for all i,
+    then normalizes w = y / sum(y).
+
+    More numerically stable than CVXPY log-barrier for large n because
+    it operates on the n-dimensional system directly without interior-point
+    overhead.
+
+    :param Sigma (np.ndarray): Covariance matrix (n, n), must be PD
+    :param max_iter (int): Maximum Newton iterations
+    :param tol (float): Convergence tolerance on ||F(y)||
+
+    :return w (np.ndarray | None): ERC weights (n,), or None if failed
+    """
+    n = Sigma.shape[0]
+
+    # Initialize with inverse-volatility (good starting point for ERC)
+    diag_sigma = np.diag(Sigma)
+    if np.any(diag_sigma <= 0):
+        return None
+    y = 1.0 / np.sqrt(diag_sigma)
+
+    for it in range(max_iter):
+        Sy = Sigma @ y  # (n,)
+        # Residual: F_i = y_i * (Σy)_i - 1
+        F = y * Sy - 1.0
+        norm_F = float(np.linalg.norm(F))
+
+        if norm_F < tol:
+            logger.info(
+                "  [ERC/Newton] Converged in %d iterations (||F||=%.2e)",
+                it + 1, norm_F,
+            )
+            break
+
+        # Jacobian: J_ij = δ_ij (Σy)_i + y_i Σ_ij
+        # J = diag(Sy) + diag(y) @ Σ = diag(Sy) + Y Σ
+        J = np.diag(Sy) + np.diag(y) @ Sigma
+
+        # Newton step: y_new = y - J^{-1} F
+        try:
+            delta = np.linalg.solve(J, F)
+        except np.linalg.LinAlgError:
+            logger.warning(
+                "  [ERC/Newton] Singular Jacobian at iteration %d", it + 1,
+            )
+            return None
+
+        # Damped Newton: ensure y stays positive
+        step = 1.0
+        for _ in range(20):
+            y_trial = y - step * delta
+            if np.all(y_trial > 0):
+                break
+            step *= 0.5
+        else:
+            logger.warning(
+                "  [ERC/Newton] Cannot maintain positive y at iteration %d",
+                it + 1,
+            )
+            return None
+
+        y = y_trial
+    else:
+        logger.warning(
+            "  [ERC/Newton] Did not converge after %d iterations (||F||=%.2e)",
+            max_iter, norm_F,
+        )
+        # Return best effort if residual is reasonable
+        if norm_F > 1.0:
+            return None
+
+    # Normalize to portfolio weights
+    w = y / np.sum(y)
+    return w
 
 
 class EqualRiskContribution(BenchmarkModel):
@@ -67,7 +154,7 @@ class EqualRiskContribution(BenchmarkModel):
         is_first: bool = False,
     ) -> np.ndarray:
         """
-        ERC via Spinu's convex formulation + projection.
+        ERC via Spinu's convex formulation + Newton fallback + projection.
 
         :return w (np.ndarray): ERC weights (n,)
         """
@@ -103,23 +190,37 @@ class EqualRiskContribution(BenchmarkModel):
             except (cp.SolverError, Exception):
                 continue
 
-        if not solved or y.value is None:
-            logger.warning("  [ERC] All solvers failed — falling back to 1/N")
-            return np.ones(n) / n
+        if solved and y.value is not None:
+            logger.info(
+                "  [ERC] Solved via %s, status=%s",
+                solver_used, prob.status,
+            )
+            w = np.array(y.value).flatten()
+            w = np.maximum(w, 0.0)
+            total = np.sum(w)
+            if total > 0:
+                w = w / total
+            else:
+                solved = False
 
-        logger.info(
-            "  [ERC] Solved via %s, status=%s",
-            solver_used, prob.status,
-        )
-
-        w = np.array(y.value).flatten()
-        w = np.maximum(w, 0.0)
-        total = np.sum(w)
-        if total > 0:
-            w = w / total
-        else:
-            logger.warning("  [ERC] Zero-sum solution — falling back to 1/N")
-            return np.ones(n) / n
+        # Newton fallback when CVXPY solvers fail (common for n > 500)
+        if not solved:
+            logger.warning(
+                "  [ERC] CVXPY solvers failed (n=%d) — trying Newton solver "
+                "(Roncalli 2013, Ch. 11)",
+                n,
+            )
+            w_newton = _newton_erc(self.Sigma_LW)
+            if w_newton is not None:
+                w = w_newton
+                solved = True
+                solver_used = "Newton"
+            else:
+                logger.warning(
+                    "  [ERC] All solvers failed (CVXPY + Newton) — "
+                    "falling back to 1/N"
+                )
+                return np.ones(n) / n
 
         # ERC condition check: RC_i = w_i * (Σw)_i should be equal
         Sigma_w = self.Sigma_LW @ w
@@ -133,17 +234,9 @@ class EqualRiskContribution(BenchmarkModel):
             rc_ratio = rc_max / max(rc_min, 1e-10)
             eff_n_erc = 1.0 / max(float(np.sum(rc_norm ** 2)), 1e-10)
             logger.info(
-                "  [ERC] Risk contributions: std=%.6f, max/min=%.2f, "
+                "  [ERC] Risk contributions (%s): std=%.6f, max/min=%.2f, "
                 "eff_n=%.1f/%d",
-                rc_std, rc_ratio, eff_n_erc, n,
+                solver_used, rc_std, rc_ratio, eff_n_erc, n,
             )
-            if rc_ratio < 1.5:
-                logger.warning(
-                    "  [ERC] Near-uniform risk contributions (max/min=%.2f < 1.5) "
-                    "— ERC is equivalent to 1/N under Ledoit-Wolf shrinkage "
-                    "on large universes. This is expected, not a bug "
-                    "(Maillard et al. 2010, Prop. 3).",
-                    rc_ratio,
-                )
 
         return self._project_to_constraints(w, w_old, is_first)

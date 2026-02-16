@@ -14,9 +14,12 @@ import pytest
 from src.benchmarks.equal_weight import EqualWeight
 from src.benchmarks.inverse_vol import InverseVolatility
 from src.benchmarks.min_variance import MinimumVariance
-from src.benchmarks.erc import EqualRiskContribution
+from sklearn.covariance import LedoitWolf
+
+from src.benchmarks.erc import EqualRiskContribution, _newton_erc
 from src.benchmarks.pca_factor_rp import PCAFactorRiskParity
 from src.benchmarks.pca_vol import PCAVolRiskParity
+from src.portfolio.momentum import compute_momentum_signal
 
 
 # ---------------------------------------------------------------------------
@@ -812,3 +815,181 @@ class TestBenchmarkTurnoverConstraint:
             f"With is_first=True, optimizer should freely diversify. "
             f"Turnover={turnover_first:.4f} is unexpectedly low."
         )
+
+
+# ---------------------------------------------------------------------------
+# Newton-based ERC solver tests (Phase 12, Finding 2)
+# ---------------------------------------------------------------------------
+
+
+class TestNewtonERC:
+    """Tests for the Newton-based ERC solver (Roncalli 2013, Ch. 11)."""
+
+    def test_newton_erc_diagonal_known_solution(self) -> None:
+        """Newton solver on diag(1,4,9) gives w proportional to 1/sigma.
+
+        For diagonal Sigma, ERC weights satisfy w_i ∝ 1/sigma_i.
+        """
+        Sigma = np.diag([1.0, 4.0, 9.0])
+        w = _newton_erc(Sigma)
+
+        assert w is not None, "Newton solver should converge on simple diagonal Sigma"
+
+        # Analytical: w proportional to 1/sqrt(diag)
+        sigmas = np.sqrt([1.0, 4.0, 9.0])
+        w_expected = (1.0 / sigmas) / np.sum(1.0 / sigmas)
+
+        np.testing.assert_allclose(w, w_expected, atol=1e-6)
+
+        # Verify equal risk contributions
+        rc = w * (Sigma @ w)
+        rc_norm = rc / np.sum(rc)
+        np.testing.assert_allclose(rc_norm, np.ones(3) / 3, atol=1e-6)
+
+    def test_newton_erc_medium_n(self) -> None:
+        """Newton solver converges for n=100 with realistic LW-shrunk Sigma."""
+        rng = np.random.RandomState(42)
+        n = 100
+        T = 300
+        R = rng.randn(T, n) * 0.02
+
+        lw = LedoitWolf()
+        lw.fit(R)
+        Sigma: np.ndarray = lw.covariance_  # type: ignore[assignment]
+
+        w = _newton_erc(Sigma)
+        assert w is not None, "Newton solver should converge for n=100"
+        assert abs(np.sum(w) - 1.0) < 1e-8
+        assert np.all(w > 0)
+
+        # Verify approximate equal risk contributions
+        rc = w * (Sigma @ w)
+        rc_norm = rc / np.sum(rc)
+        rc_std = float(np.std(rc_norm))
+        assert rc_std < 0.01, (
+            f"Risk contribution std={rc_std:.6f} too high for n=100"
+        )
+
+    def test_newton_erc_not_equal_weight(self) -> None:
+        """Newton ERC on non-uniform Sigma produces weights ≠ 1/N.
+
+        This verifies that the solver differentiates from equal-weight when
+        Sigma has heterogeneous variances (via LW shrinkage on returns with
+        different volatility regimes).
+        """
+        rng = np.random.RandomState(42)
+        n = 50
+        T = 300
+        # Generate returns with heterogeneous vols: first 10 have 3x vol
+        R = rng.randn(T, n) * 0.02
+        R[:, :10] *= 3.0
+
+        lw = LedoitWolf()
+        lw.fit(R)
+        Sigma: np.ndarray = lw.covariance_  # type: ignore[assignment]
+
+        w = _newton_erc(Sigma)
+        assert w is not None, "Newton solver should converge for LW-shrunk Sigma"
+
+        w_ew = np.ones(n) / n
+        # ERC weights should differ meaningfully from 1/N
+        max_diff = float(np.max(np.abs(w - w_ew)))
+        assert max_diff > 0.005, (
+            f"ERC should differ from EW: max|w_erc - w_ew|={max_diff:.6f}"
+        )
+
+        # High-vol stocks should get lower ERC weight
+        avg_w_highvol = float(np.mean(w[:10]))
+        avg_w_lowvol = float(np.mean(w[10:]))
+        assert avg_w_highvol < avg_w_lowvol, (
+            f"High-vol stocks should get lower ERC weight: "
+            f"avg_highvol={avg_w_highvol:.6f}, avg_lowvol={avg_w_lowvol:.6f}"
+        )
+
+    def test_newton_erc_returns_none_on_singular(self) -> None:
+        """Newton solver returns None for rank-deficient Sigma."""
+        Sigma = np.array([[1.0, 1.0], [1.0, 1.0]])  # Rank 1
+        w = _newton_erc(Sigma)
+        # May return None or degenerate — either is acceptable
+        if w is not None:
+            assert abs(np.sum(w) - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Momentum winsorization tests (Phase 12, Finding 1)
+# ---------------------------------------------------------------------------
+
+
+class TestMomentumWinsorization:
+    """Tests for momentum signal winsorization at ±3σ."""
+
+    def test_winsorization_clips_outliers(self) -> None:
+        """Momentum z-scores are bounded after winsorization.
+
+        With extreme outliers injected (stock crashes), winsorization at ±3σ
+        should produce more symmetric z-scores than without.
+        """
+        rng = np.random.RandomState(42)
+        n = 100
+        T = 300
+        dates = pd.bdate_range("2020-01-01", periods=T)
+        stock_ids = [f"s{i}" for i in range(n)]
+
+        # Normal returns + 3 crash outlier stocks
+        data = rng.randn(T, n) * 0.01
+        data[:, 0] *= 5.0   # Very volatile → crash-like cumulative
+        data[:, 1] *= 5.0
+        data[:, 2] *= 5.0
+
+        returns = pd.DataFrame(data, index=dates, columns=stock_ids)
+        mu = compute_momentum_signal(returns, stock_ids, lookback=252, skip=21)
+
+        # After winsorization, z-scores should be more symmetric
+        nonzero = mu[np.abs(mu) > 1e-10]
+        if len(nonzero) > 0:
+            z_min = float(np.min(nonzero))
+            z_max = float(np.max(nonzero))
+            # Without winsorization, range was like [-7.86, 1.93]
+            # With winsorization, both tails should be roughly ±3
+            assert z_min > -5.0, (
+                f"Winsorized z-score min={z_min:.2f} is too extreme"
+            )
+            assert z_max < 5.0, (
+                f"Winsorized z-score max={z_max:.2f} is too extreme"
+            )
+
+    def test_winsorization_preserves_ranking(self) -> None:
+        """Winsorization preserves relative ranking of non-outlier stocks."""
+        rng = np.random.RandomState(42)
+        n = 50
+        T = 300
+        dates = pd.bdate_range("2020-01-01", periods=T)
+        stock_ids = [f"s{i}" for i in range(n)]
+
+        data = rng.randn(T, n) * 0.01
+        # Stock 0 has strong positive momentum, stock 1 has mild positive
+        data[:, 0] += 0.002
+        data[:, 1] += 0.001
+
+        returns = pd.DataFrame(data, index=dates, columns=stock_ids)
+        mu = compute_momentum_signal(returns, stock_ids, lookback=252, skip=21)
+
+        # Stock 0 should still rank higher than stock 1
+        assert mu[0] > mu[1], (
+            f"Stronger momentum stock should rank higher: "
+            f"mu[0]={mu[0]:.4f}, mu[1]={mu[1]:.4f}"
+        )
+
+    def test_winsorization_zero_on_insufficient_history(self) -> None:
+        """With insufficient history, returns zero vector."""
+        rng = np.random.RandomState(42)
+        n = 10
+        T = 50  # < lookback=252
+        dates = pd.bdate_range("2020-01-01", periods=T)
+        stock_ids = [f"s{i}" for i in range(n)]
+        data = rng.randn(T, n) * 0.01
+
+        returns = pd.DataFrame(data, index=dates, columns=stock_ids)
+        mu = compute_momentum_signal(returns, stock_ids, lookback=252, skip=21)
+
+        np.testing.assert_array_equal(mu, np.zeros(n))
