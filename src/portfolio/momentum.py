@@ -59,7 +59,7 @@ def compute_momentum_signal(
 
     # Cumulative log-return = sum of daily log-returns
     cum_ret = ret_window.sum(axis=0)  # (n_available,)
-    cum_ret_arr = np.asarray(cum_ret, dtype=np.float64)
+    cum_ret_arr = np.array(cum_ret, dtype=np.float64, copy=True)
 
     # Handle NaN: stocks with missing data get 0 momentum
     nan_mask = np.isnan(cum_ret_arr)

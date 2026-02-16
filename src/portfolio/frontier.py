@@ -189,24 +189,34 @@ def select_operating_alpha(
     else:
         H_factor = H  # backward compatibility
 
-    # Target ENB mode: select smallest alpha achieving ENB >= target.
+    # Target ENB mode: among all alphas achieving ENB >= target, select
+    # the one with MINIMUM VARIANCE.  The old logic picked the smallest
+    # qualifying alpha, ignoring that higher-alpha points may achieve
+    # lower variance (U-shaped frontier from diversification benefits).
+    # Once the ENB target is met, prefer the point with lowest risk.
+    # Reference: Meucci (2009), DeMiguel et al. (2009).
     # Apply cumulative max envelope to handle non-monotonic frontiers
     # (SCA may find different local optima at adjacent alpha values).
     if target_enb > 0.0:
         enb = np.exp(H_factor)
         enb_mono = np.maximum.accumulate(enb)
-        for i in range(len(df)):
-            if enb_mono[i] >= target_enb:
-                alpha_sel = float(df["alpha"].iloc[i])
-                logger.info(
-                    "select_operating_alpha (target ENB_factor=%.2f): α*=%.4g "
-                    "(ENB_factor=%.2f, ENB_mono=%.2f, H_factor=%.4f, "
-                    "H_combined=%.4f, Var=%.4e).",
-                    target_enb, alpha_sel, float(enb[i]),
-                    float(enb_mono[i]), float(H_factor[i]),
-                    float(H[i]), float(V[i]),
-                )
-                return alpha_sel
+        qualifying_mask = enb_mono >= target_enb
+        if qualifying_mask.any():
+            qualifying_indices = np.where(qualifying_mask)[0]
+            best_idx = qualifying_indices[
+                int(np.argmin(V[qualifying_indices]))
+            ]
+            alpha_sel = float(df["alpha"].iloc[best_idx])
+            logger.info(
+                "select_operating_alpha (target ENB_factor=%.2f): α*=%.4g "
+                "(ENB_factor=%.2f, ENB_mono=%.2f, H_factor=%.4f, "
+                "H_combined=%.4f, Var=%.4e, qualifying=%d/%d).",
+                target_enb, alpha_sel, float(enb[best_idx]),
+                float(enb_mono[best_idx]), float(H_factor[best_idx]),
+                float(H[best_idx]), float(V[best_idx]),
+                len(qualifying_indices), len(df),
+            )
+            return alpha_sel
 
         # No point reaches target: use highest ENB (monotone envelope)
         # with warning.  Using enb_mono instead of raw enb ensures we pick
@@ -277,3 +287,49 @@ def select_operating_alpha(
             )
 
     return alpha_sel
+
+
+def compute_adaptive_enb_target(
+    eigenvalues: np.ndarray,
+    n_signal: int,
+) -> float:
+    """
+    Compute adaptive ENB target from eigenvalue spectrum.
+
+    Uses min(n_signal/2, ENB_spectrum * 0.7) where ENB_spectrum is the
+    theoretical maximum ENB if risk contributions were proportional to
+    eigenvalues.  With concentrated spectra (lambda_1/lambda_2 >> 1),
+    n_signal/2 may be unreachable, so we cap at 70% of ENB_spectrum.
+
+    Floor: max(result, 2.0) ensures at least 2 effective bets.
+
+    Reference: Meucci (2009), "Managing Diversification".
+               Roncalli (2013), Ch. 7.
+
+    :param eigenvalues (np.ndarray): Signal eigenvalues (n_signal,)
+    :param n_signal (int): Number of signal factors
+
+    :return target_enb (float): Adaptive ENB target (>= 2.0)
+    """
+    eig_sum = float(eigenvalues.sum())
+    if eig_sum > 1e-30:
+        eig_norm = eigenvalues / eig_sum
+        eig_norm = np.maximum(eig_norm, 1e-30)
+        enb_spectrum = float(np.exp(
+            -np.sum(eig_norm * np.log(eig_norm))
+        ))
+    else:
+        enb_spectrum = 1.0
+
+    heuristic_enb = max(2.0, n_signal / 2.0)
+    target_enb = min(heuristic_enb, enb_spectrum * 0.7)
+    target_enb = max(target_enb, 2.0)  # floor
+
+    logger.info(
+        "compute_adaptive_enb_target: target=%.2f "
+        "(heuristic=%.1f, ENB_spectrum=%.2f, cap=%.2f, n_signal=%d)",
+        target_enb, heuristic_enb, enb_spectrum, enb_spectrum * 0.7,
+        n_signal,
+    )
+
+    return target_enb

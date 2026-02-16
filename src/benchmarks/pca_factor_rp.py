@@ -19,7 +19,11 @@ import logging
 
 from src.benchmarks.base import BenchmarkModel
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
-from src.portfolio.frontier import compute_variance_entropy_frontier, select_operating_alpha
+from src.portfolio.frontier import (
+    compute_adaptive_enb_target,
+    compute_variance_entropy_frontier,
+    select_operating_alpha,
+)
 from src.portfolio.sca_solver import multi_start_optimize
 from src.risk_model.covariance import estimate_d_eps
 
@@ -173,8 +177,8 @@ class PCAFactorRiskParity(BenchmarkModel):
             seed=42,
         )
 
-        # Select alpha via ENB target = k/2 (Meucci 2009)
-        target_enb = max(2.0, self.k / 2.0)
+        # Select alpha via adaptive ENB target (Meucci 2009)
+        target_enb = compute_adaptive_enb_target(self.eigenvalues, self.k)
         alpha_opt = select_operating_alpha(frontier, target_enb=target_enb)
 
         if alpha_opt in frontier_weights:
@@ -186,7 +190,7 @@ class PCAFactorRiskParity(BenchmarkModel):
             w_opt = frontier_weights[nearest]
 
         logger.info(
-            "  [PCA-RP] alpha*=%.4g (ENB target=%.1f, k=%d)",
+            "  [PCA-RP] alpha*=%.4g (adaptive ENB target=%.2f, k=%d)",
             alpha_opt, target_enb, self.k,
         )
 

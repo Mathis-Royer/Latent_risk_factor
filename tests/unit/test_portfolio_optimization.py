@@ -23,7 +23,7 @@ import pytest
 import pandas as pd
 
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
-from src.portfolio.frontier import select_operating_alpha
+from src.portfolio.frontier import select_operating_alpha, compute_adaptive_enb_target
 from src.portfolio.sca_solver import sca_optimize, multi_start_optimize, objective_function, has_mi_solver
 from src.portfolio.cardinality import enforce_cardinality
 from src.portfolio.constraints import (
@@ -1071,18 +1071,35 @@ class TestSelectOperatingAlpha:
         # Degenerate: H_range=0, fallback to alpha at max H (any is valid)
         assert alpha_opt in [0.0, 1.0, 5.0]
 
-    def test_target_enb_selects_smallest_alpha(self) -> None:
-        """target_enb selects the smallest alpha where ENB >= target."""
+    def test_target_enb_selects_min_variance_qualifying(self) -> None:
+        """target_enb selects min-variance alpha among qualifying points."""
         frontier = pd.DataFrame({
             "alpha": [0.0, 0.01, 0.1, 1.0, 5.0],
             "variance": [1e-5, 5e-5, 5.5e-5, 9e-5, 9.5e-5],
             "entropy": [0.5, 1.0, 1.2, 1.5, 1.6],
         })
         # ENB = exp(H): [1.65, 2.72, 3.32, 4.48, 4.95]
-        # target_enb=3.0 → first point where ENB>=3.0 is alpha=0.1 (ENB=3.32)
+        # target_enb=3.0 → qualifying: alpha=0.1, 1.0, 5.0
+        # min variance among qualifying: alpha=0.1 (Var=5.5e-5)
         alpha_opt = select_operating_alpha(frontier, target_enb=3.0)
         assert alpha_opt == pytest.approx(0.1), (
-            f"Expected α=0.1 for target_enb=3.0, got {alpha_opt}"
+            f"Expected α=0.1 (min variance among qualifying), got {alpha_opt}"
+        )
+
+    def test_target_enb_prefers_lower_variance_at_higher_alpha(self) -> None:
+        """U-shaped frontier: higher alpha has lower variance AND meets ENB."""
+        frontier = pd.DataFrame({
+            "alpha": [0.001, 0.005, 0.01, 0.1, 0.5, 2.0, 5.0],
+            "variance": [4e-5, 6.22e-5, 6.0e-5, 5.8e-5, 5.5e-5, 5.18e-5, 5.3e-5],
+            "entropy": [1.0, 1.89, 2.0, 2.2, 2.4, 2.60, 2.55],
+            "entropy_factor": [1.0, 1.89, 2.0, 2.2, 2.4, 2.60, 2.55],
+        })
+        # ENB_factor = exp(H_factor): [2.72, 6.62, 7.39, 9.03, 11.02, 13.46, 12.81]
+        # target_enb=5.0 → qualifying: alpha >= 0.005 (indices 1-6)
+        # Min variance among qualifying: alpha=2.0 (Var=5.18e-5)
+        alpha_opt = select_operating_alpha(frontier, target_enb=5.0)
+        assert alpha_opt == pytest.approx(2.0), (
+            f"Expected α=2.0 (min variance among qualifying), got {alpha_opt}"
         )
 
     def test_target_enb_unreachable_returns_max(self) -> None:
@@ -1109,6 +1126,45 @@ class TestSelectOperatingAlpha:
         alpha_kneedle = select_operating_alpha(frontier, target_enb=0.0)
         alpha_default = select_operating_alpha(frontier)
         assert alpha_kneedle == alpha_default
+
+
+# ---------------------------------------------------------------------------
+# Tests: Adaptive ENB target (Meucci 2009)
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveENBTarget:
+    """Tests for compute_adaptive_enb_target."""
+
+    def test_concentrated_spectrum_caps_target(self) -> None:
+        """Concentrated eigenvalues cap the target below n_signal/2."""
+        eigenvalues = np.array([10.0, 1.0, 0.5, 0.3, 0.2])
+        target = compute_adaptive_enb_target(eigenvalues, n_signal=5)
+        # heuristic = max(2.0, 5/2) = 2.5
+        # ENB_spectrum ~ 2.33 → cap = 2.33 * 0.7 ~ 1.63
+        # min(2.5, 1.63) = 1.63 → floor max(1.63, 2.0) = 2.0
+        assert target == pytest.approx(2.0, abs=0.01)
+
+    def test_uniform_spectrum_allows_high_target(self) -> None:
+        """Uniform eigenvalues: ENB_spectrum = k, so k/2 is achievable."""
+        eigenvalues = np.ones(10)
+        target = compute_adaptive_enb_target(eigenvalues, n_signal=10)
+        # heuristic = max(2.0, 10/2) = 5.0
+        # ENB_spectrum = 10.0 → cap = 7.0
+        # min(5.0, 7.0) = 5.0
+        assert target == pytest.approx(5.0, abs=0.01)
+
+    def test_floor_at_two(self) -> None:
+        """Target is always >= 2.0 even with degenerate spectrum."""
+        eigenvalues = np.array([100.0, 0.001])
+        target = compute_adaptive_enb_target(eigenvalues, n_signal=2)
+        assert target >= 2.0
+
+    def test_zero_eigenvalues_fallback(self) -> None:
+        """All-zero eigenvalues produce target=2.0."""
+        eigenvalues = np.array([0.0, 0.0, 0.0])
+        target = compute_adaptive_enb_target(eigenvalues, n_signal=3)
+        assert target == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------------------

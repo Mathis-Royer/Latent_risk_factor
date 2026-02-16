@@ -590,10 +590,10 @@ class PortfolioConfig:
             0.1, 0.2, 0.5, 1.0, 2.0, 5.0,
         ]
     )
-    momentum_enabled: bool = False
+    momentum_enabled: bool = True
     momentum_lookback: int = 252
     momentum_skip: int = 21
-    momentum_weight: float = 0.02
+    momentum_weight: float = 0.05
     entropy_idio_weight: float = 0.05
     target_enb: float = 0.0
     transaction_cost_bps: float = 10.0

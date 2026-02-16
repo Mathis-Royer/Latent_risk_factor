@@ -33,7 +33,7 @@ MIN_BATCH_SIZE = 3
 _MIQP_TIME_LIMIT = 120.0
 
 # Hard cap on binary variables for MI solver tractability
-_MAX_BINARY_VARS = 80
+_MAX_BINARY_VARS = 150
 
 
 # ---------------------------------------------------------------------------

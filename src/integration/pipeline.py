@@ -40,6 +40,7 @@ from src.integration.reporting import generate_report, format_summary_table
 from src.portfolio.cardinality import enforce_cardinality
 from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.frontier import (
+    compute_adaptive_enb_target,
     compute_variance_entropy_frontier,
     select_operating_alpha,
 )
@@ -2103,25 +2104,8 @@ class FullPipeline:
         # Set config to -1.0 to force Kneedle legacy mode.
         effective_target_enb = pc.target_enb
         if pc.target_enb == 0.0:
-            # ENB of the eigenvalue spectrum: theoretical maximum if all
-            # factors contribute proportionally to their eigenvalues
-            eig_sum = float(eigenvalues_signal.sum())
-            if eig_sum > 1e-30:
-                eig_norm = eigenvalues_signal / eig_sum
-                eig_norm = np.maximum(eig_norm, 1e-30)
-                enb_spectrum = float(np.exp(
-                    -np.sum(eig_norm * np.log(eig_norm))
-                ))
-            else:
-                enb_spectrum = 1.0
-            heuristic_enb = max(2.0, n_signal_eff / 2.0)
-            effective_target_enb = min(heuristic_enb, enb_spectrum * 0.7)
-            effective_target_enb = max(effective_target_enb, 2.0)  # floor
-            logger.info(
-                "  [Fold %d] Dynamic target_enb=%.2f "
-                "(heuristic=%.1f, ENB_spectrum=%.2f, cap=%.2f)",
-                fold_id, effective_target_enb, heuristic_enb,
-                enb_spectrum, enb_spectrum * 0.7,
+            effective_target_enb = compute_adaptive_enb_target(
+                eigenvalues_signal, n_signal_eff,
             )
         elif pc.target_enb < 0.0:
             # Legacy Kneedle mode: pass 0.0 to select_operating_alpha
