@@ -8,8 +8,9 @@ Multi-start optimization (M=5 initializations):
 4-5. Random (Dirichlet + projection)
 
 SCA iterations linearize H(w) and solve a convex sub-problem via CVXPY.
-Each iteration builds a fresh problem with constant gradient coefficients
-to ensure DCP compliance across all CVXPY versions.
+Each iteration builds a fresh CVXPY problem with the entropy gradient
+baked in as a constant, ensuring DCP compliance across all CVXPY versions
+(avoids DPP canonicalization failures with auxiliary variables).
 
 DVT Section 4.7: "CVXPY + MOSEK/ECOS (recommended)".
 Reference: ISD Section MOD-008 — Sub-task 2.
@@ -113,21 +114,22 @@ def _safe_cholesky(Sigma: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class _SCASubproblemBuilder:
-    """Parametric CVXPY problem built once, reused across SCA iterations.
+    """CVXPY sub-problem for one SCA iteration.
 
-    Uses cp.Parameter for the entropy gradient coefficient so the problem
-    structure is compiled once by CVXPY (DPP canonicalization).  Only the
-    parameter value changes each iteration, avoiding ~10-50ms recompilation.
-
-    cp.Parameter(n) @ cp.Variable(n) is DPP-affine — safe across all CVXPY
-    versions that support DPP (>= 1.1).
+    Builds a fresh CVXPY problem each iteration with the current entropy
+    gradient baked in as a constant.  This avoids DPP (Disciplined
+    Parameterized Programming) entirely, ensuring compatibility across all
+    CVXPY versions (some versions raise DCPError during lazy DPP
+    canonicalization when auxiliary variables are present).
 
     Uses Cholesky factor L instead of Sigma for efficient cone formulation:
     lambda ||L^T w||^2 = lambda w^T Sigma w.
     """
 
     __slots__ = (
-        '_w', '_grad_param', '_alpha', '_problem',
+        '_n', '_alpha', '_L_sigma', '_lambda_risk', '_phi', '_w_bar',
+        '_w_max', '_w_old', '_kappa_1', '_kappa_2', '_delta_bar',
+        '_tau_max', '_is_first', '_mu',
     )
 
     def __init__(
@@ -147,43 +149,63 @@ class _SCASubproblemBuilder:
         is_first: bool,
         mu: np.ndarray | None = None,
     ) -> None:
+        self._n = n
         self._alpha = alpha
+        self._L_sigma = L_sigma
+        self._lambda_risk = lambda_risk
+        self._phi = phi
+        self._w_bar = w_bar
+        self._w_max = w_max
+        self._w_old = w_old
+        self._kappa_1 = kappa_1
+        self._kappa_2 = kappa_2
+        self._delta_bar = delta_bar
+        self._tau_max = tau_max
+        self._is_first = is_first
+        self._mu = mu
 
-        # Decision variable
-        self._w = cp.Variable(n)
-        w = self._w
+    def solve(self, grad_H: np.ndarray) -> np.ndarray | None:
+        """
+        Build and solve a fresh CVXPY problem with the current entropy gradient.
 
-        # Parametric entropy gradient (only thing that changes per iteration)
-        self._grad_param = cp.Parameter(n)
+        :param grad_H (np.ndarray): Entropy gradient at current iterate (n,)
 
-        # Return term (constant)
-        ret_term: cp.Expression | float = mu @ w if mu is not None else 0.0
+        :return w_star (np.ndarray | None): Optimal weights, or None if infeasible
+        """
+        n = self._n
+        w = cp.Variable(n)
+
+        # Entropy gradient as constant coefficient (no cp.Parameter)
+        grad_coeff = self._alpha * grad_H
+
+        # Return term
+        ret_term: cp.Expression | float = (
+            self._mu @ w if self._mu is not None else 0.0
+        )
 
         # Risk via Cholesky: lambda ||L^T w||^2
-        risk_term = lambda_risk * cp.sum_squares(L_sigma.T @ w)
+        risk_term = self._lambda_risk * cp.sum_squares(self._L_sigma.T @ w)
 
-        # Linearized entropy: parameter @ variable (DPP-affine)
-        entropy_term = self._grad_param @ w
+        # Linearized entropy: constant @ variable (DCP-affine)
+        entropy_term = grad_coeff @ w
 
         # Concentration penalty via auxiliary variable for DCP compliance.
-        # t_conc_i >= max(0, w_i - w_bar), minimizing sum_squares(t_conc)
-        # in the objective pushes t_conc to the exact soft excess.
         conc_penalty: cp.Expression = cp.Constant(0.0)
         conc_constraints: list[cp.Constraint] = []
-        if phi > 0:
+        if self._phi > 0:
             t_conc = cp.Variable(n, nonneg=True)
-            conc_constraints = [t_conc >= w - w_bar]  # type: ignore[list-item]
-            conc_penalty = phi * cp.sum_squares(t_conc)
+            conc_constraints = [t_conc >= w - self._w_bar]  # type: ignore[list-item]
+            conc_penalty = self._phi * cp.sum_squares(t_conc)
 
         # Turnover penalty via auxiliary variable for DCP compliance.
         turn_penalty: cp.Expression = cp.Constant(0.0)
         turn_constraints: list[cp.Constraint] = []
-        if w_old is not None and not is_first:
-            delta_w = cp.abs(w - w_old)
-            linear_turn = kappa_1 * 0.5 * cp.sum(delta_w)
+        if self._w_old is not None and not self._is_first:
+            delta_w = cp.abs(w - self._w_old)
+            linear_turn = self._kappa_1 * 0.5 * cp.sum(delta_w)
             t_turn = cp.Variable(n, nonneg=True)
-            turn_constraints = [t_turn >= delta_w - delta_bar]  # type: ignore[list-item]
-            quad_turn = kappa_2 * cp.sum_squares(t_turn)
+            turn_constraints = [t_turn >= delta_w - self._delta_bar]  # type: ignore[list-item]
+            quad_turn = self._kappa_2 * cp.sum_squares(t_turn)
             turn_penalty = linear_turn + quad_turn  # type: ignore[assignment]
 
         obj = cp.Maximize(
@@ -192,44 +214,33 @@ class _SCASubproblemBuilder:
 
         # Hard cap uses w_max directly.  w_bar is only for the soft
         # concentration penalty phi * sum(max(0, w_i - w_bar)^2).
-        # Separating them allows w_bar < w_max with phi > 0 for a gradual
-        # penalty instead of a hard cliff (DeMiguel et al. 2009).
         cstr_list = [
             w >= 0,
-            w <= w_max,
+            w <= self._w_max,
             cp.sum(w) == 1,
         ]
         constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
         constraints.extend(conc_constraints)
         constraints.extend(turn_constraints)
-        if w_old is not None and not is_first:
-            turnover_cstr = 0.5 * cp.sum(cp.abs(w - w_old)) <= tau_max
+        if self._w_old is not None and not self._is_first:
+            turnover_cstr = (
+                0.5 * cp.sum(cp.abs(w - self._w_old)) <= self._tau_max
+            )
             constraints.append(turnover_cstr)  # type: ignore[arg-type]
 
-        self._problem = cp.Problem(obj, constraints)
-
-    def solve(self, grad_H: np.ndarray) -> np.ndarray | None:
-        """
-        Update entropy gradient parameter and solve the pre-compiled problem.
-
-        :param grad_H (np.ndarray): Entropy gradient at current iterate (n,)
-
-        :return w_star (np.ndarray | None): Optimal weights, or None if infeasible
-        """
-        # Only update the parameter value — problem structure stays fixed
-        self._grad_param.value = self._alpha * grad_H
+        problem = cp.Problem(obj, constraints)
 
         for solver_name, solver_kwargs in _SOLVER_CHAIN:
             try:
-                self._problem.solve(
+                problem.solve(
                     solver=solver_name, **solver_kwargs,  # type: ignore[arg-type]
                 )
-                if (self._problem.status in ("optimal", "optimal_inaccurate")
-                        and self._w.value is not None):
-                    result = np.array(self._w.value).flatten()
+                if (problem.status in ("optimal", "optimal_inaccurate")
+                        and w.value is not None):
+                    result = np.array(w.value).flatten()
                     if not np.any(np.isnan(result)):
                         return result
-            except cp.SolverError:
+            except (cp.SolverError, ArithmeticError):
                 continue
 
         return None
@@ -529,7 +540,7 @@ def sca_optimize(
             idio_weight=idio_weight, budget=budget,
         )
 
-        # Solve reusing pre-compiled parametric problem
+        # Solve SCA sub-problem (fresh CVXPY problem per iteration)
         w_star = subproblem.solve(grad_H)
 
         if w_star is None:
