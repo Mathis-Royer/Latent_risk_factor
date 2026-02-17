@@ -18796,8 +18796,8 @@
     "last_date": "2026-02-17"
   },
   "CMA": {
-    "status": "failed",
-    "reason": "auth_failed"
+    "status": "complete",
+    "last_date": "2026-01-30"
   },
   "CMA-P-B": {
     "status": "complete",
@@ -21682,5 +21682,2921 @@
   "CTV": {
     "status": "complete",
     "last_date": "2025-02-21"
+  },
+  "CTV-WS": {
+    "status": "complete",
+    "last_date": "2025-02-21"
+  },
+  "CTVA-WI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CTW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CTWO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CTWS": {
+    "status": "complete",
+    "last_date": "2019-10-09"
+  },
+  "CTX": {
+    "status": "complete",
+    "last_date": "2018-08-20"
+  },
+  "CTXR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CTXRW": {
+    "status": "complete",
+    "last_date": "2022-08-08"
+  },
+  "CTXS": {
+    "status": "complete",
+    "last_date": "2022-11-02"
+  },
+  "CTY": {
+    "status": "complete",
+    "last_date": "2020-12-11"
+  },
+  "CTZ": {
+    "status": "complete",
+    "last_date": "2020-10-23"
+  },
+  "CTZN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUBB": {
+    "status": "failed",
+    "reason": "auth_failed"
+  },
+  "CUBE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUBI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUBI-P-C": {
+    "status": "complete",
+    "last_date": "2021-09-14"
+  },
+  "CUBI-P-D": {
+    "status": "complete",
+    "last_date": "2021-09-14"
+  },
+  "CUBI-P-E": {
+    "status": "complete",
+    "last_date": "2025-06-13"
+  },
+  "CUBI-P-F": {
+    "status": "complete",
+    "last_date": "2025-12-12"
+  },
+  "CUBN": {
+    "status": "complete",
+    "last_date": "2017-12-29"
+  },
+  "CUBS": {
+    "status": "complete",
+    "last_date": "2023-08-28"
+  },
+  "CUBT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUBWU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUBWW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUDA": {
+    "status": "complete",
+    "last_date": "2018-02-12"
+  },
+  "CUE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUI1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUK-29": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUL": {
+    "status": "complete",
+    "last_date": "2011-06-06"
+  },
+  "CULL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CULP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CULS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUMB1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUNB": {
+    "status": "complete",
+    "last_date": "2017-11-02"
+  },
+  "CUNO": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUO": {
+    "status": "complete",
+    "last_date": "2020-05-19"
+  },
+  "CUPR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CURB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CURB-W": {
+    "status": "complete",
+    "last_date": "2024-09-30"
+  },
+  "CUREQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CURI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CURIW": {
+    "status": "complete",
+    "last_date": "2025-10-15"
+  },
+  "CURR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CURT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CURV": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CURX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUSM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CUTR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUZ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CUZ-W": {
+    "status": "complete",
+    "last_date": "2016-10-06"
+  },
+  "CV": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVA": {
+    "status": "complete",
+    "last_date": "2021-11-30"
+  },
+  "CVAC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVAL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVAN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVB": {
+    "status": "complete",
+    "last_date": "2017-02-10"
+  },
+  "CVB-CL": {
+    "status": "complete",
+    "last_date": "2017-02-01"
+  },
+  "CVBF": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVBG": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVC": {
+    "status": "complete",
+    "last_date": "2016-06-21"
+  },
+  "CVCI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVCY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVD": {
+    "status": "complete",
+    "last_date": "2015-02-18"
+  },
+  "CVE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVE-WS": {
+    "status": "complete",
+    "last_date": "2026-01-05"
+  },
+  "CVE1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVEO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVET": {
+    "status": "complete",
+    "last_date": "2022-11-02"
+  },
+  "CVF": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVG": {
+    "status": "complete",
+    "last_date": "2018-12-14"
+  },
+  "CVGI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVGP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVGW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVGYQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVH": {
+    "status": "complete",
+    "last_date": "2013-10-17"
+  },
+  "CVI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVI2": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVIA": {
+    "status": "complete",
+    "last_date": "2020-06-30"
+  },
+  "CVII": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVIIU": {
+    "status": "complete",
+    "last_date": "2024-08-19"
+  },
+  "CVIIW": {
+    "status": "complete",
+    "last_date": "2024-08-19"
+  },
+  "CVKD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVLG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVLL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVLT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVLY": {
+    "status": "complete",
+    "last_date": "2024-07-01"
+  },
+  "CVM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVM-WS": {
+    "status": "complete",
+    "last_date": "2018-10-08"
+  },
+  "CVNSQ": {
+    "status": "complete",
+    "last_date": "2015-10-01"
+  },
+  "CVO": {
+    "status": "complete",
+    "last_date": "2018-02-12"
+  },
+  "CVON": {
+    "status": "complete",
+    "last_date": "2019-01-04"
+  },
+  "CVP": {
+    "status": "complete",
+    "last_date": "2010-02-04"
+  },
+  "CVR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVRR": {
+    "status": "complete",
+    "last_date": "2019-01-30"
+  },
+  "CVRS": {
+    "status": "complete",
+    "last_date": "2019-11-27"
+  },
+  "CVRX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVSL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVT": {
+    "status": "complete",
+    "last_date": "2023-06-15"
+  },
+  "CVTL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVTX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CVU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVV": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CVVT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWACU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWAN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWAY": {
+    "status": "complete",
+    "last_date": "2018-10-05"
+  },
+  "CWBC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWBS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWCIQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWEI": {
+    "status": "complete",
+    "last_date": "2017-04-25"
+  },
+  "CWEN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWEN-A": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWENA": {
+    "status": "complete",
+    "last_date": "2020-08-31"
+  },
+  "CWH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWLD": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWLZ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWONQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWST": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CWV": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CWYM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXAC": {
+    "status": "complete",
+    "last_date": "2023-10-23"
+  },
+  "CXAC-U": {
+    "status": "complete",
+    "last_date": "2023-10-23"
+  },
+  "CXAC-WS": {
+    "status": "complete",
+    "last_date": "2023-10-23"
+  },
+  "CXAI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXAI-V": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CXAIW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXDO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXG": {
+    "status": "complete",
+    "last_date": "2011-06-06"
+  },
+  "CXM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXO": {
+    "status": "complete",
+    "last_date": "2021-01-15"
+  },
+  "CXOT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CXP": {
+    "status": "complete",
+    "last_date": "2021-12-07"
+  },
+  "CXPO": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CXR": {
+    "status": "complete",
+    "last_date": "2009-05-29"
+  },
+  "CXRX": {
+    "status": "complete",
+    "last_date": "2018-06-07"
+  },
+  "CXS": {
+    "status": "complete",
+    "last_date": "2013-10-17"
+  },
+  "CXSPY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CXT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CXT-W": {
+    "status": "complete",
+    "last_date": "2023-04-03"
+  },
+  "CXT-WI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CXW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CY": {
+    "status": "complete",
+    "last_date": "2020-04-16"
+  },
+  "CYBE": {
+    "status": "complete",
+    "last_date": "2022-11-03"
+  },
+  "CYBI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYBR": {
+    "status": "complete",
+    "last_date": "2026-02-11"
+  },
+  "CYBR1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYBS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYBX": {
+    "status": "complete",
+    "last_date": "2015-10-16"
+  },
+  "CYCC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYCCP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYCH": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYCL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYCN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYCN-V": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYCNV": {
+    "status": "complete",
+    "last_date": "2019-04-01"
+  },
+  "CYCO": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYCUW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYDEQ": {
+    "status": "complete",
+    "last_date": "2013-03-05"
+  },
+  "CYDS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYH-W": {
+    "status": "complete",
+    "last_date": "2016-04-29"
+  },
+  "CYHHZ": {
+    "status": "complete",
+    "last_date": "2019-01-11"
+  },
+  "CYII": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYLK": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYMI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYNA": {
+    "status": "complete",
+    "last_date": "2016-10-21"
+  },
+  "CYNI": {
+    "status": "complete",
+    "last_date": "2015-08-03"
+  },
+  "CYNO": {
+    "status": "complete",
+    "last_date": "2017-03-23"
+  },
+  "CYOU": {
+    "status": "complete",
+    "last_date": "2020-04-17"
+  },
+  "CYPB": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYPH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYPS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYRN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYRV": {
+    "status": "complete",
+    "last_date": "2011-08-08"
+  },
+  "CYRX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYRXW": {
+    "status": "complete",
+    "last_date": "2020-07-29"
+  },
+  "CYS": {
+    "status": "complete",
+    "last_date": "2018-08-01"
+  },
+  "CYS-P-A": {
+    "status": "complete",
+    "last_date": "2018-07-31"
+  },
+  "CYS-P-B": {
+    "status": "complete",
+    "last_date": "2018-07-31"
+  },
+  "CYSV": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYT": {
+    "status": "complete",
+    "last_date": "2015-12-16"
+  },
+  "CYTH": {
+    "status": "complete",
+    "last_date": "2025-03-26"
+  },
+  "CYTHW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYTK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CYTO": {
+    "status": "complete",
+    "last_date": "2024-12-19"
+  },
+  "CYTOW": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CYTT": {
+    "status": "complete",
+    "last_date": "2024-03-18"
+  },
+  "CYTXW": {
+    "status": "complete",
+    "last_date": "2018-12-14"
+  },
+  "CYXTW": {
+    "status": "complete",
+    "last_date": "2022-02-28"
+  },
+  "CZFC": {
+    "status": "complete",
+    "last_date": "2019-07-01"
+  },
+  "CZFS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CZM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CZNC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CZOO-WS": {
+    "status": "complete",
+    "last_date": "2023-01-03"
+  },
+  "CZOOF": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CZR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CZR1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "CZWI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "CZZ": {
+    "status": "complete",
+    "last_date": "2021-03-05"
+  },
+  "DAAQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAAQU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAAQW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAB": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DABR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DADA": {
+    "status": "complete",
+    "last_date": "2025-06-16"
+  },
+  "DAEG": {
+    "status": "complete",
+    "last_date": "2015-11-20"
+  },
+  "DAHX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAIC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAICW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAIO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAKP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAKT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DALN": {
+    "status": "complete",
+    "last_date": "2025-09-24"
+  },
+  "DALS": {
+    "status": "complete",
+    "last_date": "2023-07-28"
+  },
+  "DALY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAMD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DANA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DANG": {
+    "status": "complete",
+    "last_date": "2016-09-28"
+  },
+  "DANKY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAOO": {
+    "status": "complete",
+    "last_date": "2022-12-21"
+  },
+  "DAOOU": {
+    "status": "complete",
+    "last_date": "2022-12-21"
+  },
+  "DAOOW": {
+    "status": "complete",
+    "last_date": "2022-12-21"
+  },
+  "DAOU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DARA": {
+    "status": "complete",
+    "last_date": "2015-12-04"
+  },
+  "DARE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DART": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DATA": {
+    "status": "complete",
+    "last_date": "2019-08-19"
+  },
+  "DATC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DATE": {
+    "status": "complete",
+    "last_date": "2016-05-16"
+  },
+  "DATM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DATX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAVA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAVE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAVEW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAVL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAWKQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DAWN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DAY": {
+    "status": "complete",
+    "last_date": "2026-02-03"
+  },
+  "DAZS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DB-R": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DB-R-W": {
+    "status": "complete",
+    "last_date": "2017-03-27"
+  },
+  "DBCAU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBDRU": {
+    "status": "complete",
+    "last_date": "2021-12-27"
+  },
+  "DBG": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBGC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBGI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBGIW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBLE": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBRG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBRG-P-G": {
+    "status": "complete",
+    "last_date": "2021-08-13"
+  },
+  "DBRG-P-H": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBRG-P-I": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBRG-P-J": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBSC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBSI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBSRP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBT1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBTK": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DBTX": {
+    "status": "complete",
+    "last_date": "2023-09-25"
+  },
+  "DBVT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DBX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DC-WS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCAI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCBO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCCA": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCEL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCGNQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCGO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCGOW": {
+    "status": "complete",
+    "last_date": "2022-09-16"
+  },
+  "DCH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCHT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCIN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCM": {
+    "status": "complete",
+    "last_date": "2021-03-11"
+  },
+  "DCMYY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCNAQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCNT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCOM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCOMG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCOMP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCOY": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCP": {
+    "status": "complete",
+    "last_date": "2023-06-20"
+  },
+  "DCP-P-B": {
+    "status": "complete",
+    "last_date": "2023-06-14"
+  },
+  "DCP-P-C": {
+    "status": "complete",
+    "last_date": "2023-10-13"
+  },
+  "DCPH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCPI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCR1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCRBU": {
+    "status": "complete",
+    "last_date": "2021-07-16"
+  },
+  "DCRCU": {
+    "status": "complete",
+    "last_date": "2021-12-08"
+  },
+  "DCRDU": {
+    "status": "complete",
+    "last_date": "2023-02-24"
+  },
+  "DCREU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCRN": {
+    "status": "complete",
+    "last_date": "2022-02-28"
+  },
+  "DCRNU": {
+    "status": "complete",
+    "last_date": "2022-01-13"
+  },
+  "DCSR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCT": {
+    "status": "complete",
+    "last_date": "2023-03-30"
+  },
+  "DCTH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DCTI1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DCUA": {
+    "status": "complete",
+    "last_date": "2016-04-01"
+  },
+  "DCUB": {
+    "status": "complete",
+    "last_date": "2016-07-01"
+  },
+  "DCUC": {
+    "status": "complete",
+    "last_date": "2017-07-03"
+  },
+  "DCUD": {
+    "status": "complete",
+    "last_date": "2019-08-14"
+  },
+  "DCX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DD-WD": {
+    "status": "complete",
+    "last_date": "2021-02-03"
+  },
+  "DDAY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDDC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDDP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDE": {
+    "status": "complete",
+    "last_date": "2019-03-28"
+  },
+  "DDFD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDFF": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDFJ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDFN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDFO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDFS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDIC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDICQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDIM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DDL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDMGQ": {
+    "status": "complete",
+    "last_date": "2015-09-23"
+  },
+  "DDMX": {
+    "status": "complete",
+    "last_date": "2021-11-30"
+  },
+  "DDMXU": {
+    "status": "complete",
+    "last_date": "2021-11-30"
+  },
+  "DDMXW": {
+    "status": "complete",
+    "last_date": "2020-03-12"
+  },
+  "DDNQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDR": {
+    "status": "complete",
+    "last_date": "2018-10-11"
+  },
+  "DDR-P-J": {
+    "status": "complete",
+    "last_date": "2018-10-11"
+  },
+  "DDR-P-K": {
+    "status": "complete",
+    "last_date": "2018-10-11"
+  },
+  "DDRX": {
+    "status": "complete",
+    "last_date": "2010-05-28"
+  },
+  "DDS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDSQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDSSF": {
+    "status": "complete",
+    "last_date": "2012-10-19"
+  },
+  "DDT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTF": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTJ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDTS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DDUP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DEACU": {
+    "status": "complete",
+    "last_date": "2020-04-23"
+  },
+  "DEAR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DECAU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DECC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DECI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DECO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DECTF": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEEPQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEFT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DEG": {
+    "status": "complete",
+    "last_date": "2016-08-02"
+  },
+  "DEH-U": {
+    "status": "complete",
+    "last_date": "2021-09-17"
+  },
+  "DEI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DEL": {
+    "status": "complete",
+    "last_date": "2018-02-21"
+  },
+  "DELI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DELL-WI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DELTW": {
+    "status": "complete",
+    "last_date": "2017-12-14"
+  },
+  "DEN": {
+    "status": "complete",
+    "last_date": "2023-11-02"
+  },
+  "DENHY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DENN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DENTQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DEP": {
+    "status": "complete",
+    "last_date": "2011-11-30"
+  },
+  "DEPO": {
+    "status": "complete",
+    "last_date": "2018-08-14"
+  },
+  "DEPO1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DER1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DERM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DERM1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DESC1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DESCQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DESP": {
+    "status": "complete",
+    "last_date": "2025-05-15"
+  },
+  "DESR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEST": {
+    "status": "complete",
+    "last_date": "2023-02-07"
+  },
+  "DEST1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DETC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEVC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEVN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DEVS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DEXO": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFBHU": {
+    "status": "complete",
+    "last_date": "2019-11-08"
+  },
+  "DFBS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFCLQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFCO1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFDV": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFDVW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFF1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFFN": {
+    "status": "complete",
+    "last_date": "2023-08-17"
+  },
+  "DFG": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFHTU": {
+    "status": "complete",
+    "last_date": "2021-06-08"
+  },
+  "DFIB": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFIN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFIN-W": {
+    "status": "complete",
+    "last_date": "2016-09-30"
+  },
+  "DFIN1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFLI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFLIW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFNS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFNSU": {
+    "status": "complete",
+    "last_date": "2021-08-26"
+  },
+  "DFNSW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFPH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFPHU": {
+    "status": "complete",
+    "last_date": "2021-11-12"
+  },
+  "DFRG": {
+    "status": "complete",
+    "last_date": "2019-09-25"
+  },
+  "DFS": {
+    "status": "complete",
+    "last_date": "2025-05-16"
+  },
+  "DFS-P-B": {
+    "status": "complete",
+    "last_date": "2017-11-28"
+  },
+  "DFSC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFSCW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFT": {
+    "status": "complete",
+    "last_date": "2017-09-28"
+  },
+  "DFT-P-C": {
+    "status": "complete",
+    "last_date": "2017-09-28"
+  },
+  "DFTX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DFTX(EXP20260122)": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DFZ": {
+    "status": "complete",
+    "last_date": "2014-09-04"
+  },
+  "DGAS": {
+    "status": "complete",
+    "last_date": "2017-09-29"
+  },
+  "DGCU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGHI": {
+    "status": "complete",
+    "last_date": "2025-03-17"
+  },
+  "DGI": {
+    "status": "complete",
+    "last_date": "2017-10-19"
+  },
+  "DGICA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGICB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGII": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGIN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGIT": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGJA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGJL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGLD": {
+    "status": "complete",
+    "last_date": "2020-07-02"
+  },
+  "DGLHQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGLT": {
+    "status": "complete",
+    "last_date": "2022-04-29"
+  },
+  "DGLY": {
+    "status": "complete",
+    "last_date": "2026-01-07"
+  },
+  "DGNR": {
+    "status": "complete",
+    "last_date": "2021-07-30"
+  },
+  "DGNR-U": {
+    "status": "complete",
+    "last_date": "2021-07-30"
+  },
+  "DGNS": {
+    "status": "complete",
+    "last_date": "2021-12-08"
+  },
+  "DGNU": {
+    "status": "complete",
+    "last_date": "2023-03-23"
+  },
+  "DGNX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGOC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DGONU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGTC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGWIY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DGXX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHA": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHACU": {
+    "status": "complete",
+    "last_date": "2024-06-24"
+  },
+  "DHAI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHAIW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHBC": {
+    "status": "complete",
+    "last_date": "2022-12-09"
+  },
+  "DHBCU": {
+    "status": "complete",
+    "last_date": "2022-12-09"
+  },
+  "DHBCW": {
+    "status": "complete",
+    "last_date": "2022-12-09"
+  },
+  "DHC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHCA": {
+    "status": "complete",
+    "last_date": "2024-03-14"
+  },
+  "DHCAU": {
+    "status": "complete",
+    "last_date": "2024-03-14"
+  },
+  "DHCNI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHCNL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHCPQ": {
+    "status": "complete",
+    "last_date": "2019-10-14"
+  },
+  "DHHCU": {
+    "status": "complete",
+    "last_date": "2023-03-30"
+  },
+  "DHIL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHMS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHR-24": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHR-30": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHR-P-A": {
+    "status": "complete",
+    "last_date": "2022-04-14"
+  },
+  "DHR-P-B": {
+    "status": "complete",
+    "last_date": "2023-04-14"
+  },
+  "DHR-W": {
+    "status": "complete",
+    "last_date": "2023-09-29"
+  },
+  "DHR-WD": {
+    "status": "complete",
+    "last_date": "2019-12-18"
+  },
+  "DHR-WI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHRM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHSM1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHTI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHULZ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DHX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DHXM": {
+    "status": "complete",
+    "last_date": "2019-12-23"
+  },
+  "DIAL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DIAL1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIAN": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIBS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DICE": {
+    "status": "complete",
+    "last_date": "2023-08-14"
+  },
+  "DIEG": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIET1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGE": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGF": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGI1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGL": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGSQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIGX": {
+    "status": "complete",
+    "last_date": "2018-08-28"
+  },
+  "DIIIU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DILA": {
+    "status": "complete",
+    "last_date": "2022-12-22"
+  },
+  "DILAU": {
+    "status": "complete",
+    "last_date": "2022-12-22"
+  },
+  "DILAW": {
+    "status": "complete",
+    "last_date": "2022-12-22"
+  },
+  "DIN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DINE": {
+    "status": "complete",
+    "last_date": "2011-01-03"
+  },
+  "DINIQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DINO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DIOD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DIOMQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DISA": {
+    "status": "complete",
+    "last_date": "2024-01-02"
+  },
+  "DISAU": {
+    "status": "complete",
+    "last_date": "2024-01-02"
+  },
+  "DISAW": {
+    "status": "complete",
+    "last_date": "2023-12-22"
+  },
+  "DISCA": {
+    "status": "complete",
+    "last_date": "2022-09-16"
+  },
+  "DISCB": {
+    "status": "complete",
+    "last_date": "2022-04-08"
+  },
+  "DISCK": {
+    "status": "complete",
+    "last_date": "2022-09-16"
+  },
+  "DISH": {
+    "status": "complete",
+    "last_date": "2024-01-09"
+  },
+  "DISHR": {
+    "status": "complete",
+    "last_date": "2019-12-16"
+  },
+  "DISS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIST": {
+    "status": "complete",
+    "last_date": "2025-07-09"
+  },
+  "DISTR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DISTU": {
+    "status": "complete",
+    "last_date": "2023-03-29"
+  },
+  "DISTW": {
+    "status": "complete",
+    "last_date": "2025-07-09"
+  },
+  "DIT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DITC": {
+    "status": "complete",
+    "last_date": "2012-12-04"
+  },
+  "DITI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIVX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DIYH": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DJCO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DJT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DJTCQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DJTWW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DK": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DKB-B": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DKB.B": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DKDCU": {
+    "status": "complete",
+    "last_date": "2023-11-07"
+  },
+  "DKI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DKL": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DKNG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DKNGZ": {
+    "status": "complete",
+    "last_date": "2020-07-08"
+  },
+  "DKS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DKT": {
+    "status": "complete",
+    "last_date": "2019-12-27"
+  },
+  "DKTCL": {
+    "status": "complete",
+    "last_date": "2019-12-26"
+  },
+  "DL": {
+    "status": "complete",
+    "last_date": "2021-03-18"
+  },
+  "DLA": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLAG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLCA": {
+    "status": "complete",
+    "last_date": "2023-01-13"
+  },
+  "DLCAU": {
+    "status": "complete",
+    "last_date": "2023-01-13"
+  },
+  "DLCAW": {
+    "status": "complete",
+    "last_date": "2023-01-13"
+  },
+  "DLGC": {
+    "status": "complete",
+    "last_date": "2014-12-02"
+  },
+  "DLHC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLIA": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLIA2": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLLR": {
+    "status": "complete",
+    "last_date": "2014-06-13"
+  },
+  "DLM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLNG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLNG-P-A": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLNG-P-B": {
+    "status": "complete",
+    "last_date": "2025-07-24"
+  },
+  "DLNGPRA": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLNK": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLNV": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLPH": {
+    "status": "complete",
+    "last_date": "2020-10-02"
+  },
+  "DLPN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLPNW": {
+    "status": "complete",
+    "last_date": "2020-12-24"
+  },
+  "DLR-P-C": {
+    "status": "complete",
+    "last_date": "2021-05-14"
+  },
+  "DLR-P-F-CL": {
+    "status": "complete",
+    "last_date": "2017-04-04"
+  },
+  "DLR-P-G": {
+    "status": "complete",
+    "last_date": "2020-10-14"
+  },
+  "DLR-P-H-CL": {
+    "status": "complete",
+    "last_date": "2019-03-29"
+  },
+  "DLR-P-I": {
+    "status": "complete",
+    "last_date": "2020-09-04"
+  },
+  "DLR-P-J": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLR-P-K": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLR-P-L": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLTH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLTK": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLWI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DLX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLXY": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DLY": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DM": {
+    "status": "complete",
+    "last_date": "2025-04-02"
+  },
+  "DM-WS": {
+    "status": "complete",
+    "last_date": "2021-03-26"
+  },
+  "DM1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAAR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAAU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMAQR": {
+    "status": "complete",
+    "last_date": "2024-01-31"
+  },
+  "DMAQU": {
+    "status": "complete",
+    "last_date": "2021-12-01"
+  },
+  "DMC.A": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMCSQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMCX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMD": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMDS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMHYY": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMIF": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMII": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMIIR": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMIIU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMLP": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMND": {
+    "status": "complete",
+    "last_date": "2016-03-08"
+  },
+  "DMOB": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMRC": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMRC1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMS": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMTX": {
+    "status": "complete",
+    "last_date": "2017-11-07"
+  },
+  "DMYD": {
+    "status": "complete",
+    "last_date": "2021-04-20"
+  },
+  "DMYD-U": {
+    "status": "complete",
+    "last_date": "2021-04-20"
+  },
+  "DMYD-WS": {
+    "status": "complete",
+    "last_date": "2021-04-20"
+  },
+  "DMYI-U": {
+    "status": "complete",
+    "last_date": "2021-09-30"
+  },
+  "DMYQ-U": {
+    "status": "complete",
+    "last_date": "2021-12-07"
+  },
+  "DMYS": {
+    "status": "complete",
+    "last_date": "2023-04-05"
+  },
+  "DMYS-U": {
+    "status": "complete",
+    "last_date": "2023-04-05"
+  },
+  "DMYS-WS": {
+    "status": "complete",
+    "last_date": "2023-04-05"
+  },
+  "DMYT-U": {
+    "status": "complete",
+    "last_date": "2020-12-29"
+  },
+  "DMYTU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DMYY": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DMYY-U": {
+    "status": "complete",
+    "last_date": "2025-09-29"
+  },
+  "DMYY-WS": {
+    "status": "complete",
+    "last_date": "2025-09-29"
+  },
+  "DNA": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNAA": {
+    "status": "complete",
+    "last_date": "2022-08-19"
+  },
+  "DNAB": {
+    "status": "complete",
+    "last_date": "2023-06-30"
+  },
+  "DNAC": {
+    "status": "complete",
+    "last_date": "2022-07-11"
+  },
+  "DNAD": {
+    "status": "complete",
+    "last_date": "2023-06-30"
+  },
+  "DNAI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNB": {
+    "status": "complete",
+    "last_date": "2025-08-25"
+  },
+  "DNBF": {
+    "status": "complete",
+    "last_date": "2019-11-29"
+  },
+  "DNBK": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNCR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNDN": {
+    "status": "complete",
+    "last_date": "2014-11-18"
+  },
+  "DNET": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNEX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNJR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNK": {
+    "status": "complete",
+    "last_date": "2021-09-13"
+  },
+  "DNKN": {
+    "status": "complete",
+    "last_date": "2020-12-15"
+  },
+  "DNKYQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNLI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNLI1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DNMR-WS": {
+    "status": "complete",
+    "last_date": "2021-06-15"
+  },
+  "DNMX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNMXU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNMXW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNNG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNOW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNR": {
+    "status": "complete",
+    "last_date": "2020-07-30"
+  },
+  "DNTH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNUT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DNZ": {
+    "status": "complete",
+    "last_date": "2023-01-27"
+  },
+  "DNZ-U": {
+    "status": "complete",
+    "last_date": "2023-01-27"
+  },
+  "DNZ-WS": {
+    "status": "complete",
+    "last_date": "2023-01-27"
+  },
+  "DO": {
+    "status": "complete",
+    "last_date": "2024-09-04"
+  },
+  "DOBQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOC1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOCC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOCN": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOCS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOCSF": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOCU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOCX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DODV": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOGZ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOITU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOL1": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOLE": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOLNQ": {
+    "status": "complete",
+    "last_date": "2014-06-13"
+  },
+  "DOMA": {
+    "status": "complete",
+    "last_date": "2024-09-27"
+  },
+  "DOMA-WS": {
+    "status": "complete",
+    "last_date": "2023-07-11"
+  },
+  "DOMH": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOMO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOMZ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DON-A": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOOR": {
+    "status": "complete",
+    "last_date": "2024-05-15"
+  },
+  "DORM": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOTA": {
+    "status": "complete",
+    "last_date": "2018-12-19"
+  },
+  "DOTAR": {
+    "status": "complete",
+    "last_date": "2018-12-19"
+  },
+  "DOTAU": {
+    "status": "complete",
+    "last_date": "2018-12-11"
+  },
+  "DOTAW": {
+    "status": "complete",
+    "last_date": "2018-12-19"
+  },
+  "DOUG": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOV-27": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOVA": {
+    "status": "complete",
+    "last_date": "2019-11-12"
+  },
+  "DOVP": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOVR": {
+    "status": "complete",
+    "last_date": "2015-07-01"
+  },
+  "DOW-27": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOW-32": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOW-40": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOW-44": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOW-WI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DOX": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DOYU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DPAC": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DPACU": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DPCS": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DPCSU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DPCSW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DPHCU": {
+    "status": "complete",
+    "last_date": "2020-10-23"
+  },
+  "DPL": {
+    "status": "complete",
+    "last_date": "2012-12-03"
+  },
+  "DPLO": {
+    "status": "complete",
+    "last_date": "2020-02-07"
+  },
+  "DPM": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DPMI": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DPRO": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DPRX": {
+    "status": "complete",
+    "last_date": "2017-04-27"
+  },
+  "DPS": {
+    "status": "complete",
+    "last_date": "2018-07-09"
+  },
+  "DPSI": {
+    "status": "complete",
+    "last_date": "2024-07-10"
+  },
+  "DPTRQ": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DQ": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DR": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DRAI": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRAM": {
+    "status": "complete",
+    "last_date": "2017-07-03"
+  },
+  "DRAX": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DRAY": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRAYU": {
+    "status": "complete",
+    "last_date": "2023-01-06"
+  },
+  "DRAYW": {
+    "status": "complete",
+    "last_date": "2023-01-06"
+  },
+  "DRC": {
+    "status": "complete",
+    "last_date": "2015-06-30"
+  },
+  "DRCO": {
+    "status": "complete",
+    "last_date": "2026-02-17"
+  },
+  "DRCT": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRCTW": {
+    "status": "complete",
+    "last_date": "2023-10-30"
+  },
+  "DRD": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRDB": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRDBU": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRDBW": {
+    "status": "complete",
+    "last_date": "2026-02-13"
+  },
+  "DRE": {
+    "status": "complete",
+    "last_date": "2022-10-03"
   }
 }

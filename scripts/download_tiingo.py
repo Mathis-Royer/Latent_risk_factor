@@ -929,13 +929,19 @@ def run_download(
     sp500_file: str | None = None,
     min_price: float = 1.0,
     min_history_days: int = 504,
+    offline_mode: bool | None = None,
 ) -> bool:
     """
     Run the full Tiingo download pipeline (discovery, prices, merge).
 
     Convenience wrapper for notebook or programmatic usage.
 
-    :param api_keys (list[str]): Tiingo API keys
+    Offline mode (Colab / read-only environments): if ``tiingo_raw/`` is absent
+    but ``tiingo_us_equities.parquet`` already exists, no download is attempted.
+    This is auto-detected when ``offline_mode=None`` (default), or can be
+    forced with ``offline_mode=True``.
+
+    :param api_keys (list[str]): Tiingo API keys (ignored in offline mode)
     :param data_dir (str): Output directory
     :param max_tickers (int | None): Limit number of tickers (for testing)
     :param start_date (str): Earliest date to fetch
@@ -946,9 +952,33 @@ def run_download(
     :param sp500_file (str | None): Optional local CSV with SP500 tickers
     :param min_price (float): Minimum adj_price (penny stock filter, default $1.00)
     :param min_history_days (int): Minimum trading days per stock (default 504)
+    :param offline_mode (bool | None): If True, skip all downloads and use the
+        existing merged parquet. If None (default), auto-detect: offline when
+        tiingo_raw/ is absent and tiingo_us_equities.parquet exists.
 
-    :return success (bool): True if download completed successfully
+    :return success (bool): True if download completed (or skipped in offline mode)
     """
+    raw_dir = os.path.join(data_dir, "tiingo_raw")
+    merged_path = os.path.join(data_dir, "tiingo_us_equities.parquet")
+
+    # Auto-detect offline mode: raw dir absent but merged parquet present
+    if offline_mode is None:
+        offline_mode = not os.path.isdir(raw_dir) and os.path.exists(merged_path)
+
+    if offline_mode:
+        if not os.path.exists(merged_path):
+            logger.error(
+                "Offline mode active but %s not found. "
+                "Cannot proceed without data.",
+                merged_path,
+            )
+            return False
+        logger.info(
+            "Offline mode: tiingo_raw/ not found — using existing %s (no download).",
+            merged_path,
+        )
+        return True
+
     meta_dir = os.path.join(data_dir, "tiingo_meta")
     os.makedirs(meta_dir, exist_ok=True)
 
@@ -1051,6 +1081,11 @@ def parse_args() -> argparse.Namespace:
         "--min-history-days", type=int, default=504,
         help="Minimum trading days per stock (ISD T=504 ~2 years). Default: 504",
     )
+    parser.add_argument(
+        "--offline", action="store_true", default=False,
+        help="Skip all downloads and use the existing tiingo_us_equities.parquet. "
+             "Auto-detected when tiingo_raw/ is absent and the merged file exists.",
+    )
     return parser.parse_args()
 
 
@@ -1103,6 +1138,25 @@ def main() -> int:
     phase = args.phase
 
     os.makedirs(output_dir, exist_ok=True)
+
+    # --- Offline mode: skip all downloads, use existing merged parquet ---
+    raw_dir = os.path.join(output_dir, "tiingo_raw")
+    merged_path = os.path.join(output_dir, "tiingo_us_equities.parquet")
+
+    offline = args.offline or (not os.path.isdir(raw_dir) and os.path.exists(merged_path))
+    if offline:
+        if not os.path.exists(merged_path):
+            logger.error(
+                "Offline mode active but %s not found. Cannot proceed.",
+                merged_path,
+            )
+            return 1
+        logger.info(
+            "Offline mode: tiingo_raw/ not found — using existing %s (no download).",
+            merged_path,
+        )
+        return 0
+
     meta_dir = os.path.join(output_dir, "tiingo_meta")
     os.makedirs(meta_dir, exist_ok=True)
 
