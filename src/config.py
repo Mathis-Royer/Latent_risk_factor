@@ -119,7 +119,7 @@ class DataPipelineConfig:
     """
     Configuration for the data pipeline module.
 
-    :param n_stocks (int): Number of stocks in the universe
+    :param n_stocks (int): Number of stocks in the universe (0 = no cap, use all available)
     :param window_length (int): Window length T in trading days
     :param n_features (int): Number of features per timestep (return + realized vol)
     :param vol_window (int): Trailing window for annualized volatility (days)
@@ -140,7 +140,7 @@ class DataPipelineConfig:
     training_stride: int = 21
 
     def __post_init__(self) -> None:
-        _validate_range("n_stocks", self.n_stocks, default=1000, lo=1)
+        _validate_range("n_stocks", self.n_stocks, default=1000, lo=0)  # 0 = no cap (all stocks)
         _validate_range("window_length", self.window_length, default=504, lo=1)
         _validate_range("n_features", self.n_features, default=2, lo=1)
         _validate_range("vol_window", self.vol_window, default=252, lo=2)
@@ -234,7 +234,7 @@ class LossConfig:
 
     mode: str = "P"
     gamma: float = 3.0
-    lambda_co_max: float = 0.5
+    lambda_co_max: float = 0.1
     beta_fixed: float = 1.0
     warmup_fraction: float = 0.20
     max_pairs: int = 2048
@@ -243,7 +243,7 @@ class LossConfig:
     def __post_init__(self) -> None:
         _validate_in("mode", self.mode, {"P", "F", "A"}, default="P")
         _validate_range("gamma", self.gamma, default=3.0, lo=1.0)
-        _validate_range("lambda_co_max", self.lambda_co_max, default=0.5,
+        _validate_range("lambda_co_max", self.lambda_co_max, default=0.1,
                         lo=0, hi=1.0)
         _validate_range("beta_fixed", self.beta_fixed, default=1.0,
                         lo=0, lo_exclusive=True)
@@ -570,7 +570,7 @@ class PortfolioConfig:
     w_max: float = 0.05
     w_min: float = 0.001
     w_bar: float = 0.03
-    phi: float = 5.0
+    phi: float = 0.0
     kappa_1: float = 0.1
     kappa_2: float = 7.5
     delta_bar: float = 0.01
@@ -594,11 +594,11 @@ class PortfolioConfig:
     momentum_lookback: int = 252
     momentum_skip: int = 21
     momentum_weight: float = 0.30
-    entropy_idio_weight: float = 0.05
+    entropy_idio_weight: float = 0.0
     target_enb: float = 0.0
     transaction_cost_bps: float = 10.0
     normalize_entropy_gradient: bool = False  # Grid search on α suffisant (Meucci 2009, DeMiguel 2009)
-    entropy_budget_mode: str = "proportional"
+    entropy_budget_mode: str = "uniform"
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,

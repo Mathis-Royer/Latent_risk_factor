@@ -83,6 +83,8 @@ class VAETrainer:
         gradient_checkpointing: bool = False,
         sigma_sq_min: float = 1e-4,
         sigma_sq_max: float = 10.0,
+        curriculum_phase1_frac: float = 0.30,
+        curriculum_phase2_frac: float = 0.30,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -109,6 +111,8 @@ class VAETrainer:
         :param gradient_checkpointing (bool): Recompute activations on backward to save VRAM
         :param sigma_sq_min (float): Lower clamp for observation variance σ²
         :param sigma_sq_max (float): Upper clamp for observation variance σ²
+        :param curriculum_phase1_frac (float): Fraction of epochs for full co-movement
+        :param curriculum_phase2_frac (float): Fraction of epochs for linear decay
         """
         self.model: VAEModel = model
         self.loss_mode = loss_mode
@@ -121,6 +125,8 @@ class VAETrainer:
         self._accumulation_steps = max(1, gradient_accumulation_steps)
         self._gradient_checkpointing = gradient_checkpointing
         self._es_min_delta = es_min_delta
+        self.curriculum_phase1_frac = curriculum_phase1_frac
+        self.curriculum_phase2_frac = curriculum_phase2_frac
         self.device = device or get_optimal_device()
         self._is_cuda = self.device.type == "cuda"
 
@@ -269,7 +275,11 @@ class VAETrainer:
 
                 # Co-movement loss on raw returns (ISD MOD-004: NOT z-scored)
                 co_mov_loss: torch.Tensor | None = None
-                cur_lambda_co = get_lambda_co(epoch, total_epochs, self.lambda_co_max)
+                cur_lambda_co = get_lambda_co(
+                    epoch, total_epochs, self.lambda_co_max,
+                    phase1_frac=self.curriculum_phase1_frac,
+                    phase2_frac=self.curriculum_phase2_frac,
+                )
                 if raw_ret is not None and cur_lambda_co > 0 and x.shape[0] >= 2:
                     co_mov_loss = compute_co_movement_loss(
                         mu, raw_ret, max_pairs=self.max_pairs,
@@ -292,6 +302,8 @@ class VAETrainer:
                     co_movement_loss=co_mov_loss,
                     sigma_sq_min=self._sigma_sq_min,
                     sigma_sq_max=self._sigma_sq_max,
+                    curriculum_phase1_frac=self.curriculum_phase1_frac,
+                    curriculum_phase2_frac=self.curriculum_phase2_frac,
                 )
 
             # Backward pass with gradient accumulation
@@ -404,7 +416,11 @@ class VAETrainer:
             "train_co": float(epoch_co / n_batches),
             "sigma_sq": float(epoch_sigma_sq / n_batches),
             "AU": au_count,
-            "lambda_co": get_lambda_co(epoch, total_epochs, self.lambda_co_max),
+            "lambda_co": get_lambda_co(
+                epoch, total_epochs, self.lambda_co_max,
+                phase1_frac=self.curriculum_phase1_frac,
+                phase2_frac=self.curriculum_phase2_frac,
+            ),
             "learning_rate": self.scheduler.get_lr(),
         }
 
@@ -615,7 +631,11 @@ class VAETrainer:
 
             # INV-010: switch batching mode per curriculum phase
             if _sampler is not None:
-                lambda_co = get_lambda_co(epoch, max_epochs, self.lambda_co_max)
+                lambda_co = get_lambda_co(
+                    epoch, max_epochs, self.lambda_co_max,
+                    phase1_frac=self.curriculum_phase1_frac,
+                    phase2_frac=self.curriculum_phase2_frac,
+                )
                 _sampler.set_synchronous(lambda_co > 0)
 
             # Train one epoch

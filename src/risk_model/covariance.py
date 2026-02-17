@@ -257,12 +257,35 @@ def estimate_sigma_z(
 
     if shrinkage_method == "analytical_nonlinear":
         # LW 2020 analytical nonlinear (standalone, uses raw z_input)
-        # Falls back to spiked if covShrinkage not installed
-        Sigma_z_sample = np.cov(z_input, rowvar=False, ddof=1)
-        Sigma_z_anl = _analytical_nonlinear_shrinkage(
+        # Falls back to spiked if covShrinkage not installed.
+        #
+        # When EWMA is active, z_input = sqrt(w) * z_centered where w sums
+        # to 1, so the EWMA covariance is z_input.T @ z_input (not np.cov
+        # which additionally divides by n-1, deflating eigenvalues ~n times).
+        # Same logic as the spiked path below (line 307).
+        if ewma_half_life > 0 and n_eff < n_samples:
+            Sigma_z_sample: np.ndarray = z_input.T @ z_input
+        else:
+            Sigma_z_sample = np.cov(z_input, rowvar=False, ddof=1)
+        Sigma_z_anl, n_signal = _analytical_nonlinear_shrinkage(
             z_input, Sigma_z_sample, n_eff, p_dims,
         )
-        n_signal = _estimate_n_signal_from_gap(Sigma_z_anl)
+        # When EWMA is active, determine n_signal from the RAW (unweighted)
+        # covariance for maximum statistical power (same decoupling as spiked
+        # path).  The gap-based estimator fails on DGJ-shrunk matrices where
+        # noise eigenvalues are all equal to sigma_sq.
+        if ewma_half_life > 0 and n_eff < n_samples:
+            Sigma_raw = np.cov(z_hat, rowvar=False, ddof=1)
+            eigs_raw = np.linalg.eigvalsh(Sigma_raw)[::-1]
+            eigs_raw = np.maximum(eigs_raw, 0.0)
+            if eigs_raw.sum() > 0.0:
+                _, n_signal_raw = _spiked_shrinkage(eigs_raw, n_samples, p_dims)
+                n_signal = n_signal_raw
+                logger.info(
+                    "  analytical_nonlinear n_signal from DGJ (raw): %d "
+                    "(gamma_raw=%.4f vs gamma_ewma=%.4f)",
+                    n_signal, p_dims / n_samples, p_dims / n_eff,
+                )
         return Sigma_z_anl, n_signal
 
     # Default: "spiked" (DGJ) — applied to sample covariance.
@@ -385,7 +408,7 @@ def _analytical_nonlinear_shrinkage(
     Sigma_z_fallback: np.ndarray,
     n_samples: int,
     p_dims: int,
-) -> np.ndarray:
+) -> tuple[np.ndarray, int]:
     """
     Ledoit-Wolf (2020) analytical nonlinear shrinkage.
 
@@ -398,6 +421,7 @@ def _analytical_nonlinear_shrinkage(
     :param p_dims (int): Number of dimensions
 
     :return Sigma_z (np.ndarray): Nonlinearly shrunk covariance
+    :return n_signal (int): Number of signal eigenvalues (from gap or BBP)
     """
     try:
         from sklearn.covariance import LedoitWolf as _LW  # noqa: F811
@@ -407,14 +431,22 @@ def _analytical_nonlinear_shrinkage(
         ans.fit(z_hat)
         result: np.ndarray = ans.covariance_  # type: ignore[assignment]
         logger.info("  Using Ledoit-Wolf 2020 analytical nonlinear shrinkage")
-        return result
+        # covShrinkage doesn't provide n_signal; use gap heuristic on the
+        # result (acceptable here since covShrinkage does NOT produce the
+        # flat-noise spectrum that defeats the gap test — only DGJ does).
+        n_signal = _estimate_n_signal_from_gap(result)
+        return result, n_signal
     except ImportError:
         logger.warning(
             "  covShrinkage not installed, falling back to spiked shrinkage. "
             "Install with: pip install covShrinkage"
         )
-        Sigma_shrunk, _ = _spiked_shrinkage_matrix(Sigma_z_fallback, n_samples, p_dims)
-        return Sigma_shrunk
+        # Propagate n_signal from spiked shrinkage (BBP threshold) instead
+        # of using the gap estimator which fails on DGJ-shrunk matrices.
+        Sigma_shrunk, n_signal = _spiked_shrinkage_matrix(
+            Sigma_z_fallback, n_samples, p_dims,
+        )
+        return Sigma_shrunk, n_signal
 
 
 # ---------------------------------------------------------------------------

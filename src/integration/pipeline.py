@@ -1189,6 +1189,8 @@ class FullPipeline:
             gradient_checkpointing=self.config.training.gradient_checkpointing,
             sigma_sq_min=self.config.vae.sigma_sq_min,
             sigma_sq_max=self.config.vae.sigma_sq_max,
+            curriculum_phase1_frac=self.config.training.curriculum_phase1_frac,
+            curriculum_phase2_frac=self.config.training.curriculum_phase2_frac,
         )
 
         # Crisis labels from VIX (if available)
@@ -1605,6 +1607,8 @@ class FullPipeline:
                 gradient_checkpointing=self.config.training.gradient_checkpointing,
                 sigma_sq_min=self.config.vae.sigma_sq_min,
                 sigma_sq_max=self.config.vae.sigma_sq_max,
+                curriculum_phase1_frac=self.config.training.curriculum_phase1_frac,
+                curriculum_phase2_frac=self.config.training.curriculum_phase2_frac,
             )
 
             # Co-movement data: strata from k-means on trailing returns

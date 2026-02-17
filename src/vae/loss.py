@@ -111,6 +111,8 @@ def compute_loss(
     co_movement_loss: torch.Tensor | None = None,
     sigma_sq_min: float = 1e-4,
     sigma_sq_max: float = 10.0,
+    curriculum_phase1_frac: float = 0.30,
+    curriculum_phase2_frac: float = 0.30,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Complete loss computation for a single batch.
@@ -131,6 +133,8 @@ def compute_loss(
     :param co_movement_loss (torch.Tensor | None): Pre-computed L_co scalar
     :param sigma_sq_min (float): Lower clamp for observation variance σ²
     :param sigma_sq_max (float): Upper clamp for observation variance σ²
+    :param curriculum_phase1_frac (float): Fraction of epochs for full co-movement
+    :param curriculum_phase2_frac (float): Fraction of epochs for linear decay
 
     :return total_loss (torch.Tensor): Scalar loss for backprop
     :return components (dict): Loss components for monitoring
@@ -157,33 +161,42 @@ def compute_loss(
     sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)
 
     # Curriculum λ_co
-    lambda_co = get_lambda_co(epoch, total_epochs, lambda_co_max)
+    lambda_co = get_lambda_co(
+        epoch, total_epochs, lambda_co_max,
+        phase1_frac=curriculum_phase1_frac,
+        phase2_frac=curriculum_phase2_frac,
+    )
 
     # Co-movement contribution
     L_co = co_movement_loss if co_movement_loss is not None else torch.tensor(0.0, device=x.device)
 
+    # Scale λ_co by D/2 so it is commensurate with the D-scaled reconstruction
+    # term. Without this, λ_co·L_co is ~1000× smaller than D/(2σ²)·L_recon
+    # and the co-movement gradient signal has no effect on the encoder.
+    co_term = lambda_co * (D / 2.0) * L_co
+
     # Assembly by mode
     if mode == "P":
-        # Mode P: D/(2σ²)·L_recon + (D/2)·ln(σ²) + L_KL + λ_co·L_co
+        # Mode P: D/(2σ²)·L_recon + (D/2)·ln(σ²) + L_KL + (D/2)·λ_co·L_co
         recon_term = (D / (2.0 * sigma_sq)) * L_recon
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
-        total_loss = recon_term + log_norm_term + L_kl + lambda_co * L_co
+        total_loss = recon_term + log_norm_term + L_kl + co_term
 
     elif mode == "F":
-        # Mode F: D/2·L_recon + β_t·L_KL + λ_co·L_co
+        # Mode F: D/2·L_recon + β_t·L_KL + (D/2)·λ_co·L_co
         # σ²=1 frozen (no gradient on log_sigma_sq)
         # β_t = max(β_min, min(1, epoch / T_warmup))
         beta_t = get_beta_t(epoch, total_epochs, warmup_fraction)
 
         recon_term = (D / 2.0) * L_recon
         log_norm_term = torch.tensor(0.0, device=x.device)
-        total_loss = recon_term + beta_t * L_kl + lambda_co * L_co
+        total_loss = recon_term + beta_t * L_kl + co_term
 
     else:  # mode == "A"
-        # Mode A: D/(2σ²)·L_recon + (D/2)·ln(σ²) + β·L_KL + λ_co·L_co
+        # Mode A: D/(2σ²)·L_recon + (D/2)·ln(σ²) + β·L_KL + (D/2)·λ_co·L_co
         recon_term = (D / (2.0 * sigma_sq)) * L_recon
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
-        total_loss = recon_term + log_norm_term + beta_fixed * L_kl + lambda_co * L_co
+        total_loss = recon_term + log_norm_term + beta_fixed * L_kl + co_term
 
     # Monitoring components — detached tensors to avoid per-batch GPU sync
     components: dict[str, Any] = {
@@ -321,22 +334,26 @@ def get_lambda_co(
     epoch: int,
     total_epochs: int,
     lambda_co_max: float = 0.5,
+    phase1_frac: float = 0.30,
+    phase2_frac: float = 0.30,
 ) -> float:
     """
     Co-movement curriculum scheduling (INV-010).
 
-    Phase 1 (0 → 30% epochs):   λ_co = λ_co_max
-    Phase 2 (30% → 60% epochs): λ_co decays linearly from λ_co_max to 0
-    Phase 3 (60% → 100% epochs): λ_co = 0
+    Phase 1 (0 → phase1_frac):                λ_co = λ_co_max
+    Phase 2 (phase1_frac → phase1+phase2):     λ_co decays linearly to 0
+    Phase 3 (phase1+phase2 → 100%):            λ_co = 0
 
     :param epoch (int): Current epoch (0-indexed)
     :param total_epochs (int): Total number of epochs
     :param lambda_co_max (float): Maximum co-movement loss weight
+    :param phase1_frac (float): Fraction of epochs for full co-movement
+    :param phase2_frac (float): Fraction of epochs for linear decay
 
     :return lambda_co (float): λ_co for this epoch
     """
-    phase1_end = int(0.30 * total_epochs)
-    phase2_end = int(0.60 * total_epochs)
+    phase1_end = int(phase1_frac * total_epochs)
+    phase2_end = int((phase1_frac + phase2_frac) * total_epochs)
 
     if epoch < phase1_end:
         return lambda_co_max

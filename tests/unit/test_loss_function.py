@@ -1119,11 +1119,13 @@ def test_co_movement_included_in_phase_1_excluded_in_phase_3() -> None:
         lambda_co_max=lambda_co_max, co_movement_loss=torch.tensor(0.0),
     )
 
-    # Difference should be lambda_co_max * L_co = 0.5 * 2.0 = 1.0
-    expected_diff = lambda_co_max * L_co.item()
+    # Difference should be lambda_co_max * (D/2) * L_co
+    # D = T * F; co_term = lambda_co * (D/2) * L_co
+    D = T * F
+    expected_diff = lambda_co_max * (D / 2.0) * L_co.item()
     actual_diff = loss_with_co.item() - loss_no_co.item()
     assert abs(actual_diff - expected_diff) < 1e-4, (
-        f"Phase 1: total_loss difference should be lambda_co*L_co={expected_diff}, "
+        f"Phase 1: total_loss difference should be lambda_co*(D/2)*L_co={expected_diff}, "
         f"got {actual_diff:.6f}"
     )
 
