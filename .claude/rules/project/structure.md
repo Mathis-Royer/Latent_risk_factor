@@ -31,6 +31,7 @@ latent_risk_factor/
 │   ├── DVT_strategie_facteurs_risque_latents_v4_1.md  # Technical Vision Document v4.1
 │   ├── Benchmark_latent_risk_factor.md   # Benchmark specifications
 │   ├── implementation_decisions.md   # Log of decisions for spec gaps (see ISD Section 00)
+│   ├── strategy_philosophy.md        # Strategy philosophy synthesis (10 core principles)
 │   └── assertions/                   # Contract assertion definitions
 │       └── contracts.yaml            # Inter-module interface contracts
 │
