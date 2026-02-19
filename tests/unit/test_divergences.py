@@ -414,7 +414,7 @@ class TestDiv08MultiStartComposition:
         eigenvalues = np.array([0.5, 0.3, 0.1])
         D_eps = np.diag(Sigma)
 
-        w, f, H = multi_start_optimize(
+        w, f, H, _ = multi_start_optimize(
             Sigma_assets=Sigma,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -453,7 +453,7 @@ class TestDiv08MultiStartComposition:
         D_eps = np.diag(Sigma)
 
         # n_starts=1 uses only EW as initial point
-        w, f, H = multi_start_optimize(
+        w, f, H, _ = multi_start_optimize(
             Sigma_assets=Sigma,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -568,7 +568,7 @@ class TestDiv10FreshCVXPY:
         w_init = np.ones(n) / n
 
         # Run SCA with enough iterations to verify convergence
-        w_opt, f_opt, H_opt, n_iters = sca_optimize(
+        w_opt, f_opt, H_opt, n_iters, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=Sigma,
             B_prime=B_prime,

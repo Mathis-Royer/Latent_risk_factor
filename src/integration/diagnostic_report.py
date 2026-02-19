@@ -82,6 +82,8 @@ def generate_diagnostic_markdown(
     latent = diagnostics.get("latent", {})
     risk = diagnostics.get("risk_model", {})
     portfolio = diagnostics.get("portfolio", {})
+    solver = diagnostics.get("solver", {})
+    constraints = diagnostics.get("constraints", {})
     bench = diagnostics.get("benchmark_comparison", {})
     data_q = diagnostics.get("data_quality", {})
     checks = diagnostics.get("health_checks", [])
@@ -191,6 +193,29 @@ def generate_diagnostic_markdown(
         lines.append(f"- **Initial**: {training.get('au_initial', 0)}")
         lines.append(f"- **Final**: {training.get('au_final', 0)}")
         lines.append(f"- **Peak during training**: {training.get('au_max_during_training', 0)}")
+        lines.append("")
+
+        # Per-feature reconstruction losses
+        if training.get("has_per_feature_recon", False):
+            lines.append("### Per-Feature Reconstruction Loss (best epoch)")
+            lines.append("")
+            recon_best = training.get("recon_per_feature_best", [])
+            feature_names = ["Returns", "Volatility"]
+            if recon_best:
+                lines.append("| Feature | MSE |")
+                lines.append("|---------|-----|")
+                for i, mse in enumerate(recon_best):
+                    fname = feature_names[i] if i < len(feature_names) else f"Feature {i}"
+                    lines.append(f"| {fname} | {_fmt(mse)} |")
+                lines.append("")
+                # Ratio interpretation
+                if len(recon_best) >= 2 and recon_best[1] > 1e-10:
+                    ratio = recon_best[0] / recon_best[1]
+                    lines.append(
+                        f"*Returns/Volatility ratio: {ratio:.2f}x — "
+                        f"{'returns harder to reconstruct' if ratio > 1 else 'volatility harder to reconstruct'}*"
+                    )
+                    lines.append("")
     lines.append("")
 
     # ===== 3. Latent Space =====
@@ -334,6 +359,9 @@ def generate_diagnostic_markdown(
     lines.append(
         f"- **Condition number**: {risk.get('condition_number', 0):.2e}"
     )
+    shrinkage = risk.get("shrinkage_intensity")
+    if shrinkage is not None:
+        lines.append(f"- **Ledoit-Wolf shrinkage intensity**: {_fmt(shrinkage)} (0=none, 1=full)")
 
     if "eigenvalues" in risk:
         lines.append("")
@@ -392,6 +420,43 @@ def generate_diagnostic_markdown(
             f"- **Max possible entropy**: {_fmt(risk_decomp.get('max_entropy', 0))}"
         )
     lines.append("")
+
+    # ===== 5.5 Solver Convergence =====
+    if solver.get("available", False):
+        lines.append("### Solver Convergence (SCA)")
+        lines.append("")
+        lines.append(f"- **Multi-start runs**: {solver.get('n_starts', 0)}")
+        lines.append(
+            f"- **Converged runs**: {solver.get('converged_count', 0)} "
+            f"({solver.get('converged_ratio', 0):.0%})"
+        )
+        lines.append(f"- **Best start index**: {solver.get('best_start_idx', 0)}")
+        lines.append(f"- **Best converged**: {solver.get('best_converged', False)}")
+        lines.append(
+            f"- **Best final gradient norm**: {solver.get('best_final_grad_norm', 0):.2e}"
+        )
+        lines.append(f"- **Best iterations**: {solver.get('best_n_iterations', 0)}")
+        lines.append(f"- **Average iterations**: {solver.get('avg_iterations', 0):.1f}")
+        lines.append(f"- **Max iterations**: {solver.get('max_iterations', 0)}")
+        lines.append("")
+
+    # ===== 5.6 Constraint Binding =====
+    if constraints.get("available", False):
+        lines.append("### Constraint Binding Status")
+        lines.append("")
+        lines.append(f"- **Positions at w_max**: {constraints.get('n_at_w_max', 0)}")
+        lines.append(f"- **Positions at w_min**: {constraints.get('n_at_w_min', 0)}")
+        lines.append(f"- **Positions above w_bar**: {constraints.get('n_above_w_bar', 0)}")
+        lines.append(
+            f"- **Binding fraction**: {constraints.get('binding_fraction', 0):.1%}"
+        )
+        lines.append(f"- **w_max constraint binding**: {constraints.get('w_max_binding', False)}")
+        lines.append(f"- **Turnover constraint binding**: {constraints.get('tau_binding', False)}")
+        lines.append(f"- **Actual turnover**: {constraints.get('actual_turnover', 0):.1%}")
+        lines.append(
+            f"- **Concentrated weight (>w_bar)**: {constraints.get('concentrated_weight', 0):.1%}"
+        )
+        lines.append("")
 
     # ===== 6. OOS Performance =====
     lines.append("## 6. Out-of-Sample Performance")
@@ -509,6 +574,8 @@ def _generate_recommendations(diagnostics: dict[str, Any]) -> list[str]:
     latent = diagnostics.get("latent", {})
     risk = diagnostics.get("risk_model", {})
     portfolio = diagnostics.get("portfolio", {})
+    solver = diagnostics.get("solver", {})
+    constraints = diagnostics.get("constraints", {})
 
     # Training recommendations
     if training.get("still_decreasing_at_end", False):
@@ -619,6 +686,51 @@ def _generate_recommendations(diagnostics: dict[str, Any]) -> list[str]:
             "Compare against PCA factor RP specifically to isolate "
             "whether the issue is non-linear factors or the pipeline."
         )
+
+    # Solver recommendations
+    if solver.get("available", False):
+        grad_norm = solver.get("best_final_grad_norm", 0)
+        converged_ratio = solver.get("converged_ratio", 1.0)
+
+        if grad_norm > 1e-2:
+            recs.append(
+                f"**SCA solver did not converge** (grad_norm = {grad_norm:.2e}): "
+                "the portfolio optimization may be stuck at a suboptimal point. "
+                "Consider increasing max_iter, adjusting step_size, or checking "
+                "if the objective landscape is ill-conditioned."
+            )
+        elif grad_norm > 1e-3:
+            recs.append(
+                f"**SCA convergence marginal** (grad_norm = {grad_norm:.2e}): "
+                "consider increasing max_iter for tighter convergence."
+            )
+
+        if converged_ratio < 0.5:
+            recs.append(
+                f"**Low multi-start convergence** ({converged_ratio:.0%}): "
+                "many optimization restarts did not converge. The objective "
+                "may have many local optima or poor conditioning."
+            )
+
+    # Constraint recommendations
+    if constraints.get("available", False):
+        binding_fraction = constraints.get("binding_fraction", 0)
+        tau_binding = constraints.get("tau_binding", False)
+
+        if binding_fraction > 0.5:
+            recs.append(
+                f"**Many positions at w_max** ({binding_fraction:.0%}): "
+                "the optimizer wants to concentrate in a few stocks but is "
+                "constrained. Consider whether w_max is too restrictive, or "
+                "if this indicates poor diversification in the factor model."
+            )
+
+        if tau_binding:
+            recs.append(
+                "**Turnover constraint binding**: the portfolio is at the max "
+                "turnover limit. Consider if tau_max is too restrictive, "
+                "or if this indicates unstable factor signals."
+            )
 
     return recs
 

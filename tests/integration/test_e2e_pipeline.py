@@ -241,7 +241,7 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     if z_hat.shape[0] == 0:
         pytest.skip("No valid dates for factor regression")
 
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
     eigenvalues_z = np.linalg.eigvalsh(Sigma_z)
     assert np.all(eigenvalues_z >= -1e-10), (
         f"INV-007: Sigma_z not PSD: min eigenvalue = {eigenvalues_z.min():.2e}"
@@ -273,7 +273,7 @@ def test_e2e_synthetic_100stocks_16years() -> None:
     # ---------------------------------------------------------------
     n_active = len(inferred_ids)
 
-    w_opt, f_opt, H_opt = multi_start_optimize(
+    w_opt, f_opt, H_opt, _ = multi_start_optimize(
         Sigma_assets=Sigma_assets,
         B_prime=B_prime,
         eigenvalues=eigenvalues,

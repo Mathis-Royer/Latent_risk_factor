@@ -127,3 +127,19 @@ class PCAVolRiskParity(PCAFactorRiskParity):
             self.B_PCA @ np.diag(self.eigenvalues) @ self.B_PCA.T
             + np.diag(self.D_eps)
         )
+
+    def rebalance(
+        self,
+        returns_trailing: "pd.DataFrame",
+        trailing_vol: "pd.DataFrame | None",
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Re-run PCA on trailing returns + vol and re-optimize.
+
+        :return w (np.ndarray): PCA-Vol-RP weights on new universe
+        """
+        self.fit(returns_trailing, universe, trailing_vol=trailing_vol)
+        return self.optimize(w_old=w_old, is_first=False)

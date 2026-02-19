@@ -191,7 +191,7 @@ def estimate_sigma_z(
     eigenvalue_pct: float = 1.0,
     shrinkage_method: str = "spiked",
     ewma_half_life: int = 0,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int, float | None]:
     """
     Estimate factor covariance Sigma_z with eigenvalue shrinkage.
 
@@ -223,6 +223,8 @@ def estimate_sigma_z(
 
     :return Sigma_z (np.ndarray): Shrunk factor covariance (AU, AU)
     :return n_signal (int): Number of signal eigenvalues (above noise floor)
+    :return shrinkage_intensity (float | None): Ledoit-Wolf shrinkage coefficient
+        alpha in [0, 1] when using "truncation" method. None for other methods.
     """
     n_samples, p_dims = z_hat.shape
 
@@ -251,9 +253,14 @@ def estimate_sigma_z(
         lw = LedoitWolf()
         lw.fit(z_input)
         Sigma_z_lw: np.ndarray = lw.covariance_  # type: ignore[assignment]
+        shrinkage_intensity: float | None = float(lw.shrinkage_)  # type: ignore[arg-type]
+        logger.info(
+            "  Ledoit-Wolf shrinkage intensity: alpha=%.4f",
+            shrinkage_intensity,
+        )
         Sigma_z_trunc = _truncation_shrinkage(Sigma_z_lw, eigenvalue_pct)
         n_signal = _estimate_n_signal_from_gap(Sigma_z_trunc)
-        return Sigma_z_trunc, n_signal
+        return Sigma_z_trunc, n_signal, shrinkage_intensity
 
     if shrinkage_method == "analytical_nonlinear":
         # LW 2020 analytical nonlinear (standalone, uses raw z_input)
@@ -286,7 +293,7 @@ def estimate_sigma_z(
                     "(gamma_raw=%.4f vs gamma_ewma=%.4f)",
                     n_signal, p_dims / n_samples, p_dims / n_eff,
                 )
-        return Sigma_z_anl, n_signal
+        return Sigma_z_anl, n_signal, None  # No shrinkage intensity for ANL
 
     # Default: "spiked" (DGJ) — applied to sample covariance.
     # DGJ assumes unbiased sample eigenvalues as input; applying LW first
@@ -329,11 +336,12 @@ def estimate_sigma_z(
         # eigenvalues ~n times too small.
         Sigma_z_ewma: np.ndarray = z_input.T @ z_input
         Sigma_shrunk, _ = _spiked_shrinkage_matrix(Sigma_z_ewma, n_eff, p_dims)
-        return Sigma_shrunk, n_signal
+        return Sigma_shrunk, n_signal, None  # DGJ: no single shrinkage intensity
 
     # No EWMA: standard DGJ on raw covariance
     Sigma_z_sample = np.cov(z_input, rowvar=False, ddof=1)
-    return _spiked_shrinkage_matrix(Sigma_z_sample, n_eff, p_dims)
+    Sigma_shrunk, n_signal_out = _spiked_shrinkage_matrix(Sigma_z_sample, n_eff, p_dims)
+    return Sigma_shrunk, n_signal_out, None  # DGJ: no single shrinkage intensity
 
 
 def _spiked_shrinkage_matrix(

@@ -627,7 +627,7 @@ def test_contract_covariance_assembly() -> None:
 
     # Build valid PSD Sigma_z via scatter matrix
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
 
     # Synthetic portfolio exposures and idiosyncratic variances
     B_A_port = rng.randn(n, AU).astype(np.float64)
@@ -802,7 +802,7 @@ def test_contract_multi_start_optimize() -> None:
     # Build valid PSD Sigma_assets
     B_A_port = rng.randn(n, AU).astype(np.float64)
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
     D_eps = np.abs(rng.randn(n).astype(np.float64)) + 1e-4
 
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)
@@ -810,7 +810,7 @@ def test_contract_multi_start_optimize() -> None:
     B_prime = risk_model["B_prime_port"]
     eigenvalues = risk_model["eigenvalues"]
 
-    w, f_val, H = multi_start_optimize(
+    w, f_val, H, _ = multi_start_optimize(
         Sigma_assets=Sigma_assets,
         B_prime=B_prime,
         eigenvalues=eigenvalues,
@@ -885,7 +885,7 @@ def test_contract_enforce_cardinality() -> None:
     # Build valid risk model
     B_A_port = rng.randn(n, AU).astype(np.float64)
     z_hat = rng.randn(50, AU).astype(np.float64)
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
     D_eps = np.abs(rng.randn(n).astype(np.float64)) + 1e-4
 
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)

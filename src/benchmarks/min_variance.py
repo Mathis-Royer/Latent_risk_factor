@@ -86,3 +86,19 @@ class MinimumVariance(BenchmarkModel):
 
         # Last resort: equal weight
         return np.ones(n) / n
+
+    def rebalance(
+        self,
+        returns_trailing: pd.DataFrame,
+        trailing_vol: pd.DataFrame | None,
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Re-estimate Ledoit-Wolf covariance and re-optimize min-variance.
+
+        :return w (np.ndarray): Min-variance weights on new universe
+        """
+        self.fit(returns_trailing, universe)
+        return self.optimize(w_old=w_old, is_first=False)

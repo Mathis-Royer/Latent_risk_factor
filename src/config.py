@@ -595,6 +595,11 @@ class PortfolioConfig:
     transaction_cost_bps: float = 10.0
     normalize_entropy_gradient: bool = False  # Grid search on α suffisant (Meucci 2009, DeMiguel 2009)
     entropy_budget_mode: str = "uniform"
+    # OOS Rebalancing (DVT §4.2)
+    rebalancing_frequency_days: int = 21  # Days between rebalances; 0 = buy-and-hold
+    entropy_trigger_alpha: float = 0.90  # Exceptional rebalance if H drops below 90% of last H
+    delisting_return_nyse_amex: float = -0.30  # Shumway imputation for NYSE/AMEX delistings
+    delisting_return_nasdaq: float = -0.55  # Shumway imputation for NASDAQ delistings
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -646,6 +651,15 @@ class PortfolioConfig:
                         default=0.2, lo=0.0, hi=1.0)
         _validate_in("entropy_budget_mode", self.entropy_budget_mode,
                      {"uniform", "proportional"}, default="proportional")
+        # OOS Rebalancing validation
+        _validate_range("rebalancing_frequency_days", self.rebalancing_frequency_days,
+                        default=21, lo=0)
+        _validate_range("entropy_trigger_alpha", self.entropy_trigger_alpha,
+                        default=0.90, lo=0.5, hi=1.0)
+        _validate_range("delisting_return_nyse_amex", self.delisting_return_nyse_amex,
+                        default=-0.30, lo=-1.0, hi=0.0)
+        _validate_range("delisting_return_nasdaq", self.delisting_return_nasdaq,
+                        default=-0.55, lo=-1.0, hi=0.0)
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"

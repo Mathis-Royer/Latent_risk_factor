@@ -25,6 +25,7 @@ from src.walk_forward.metrics import (
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
 )
+from src.integration.composite_scores import compute_all_composite_scores
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ _THRESHOLDS = {
     "au_bai_ng_diff_warn": 10,  # |AU - k_bai_ng| > 10 triggers warning
     "au_bai_ng_diff_crit": 20,
     "latent_stability_min": 0.85,  # Spearman rho between folds
+    # Solver convergence thresholds
+    "sca_grad_norm_warn": 1e-3,
+    "sca_grad_norm_crit": 1e-2,
+    "sca_converged_ratio_warn": 0.5,  # At least 50% of starts should converge
+    # Constraint binding thresholds
+    "binding_fraction_warn": 0.5,  # More than 50% at w_max is concerning
 }
 
 
@@ -96,6 +103,16 @@ def training_diagnostics(fit_result: dict[str, Any] | None) -> dict[str, Any]:
     sigma_sq = [h.get("sigma_sq", float("nan")) for h in history]
     au_series = [h.get("AU", 0) for h in history]
     lr_series = [h.get("learning_rate", float("nan")) for h in history]
+
+    # Per-feature reconstruction losses (if available)
+    recon_per_feature: list[list[float]] = []
+    for h in history:
+        rpf = h.get("recon_per_feature")
+        if isinstance(rpf, list):
+            recon_per_feature.append([float(v) for v in rpf])
+        else:
+            recon_per_feature.append([])
+    has_per_feature = any(len(rpf) > 0 for rpf in recon_per_feature)
 
     # Convergence check: is val ELBO still decreasing at end?
     # Use val_elbo (not train_loss) because early stopping acts on val ELBO.
@@ -172,6 +189,11 @@ def training_diagnostics(fit_result: dict[str, Any] | None) -> dict[str, Any]:
             1 for i in range(1, len(lr_series))
             if lr_series[i] < lr_series[i - 1]
         ),
+        # Per-feature reconstruction loss (return vs volatility)
+        "has_per_feature_recon": has_per_feature,
+        "recon_per_feature_series": recon_per_feature if has_per_feature else [],
+        "recon_per_feature_final": recon_per_feature[-1] if has_per_feature and recon_per_feature[-1] else [],
+        "recon_per_feature_best": recon_per_feature[best_idx] if has_per_feature and best_idx < len(recon_per_feature) and recon_per_feature[best_idx] else [],
     }
 
 
@@ -377,11 +399,13 @@ def risk_model_diagnostics(
     vt_scale_idio: float = state_bag.get("vt_scale_idio", 1.0)
 
     n_signal: int = state_bag.get("n_signal", 0)
+    shrinkage_intensity: float | None = state_bag.get("shrinkage_intensity")
 
     diag: dict[str, Any] = {
         "vt_scale_sys": vt_scale_sys,
         "vt_scale_idio": vt_scale_idio,
         "n_signal": n_signal,
+        "shrinkage_intensity": shrinkage_intensity,
     }
 
     # Eigenvalue spectrum
@@ -675,6 +699,88 @@ def portfolio_diagnostics(
 
 
 # ---------------------------------------------------------------------------
+# Solver diagnostics
+# ---------------------------------------------------------------------------
+
+def solver_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract SCA solver convergence diagnostics from state_bag.
+
+    :param state_bag (dict): Pipeline state bag with solver_stats
+
+    :return diag (dict): Solver convergence metrics
+    """
+    solver_stats: dict[str, Any] | None = state_bag.get("solver_stats")
+
+    if solver_stats is None:
+        return {"available": False, "reason": "solver_stats not in state_bag"}
+
+    n_starts = solver_stats.get("n_starts", 0)
+    converged_count = solver_stats.get("converged_count", 0)
+    iterations_list: list[int] = solver_stats.get("iterations", [])
+    best_convergence_info: dict[str, Any] = solver_stats.get("best_convergence_info", {})
+    best_start_idx = solver_stats.get("best_start_idx", 0)
+
+    # Extract from best start
+    best_converged = best_convergence_info.get("converged", False)
+    best_grad_norm = best_convergence_info.get("final_grad_norm", float("nan"))
+    best_step_sizes: list[float] = best_convergence_info.get("step_sizes", [])
+    best_obj_improvements: list[float] = best_convergence_info.get("obj_improvements", [])
+
+    # Compute summary statistics
+    converged_ratio = converged_count / max(n_starts, 1)
+    avg_iterations = float(np.mean(iterations_list)) if iterations_list else 0.0
+    max_iterations = max(iterations_list) if iterations_list else 0
+
+    return {
+        "available": True,
+        "n_starts": n_starts,
+        "converged_count": converged_count,
+        "converged_ratio": converged_ratio,
+        "best_start_idx": best_start_idx,
+        "best_converged": best_converged,
+        "best_final_grad_norm": best_grad_norm,
+        "best_n_iterations": iterations_list[best_start_idx] if best_start_idx < len(iterations_list) else 0,
+        "iterations_list": iterations_list,
+        "avg_iterations": avg_iterations,
+        "max_iterations": max_iterations,
+        # Convergence trajectory (for plotting)
+        "best_step_sizes": best_step_sizes[-20:] if best_step_sizes else [],  # Last 20
+        "best_obj_improvements": best_obj_improvements[-20:] if best_obj_improvements else [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Constraint binding diagnostics
+# ---------------------------------------------------------------------------
+
+def constraint_binding_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract constraint binding status from state_bag.
+
+    :param state_bag (dict): Pipeline state bag with binding_status
+
+    :return diag (dict): Constraint binding metrics
+    """
+    binding_status: dict[str, Any] | None = state_bag.get("binding_status")
+
+    if binding_status is None:
+        return {"available": False, "reason": "binding_status not in state_bag"}
+
+    return {
+        "available": True,
+        "n_at_w_max": binding_status.get("n_at_w_max", 0),
+        "n_at_w_min": binding_status.get("n_at_w_min", 0),
+        "n_above_w_bar": binding_status.get("n_above_w_bar", 0),
+        "w_max_binding": binding_status.get("w_max_binding", False),
+        "tau_binding": binding_status.get("tau_binding", False),
+        "actual_turnover": binding_status.get("actual_turnover", 0.0),
+        "concentrated_weight": binding_status.get("concentrated_weight", 0.0),
+        "binding_fraction": binding_status.get("binding_fraction", 0.0),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Benchmark comparison
 # ---------------------------------------------------------------------------
 
@@ -843,6 +949,8 @@ def run_health_checks(
     data_quality: dict[str, Any],
     benchmark_comparison_data: dict[str, Any] | None = None,
     factor_quality: dict[str, Any] | None = None,
+    solver: dict[str, Any] | None = None,
+    constraints: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
     Run automated health checks across all diagnostic categories.
@@ -854,6 +962,8 @@ def run_health_checks(
     :param data_quality (dict): Data quality diagnostics
     :param benchmark_comparison_data (dict | None): Benchmark comparison with per-benchmark metrics
     :param factor_quality (dict | None): Factor quality diagnostics
+    :param solver (dict | None): Solver convergence diagnostics
+    :param constraints (dict | None): Constraint binding diagnostics
 
     :return checks (list[dict]): List of {category, check, status, message}
         where status is "OK", "WARNING", or "CRITICAL"
@@ -1089,6 +1199,61 @@ def run_health_checks(
             else:
                 _add("Portfolio", "Selection non-trivial", "OK", detail)
 
+    # --- Solver convergence checks ---
+    if solver is not None and solver.get("available", False):
+        best_grad_norm = solver.get("best_final_grad_norm", float("nan"))
+        converged_ratio = solver.get("converged_ratio", 0.0)
+        best_converged = solver.get("best_converged", False)
+        n_starts = solver.get("n_starts", 0)
+        converged_count = solver.get("converged_count", 0)
+
+        if not np.isnan(best_grad_norm):
+            if best_grad_norm > _THRESHOLDS["sca_grad_norm_crit"]:
+                _add("Solver", "Final gradient norm", "CRITICAL",
+                     f"grad_norm = {best_grad_norm:.2e} — SCA did not converge")
+            elif best_grad_norm > _THRESHOLDS["sca_grad_norm_warn"]:
+                _add("Solver", "Final gradient norm", "WARNING",
+                     f"grad_norm = {best_grad_norm:.2e}")
+            else:
+                _add("Solver", "Final gradient norm", "OK",
+                     f"grad_norm = {best_grad_norm:.2e}")
+
+        if n_starts > 1:
+            if converged_ratio < _THRESHOLDS["sca_converged_ratio_warn"]:
+                _add("Solver", "Convergence ratio", "WARNING",
+                     f"{converged_count}/{n_starts} starts converged ({converged_ratio:.0%})")
+            else:
+                _add("Solver", "Convergence ratio", "OK",
+                     f"{converged_count}/{n_starts} starts converged ({converged_ratio:.0%})")
+        elif not best_converged:
+            _add("Solver", "Convergence", "WARNING",
+                 "Single-start solver did not converge")
+        else:
+            _add("Solver", "Convergence", "OK", "Solver converged")
+
+    # --- Constraint binding checks ---
+    if constraints is not None and constraints.get("available", False):
+        n_at_w_max = constraints.get("n_at_w_max", 0)
+        binding_fraction = constraints.get("binding_fraction", 0.0)
+        tau_binding = constraints.get("tau_binding", False)
+        actual_turnover = constraints.get("actual_turnover", 0.0)
+
+        if binding_fraction > _THRESHOLDS["binding_fraction_warn"]:
+            _add("Constraints", "w_max binding", "WARNING",
+                 f"{n_at_w_max} positions at w_max ({binding_fraction:.0%} of portfolio)")
+        elif n_at_w_max > 0:
+            _add("Constraints", "w_max binding", "OK",
+                 f"{n_at_w_max} positions at w_max ({binding_fraction:.0%} of portfolio)")
+        else:
+            _add("Constraints", "w_max binding", "OK", "No positions at w_max")
+
+        if tau_binding:
+            _add("Constraints", "Turnover constraint", "WARNING",
+                 f"tau_max binding (actual turnover = {actual_turnover:.1%})")
+        else:
+            _add("Constraints", "Turnover constraint", "OK",
+                 f"Turnover = {actual_turnover:.1%}")
+
     # --- Data quality checks ---
     miss = data_quality.get("missing_pct", 0.0)
     if miss > 10.0:
@@ -1159,6 +1324,12 @@ def collect_diagnostics(
     logger.info("Collecting portfolio diagnostics...")
     portfolio = portfolio_diagnostics(state_bag, w_vae, vae_metrics)
 
+    logger.info("Collecting solver diagnostics...")
+    solver = solver_diagnostics(state_bag)
+
+    logger.info("Collecting constraint binding diagnostics...")
+    constraints = constraint_binding_diagnostics(state_bag)
+
     logger.info("Collecting benchmark comparison...")
     bench_comp = benchmark_comparison(vae_metrics, benchmark_results)
 
@@ -1167,7 +1338,8 @@ def collect_diagnostics(
 
     logger.info("Running health checks...")
     checks = run_health_checks(
-        training, latent, risk, portfolio, data_qual, bench_comp, factor_qual
+        training, latent, risk, portfolio, data_qual, bench_comp, factor_qual,
+        solver, constraints,
     )
 
     n_critical = sum(1 for c in checks if c["status"] == "CRITICAL")
@@ -1184,6 +1356,8 @@ def collect_diagnostics(
         "factor_quality": factor_qual,
         "risk_model": risk,
         "portfolio": portfolio,
+        "solver": solver,
+        "constraints": constraints,
         "benchmark_comparison": bench_comp,
         "data_quality": data_qual,
         "health_checks": checks,

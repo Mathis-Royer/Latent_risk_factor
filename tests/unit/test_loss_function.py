@@ -707,7 +707,12 @@ def test_loss_finite(tensors: dict[str, torch.Tensor]) -> None:
 
         assert torch.isfinite(loss), f"Mode {mode}: loss is not finite: {loss.item()}"
         for key, val in components.items():
-            assert math.isfinite(val), f"Mode {mode}: component '{key}' is not finite: {val}"
+            # Skip list components (e.g., recon_per_feature)
+            if isinstance(val, list):
+                for i, v in enumerate(val):
+                    assert math.isfinite(v), f"Mode {mode}: component '{key}[{i}]' not finite: {v}"
+            else:
+                assert math.isfinite(val), f"Mode {mode}: component '{key}' is not finite: {val}"
 
 
 # ---------------------------------------------------------------------------

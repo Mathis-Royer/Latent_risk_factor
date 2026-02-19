@@ -70,3 +70,19 @@ class InverseVolatility(BenchmarkModel):
         w = 1.0 / self.sigma
         w = w / w.sum()
         return self._project_to_constraints(w, w_old, is_first)
+
+    def rebalance(
+        self,
+        returns_trailing: pd.DataFrame,
+        trailing_vol: pd.DataFrame | None,
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Recompute inverse-volatility weights from trailing vol.
+
+        :return w (np.ndarray): Inverse-vol weights on new universe
+        """
+        self.fit(returns_trailing, universe, trailing_vol=trailing_vol, current_date=current_date)
+        return self.optimize(w_old=w_old, is_first=False)

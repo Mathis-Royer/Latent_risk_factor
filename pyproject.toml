@@ -30,6 +30,9 @@ dev = [
 notebook = [
     "yfinance>=0.2",
 ]
+shrinkage = [
+    "covShrinkage",  # Analytical nonlinear shrinkage (DGJ)
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

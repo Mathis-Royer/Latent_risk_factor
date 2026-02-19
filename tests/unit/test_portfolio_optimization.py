@@ -237,7 +237,7 @@ class TestSCASolver:
 
         w_init = np.ones(N_STOCKS, dtype=np.float64) / N_STOCKS
 
-        w_opt, f_opt, H_opt, n_iters = sca_optimize(
+        w_opt, f_opt, H_opt, n_iters, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=data["Sigma_assets"],
             B_prime=data["B_prime"],
@@ -333,7 +333,7 @@ class TestSCASolver:
             is_first=True,
         )
 
-        w_opt, f_opt, _, _ = sca_optimize(
+        w_opt, f_opt, _, _, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=data["Sigma_assets"],
             B_prime=data["B_prime"],
@@ -373,8 +373,8 @@ class TestSCASolver:
             "max_iter": 30,
         }
 
-        w1, f1, H1 = multi_start_optimize(**common_kwargs)
-        w2, f2, H2 = multi_start_optimize(**common_kwargs)
+        w1, f1, H1, _ = multi_start_optimize(**common_kwargs)
+        w2, f2, H2, _ = multi_start_optimize(**common_kwargs)
 
         np.testing.assert_array_equal(w1, w2, err_msg="Weights differ across runs")
         assert f1 == f2, f"Objectives differ: {f1} vs {f2}"
@@ -837,7 +837,7 @@ class TestConstraints:
         w_init = np.ones(N_STOCKS, dtype=np.float64) / N_STOCKS
         w_max = 0.10
 
-        w_opt, _, _, _ = sca_optimize(
+        w_opt, _, _, _, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=data["Sigma_assets"],
             B_prime=data["B_prime"],
@@ -927,7 +927,7 @@ class TestKnownSolution:
 
         w_init = np.ones(n, dtype=np.float64) / n
 
-        w_opt, _, _, _ = sca_optimize(
+        w_opt, _, _, _, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
@@ -974,7 +974,7 @@ class TestKnownSolution:
 
         w_init = np.ones(n, dtype=np.float64) / n
 
-        w_opt, _, H_opt, _ = sca_optimize(
+        w_opt, _, H_opt, _, _ = sca_optimize(
             w_init=w_init,
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
@@ -1067,7 +1067,7 @@ class TestFrontierMonotonic:
         entropies = []
         variances = []
         for alpha in alpha_grid:
-            w_opt, f_opt, H_opt = multi_start_optimize(
+            w_opt, f_opt, H_opt, _ = multi_start_optimize(
                 Sigma_assets=data["Sigma_assets"],
                 B_prime=data["B_prime"],
                 eigenvalues=data["eigenvalues"],
@@ -1335,7 +1335,7 @@ class TestConstraintEnforcement:
         B_A_port = B_prime  # B_prime = B_A_port @ V, but V=I for this test
         D_eps = rng.uniform(0.001, 0.01, n)
         Sigma_assets = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
-        w_opt, _, _ = multi_start_optimize(
+        w_opt, _, _, _ = multi_start_optimize(
             Sigma_assets=Sigma_assets, B_prime=B_prime, eigenvalues=eigenvalues,
             D_eps=D_eps, alpha=1.0, n_starts=3, seed=42, lambda_risk=1.0,
             phi=25.0, w_bar=0.03, w_max=0.10, is_first=True, max_iter=30,
@@ -1373,7 +1373,7 @@ class TestConstraintEnforcement:
         eigenvalues = np.abs(rng.randn(au)) * 0.1 + 0.01
         D_eps = rng.uniform(0.001, 0.01, n)
         Sigma_assets = B_prime @ np.diag(eigenvalues) @ B_prime.T + np.diag(D_eps)
-        w, f, H = multi_start_optimize(
+        w, f, H, _ = multi_start_optimize(
             Sigma_assets=Sigma_assets, B_prime=B_prime, eigenvalues=eigenvalues,
             D_eps=D_eps, alpha=1.0, n_starts=5, seed=42, lambda_risk=1.0,
             phi=25.0, w_bar=0.03, w_max=0.10, is_first=True, max_iter=30,
@@ -1420,10 +1420,10 @@ class TestConstraintEnforcement:
 
         # Use different seeds so single-start and multi-start explore
         # different initial points, making the comparison meaningful
-        _, f_single, H_single = multi_start_optimize(
+        _, f_single, H_single, _ = multi_start_optimize(
             n_starts=1, seed=99, **common,
         )
-        _, f_multi, H_multi = multi_start_optimize(
+        _, f_multi, H_multi, _ = multi_start_optimize(
             n_starts=5, seed=42, **common,
         )
 
@@ -1739,7 +1739,7 @@ class TestAlphaZeroMinVariance:
         eigenvalues = np.ones(min(n, 3))
         D_eps = sigma_sq  # Idiosyncratic variances
 
-        w_opt, _, _ = multi_start_optimize(
+        w_opt, _, _, _ = multi_start_optimize(
             Sigma_assets=Sigma,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -1875,10 +1875,10 @@ class TestEntropyGradientNormalization:
             idio_weight=0.05,
         )
 
-        w_norm, _, _ = multi_start_optimize(
+        w_norm, _, _, _ = multi_start_optimize(
             **common_kwargs, normalize_entropy_gradient=True,
         )
-        w_raw, _, _ = multi_start_optimize(
+        w_raw, _, _, _ = multi_start_optimize(
             **common_kwargs, normalize_entropy_gradient=False,
         )
 

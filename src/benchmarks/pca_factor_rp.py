@@ -200,3 +200,19 @@ class PCAFactorRiskParity(BenchmarkModel):
         )
 
         return self._project_to_constraints(w_opt, w_old, is_first)
+
+    def rebalance(
+        self,
+        returns_trailing: pd.DataFrame,
+        trailing_vol: pd.DataFrame | None,
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Re-run PCA on trailing window and re-optimize factor risk parity.
+
+        :return w (np.ndarray): PCA-RP weights on new universe
+        """
+        self.fit(returns_trailing, universe)
+        return self.optimize(w_old=w_old, is_first=False)

@@ -75,6 +75,31 @@ class BenchmarkModel(ABC):
         :return w (np.ndarray): Optimal weights (n,)
         """
 
+    def rebalance(
+        self,
+        returns_trailing: pd.DataFrame,
+        trailing_vol: pd.DataFrame | None,
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Recompute weights at a rebalancing date during OOS simulation.
+
+        Default implementation: re-fit and re-optimize. Subclasses may override
+        for more efficient rebalancing (e.g., EqualWeight is trivial).
+
+        :param returns_trailing (pd.DataFrame): Trailing returns for re-estimation
+        :param trailing_vol (pd.DataFrame | None): Trailing volatilities
+        :param w_old (np.ndarray): Previous weights (for turnover constraint)
+        :param universe (list[str]): Current stock universe
+        :param current_date (str): Current date for point-in-time lookup
+
+        :return w_new (np.ndarray): Rebalanced weights (n,)
+        """
+        self.fit(returns_trailing, universe, trailing_vol=trailing_vol, current_date=current_date)
+        return self.optimize(w_old=w_old, is_first=False)
+
     def _project_to_constraints(
         self,
         w: np.ndarray,

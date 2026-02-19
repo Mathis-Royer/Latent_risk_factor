@@ -39,6 +39,7 @@ from src.inference.active_units import (
 from src.inference.composite import aggregate_profiles, infer_latent_trajectories
 from src.integration.reporting import generate_report, format_summary_table
 from src.portfolio.cardinality import enforce_cardinality
+from src.portfolio.constraints import get_binding_constraints
 from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.frontier import (
     compute_adaptive_enb_target,
@@ -68,7 +69,12 @@ from src.walk_forward.metrics import (
     factor_explanatory_power_dynamic,
     latent_stability,
     portfolio_metrics,
+    portfolio_metrics_from_oos_result,
     realized_vs_predicted_correlation,
+)
+from src.walk_forward.oos_rebalancing import (
+    simulate_oos_rebalancing,
+    simulate_benchmark_oos_rebalancing,
 )
 from src.utils import get_optimal_device, configure_backend, clear_device_cache
 from src.walk_forward.phase_a import select_best_config
@@ -1684,9 +1690,12 @@ class FullPipeline:
                 e_star = fit_result["best_epoch"]
 
             logger.info(
-                "  [Fold %d] Training: %d/%d epochs in %.1fs (best_epoch=%d%s)",
+                "  [Fold %d] Training: %d/%d epochs in %.1fs (best_epoch=%d, "
+                "best_val=%.1f, overfit_ratio=%.2f%s)",
                 fold_id, actual_epochs, e_star, t_train,
                 fit_result["best_epoch"],
+                fit_result.get("best_val_elbo", float("nan")),
+                fit_result.get("overfit_ratio", 1.0),
                 ", early stopped" if fit_result.get("best_epoch", 0) < actual_epochs - 1 else "",
             )
 
@@ -1941,7 +1950,7 @@ class FullPipeline:
             "Covariance estimation...",
             fold_id, n_z, n_est, n_vt_holdout,
         )
-        Sigma_z, n_signal = estimate_sigma_z(
+        Sigma_z, n_signal, shrinkage_intensity = estimate_sigma_z(
             z_hat_est,
             eigenvalue_pct=self.config.risk_model.sigma_z_eigenvalue_pct,
             shrinkage_method=self.config.risk_model.sigma_z_shrinkage,
@@ -2099,6 +2108,7 @@ class FullPipeline:
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots
             _state_bag["train_returns"] = returns.loc[train_start:train_end]
+            _state_bag["shrinkage_intensity"] = shrinkage_intensity
 
         logger.info(
             "  [Fold %d] Risk model: AU=%d, n_signal=%d, B_A(%d×%d), Sigma(%d×%d), "
@@ -2271,23 +2281,158 @@ class FullPipeline:
             idio_weight=idio_weight,
         )
 
+        # Capture solver diagnostics: run one final evaluation to get convergence info
+        # We use n_starts=1 since we already have the optimal solution, we just need stats
+        if _state_bag is not None:
+            _, _, _, solver_stats = multi_start_optimize(
+                Sigma_assets=Sigma_assets,
+                B_prime=B_prime_signal,
+                eigenvalues=eigenvalues_signal,
+                D_eps=D_eps_port,
+                alpha=alpha_opt,
+                n_starts=1,
+                seed=self.config.seed,
+                lambda_risk=pc.lambda_risk,
+                w_max=pc.w_max,
+                w_min=pc.w_min,
+                w_bar=pc.w_bar,
+                phi=pc.phi,
+                w_old=w_old,
+                is_first=is_first,
+                warm_start_w=w_final,  # Start from final solution
+                idio_weight=idio_weight,
+            )
+            _state_bag["solver_stats"] = solver_stats
+
+            # Compute constraint binding status
+            constraint_params = {
+                "w_max": pc.w_max,
+                "w_min": pc.w_min,
+                "w_bar": pc.w_bar,
+                "tau_max": pc.tau_max,
+            }
+            binding_status = get_binding_constraints(
+                w_final, w_old, constraint_params,
+            )
+            _state_bag["binding_status"] = binding_status
+
         t_fold = time.monotonic() - t0
         logger.info(
             "  [Fold %d] Portfolio: alpha=%.2f, n_active=%d | total %.1fs",
             fold_id, alpha_opt, int(np.sum(w_final > 1e-6)), t_fold,
         )
 
-        # 9. OOS metrics
+        # 9. OOS metrics — with or without periodic rebalancing
         returns_oos = returns.loc[oos_start:oos_end]
+        rebal_freq = self.config.portfolio.rebalancing_frequency_days
 
-        metrics = portfolio_metrics(
-            w_final, returns_oos,
-            universe=inferred_stock_ids,
-            H_oos=H_opt, AU=AU, K=self.config.vae.K,
-            Sigma_hat=Sigma_assets,
-            n_signal=n_signal_eff,
-            H_factor=H_factor,
-        )
+        if rebal_freq > 0 and returns_oos.shape[0] > 0:
+            # Periodic rebalancing enabled
+            logger.info(
+                "  [Fold %d] OOS with rebalancing (every %d days)...",
+                fold_id, rebal_freq,
+            )
+
+            # Get exchange codes for Shumway delisting imputation
+            exchange_codes = self._get_exchange_codes(stock_data) if stock_data is not None else {}
+
+            # Build constraint params dict for rebalancing
+            oos_constraint_params = {
+                "w_max": pc.w_max,
+                "w_min": pc.w_min,
+                "w_bar": pc.w_bar,
+                "phi": pc.phi,
+                "kappa_1": pc.kappa_1,
+                "kappa_2": pc.kappa_2,
+                "delta_bar": pc.delta_bar,
+                "tau_max": pc.tau_max,
+                "lambda_risk": pc.lambda_risk,
+                "n_starts": pc.n_starts,
+                "entropy_idio_weight": pc.entropy_idio_weight,
+                "alpha_opt": alpha_opt,
+            }
+
+            oos_result = simulate_oos_rebalancing(
+                B_prime=B_prime_signal,
+                eigenvalues=eigenvalues_signal,
+                B_A_raw=B_A,
+                inferred_stock_ids=inferred_stock_ids,
+                Sigma_assets_initial=Sigma_assets,
+                D_eps_initial=D_eps_port,
+                returns_oos=returns_oos,
+                trailing_vol=trailing_vol,
+                exchange_codes=exchange_codes,
+                w_initial=w_final,
+                H_initial=H_opt,
+                alpha_opt=alpha_opt,
+                rebalancing_frequency_days=rebal_freq,
+                entropy_trigger_alpha=pc.entropy_trigger_alpha,
+                tc_bps=pc.transaction_cost_bps,
+                delisting_return_nyse_amex=pc.delisting_return_nyse_amex,
+                delisting_return_nasdaq=pc.delisting_return_nasdaq,
+                constraint_params=oos_constraint_params,
+                d_eps_floor=self.config.risk_model.d_eps_floor,
+                seed=self.config.seed + fold_id,
+                idio_weight=idio_weight,
+            )
+
+            metrics = portfolio_metrics_from_oos_result(
+                oos_result,
+                AU=AU,
+                K=self.config.vae.K,
+                Sigma_hat=Sigma_assets,
+                n_signal=n_signal_eff,
+            )
+
+            # Update final weights from rebalancing
+            w_final = oos_result.final_weights
+            if oos_result.final_universe:
+                inferred_stock_ids = oos_result.final_universe
+
+            logger.info(
+                "  [Fold %d] OOS rebalancing: %d scheduled, %d exceptional, "
+                "turnover=%.1f%%, TC=%.2f%%",
+                fold_id,
+                oos_result.n_scheduled_rebalances,
+                oos_result.n_exceptional_rebalances,
+                oos_result.cumulative_turnover * 100,
+                oos_result.total_transaction_cost * 100,
+            )
+        else:
+            # Original buy-and-hold behavior
+            metrics = portfolio_metrics(
+                w_final, returns_oos,
+                universe=inferred_stock_ids,
+                H_oos=H_opt, AU=AU, K=self.config.vae.K,
+                Sigma_hat=Sigma_assets,
+                n_signal=n_signal_eff,
+                H_factor=H_factor,
+            )
+
+            # Layer 2: realized vs predicted variance + correlation (buy-hold only)
+            if returns_oos.shape[0] > 0:
+                active_mask = w_final > 1e-8
+                active_ids = [inferred_stock_ids[i] for i in range(n_port) if active_mask[i]]
+                if len(active_ids) > 0:
+                    w_active = w_final[active_mask]
+                    w_active = w_active / w_active.sum()
+                    active_indices = np.where(active_mask)[0]
+                    Sigma_active = Sigma_assets[np.ix_(active_indices, active_indices)]
+
+                    oos_active = returns_oos.reindex(columns=active_ids).fillna(0.0)
+                    port_ret = oos_active.values @ w_active
+                    if len(port_ret) > 10:
+                        realized_var = float(np.var(port_ret, ddof=1))
+                        predicted_var = float(w_active @ Sigma_active @ w_active)
+                        if predicted_var > 1e-15:
+                            var_ratio = realized_var / predicted_var
+                            metrics["var_ratio_oos"] = var_ratio
+
+                    oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
+                    if len(oos_df) > 10:
+                        corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_df.values)
+                        metrics["corr_rank_oos"] = corr_rank
+
         metrics["AU"] = float(AU)
         metrics["e_star"] = float(e_star)
         metrics["alpha_opt"] = alpha_opt
@@ -2300,37 +2445,7 @@ class FullPipeline:
                 )
             trainer.close()
 
-        # Layer 2: realized vs predicted variance + correlation
-        # Compute portfolio return directly via R @ w with fillna(0)
-        # instead of dropna("any") which eliminates most OOS rows when
-        # any single stock has a missing value on a given day.
-        if returns_oos.shape[0] > 0:
-            active_mask = w_final > 1e-8
-            active_ids = [inferred_stock_ids[i] for i in range(n_port) if active_mask[i]]
-            if len(active_ids) > 0:
-                w_active = w_final[active_mask]
-                w_active = w_active / w_active.sum()
-                active_indices = np.where(active_mask)[0]
-                Sigma_active = Sigma_assets[np.ix_(active_indices, active_indices)]
-
-                # Portfolio return: fillna(0) means a missing stock
-                # contributes 0 return (as if not traded that day).
-                oos_active = returns_oos.reindex(columns=active_ids).fillna(0.0)
-                port_ret = oos_active.values @ w_active
-                if len(port_ret) > 10:
-                    realized_var = float(np.var(port_ret, ddof=1))
-                    predicted_var = float(w_active @ Sigma_active @ w_active)
-                    if predicted_var > 1e-15:
-                        var_ratio = realized_var / predicted_var
-                        metrics["var_ratio_oos"] = var_ratio
-
-                # Rank correlation still uses dropna for cross-sectional comparison
-                oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
-                if len(oos_df) > 10:
-                    corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_df.values)
-                    metrics["corr_rank_oos"] = corr_rank
-
-        # Layer 3: crisis-period return
+        # Layer 3: crisis-period return (both modes)
         if vix_data is not None and returns_oos.shape[0] > 0:
             from src.data_pipeline.crisis import compute_crisis_threshold
             train_end_ts: pd.Timestamp = pd.Timestamp(train_end)  # type: ignore[assignment]
@@ -2411,7 +2526,9 @@ class FullPipeline:
         if len(valid_stocks) < len(stock_ids_str):
             n_dropped = len(stock_ids_str) - len(valid_stocks)
             logger.debug("Benchmark %s: dropped %d stocks with >50%% NaN", bench_name, n_dropped)
-        train_returns = train_returns[valid_stocks].dropna()
+        # NB: Do NOT call .dropna() here — each benchmark handles NaN internally
+        # (MinVar/PCA: dropna in fit, ERC: fillna(0), EqualWeight: unused)
+        train_returns = train_returns[valid_stocks]
         stock_ids_str = valid_stocks
 
         # Shared constraint parameters (INV-012)
@@ -2446,6 +2563,7 @@ class FullPipeline:
                 train_returns, stock_ids_str,
                 trailing_vol=train_vol,
                 current_date=train_end,
+                data_dir=str(self.config.data.data_dir),  # For SP500 cache
             )
             w = benchmark.optimize(w_old=w_old, is_first=is_first)
         except Exception as e:
@@ -2517,3 +2635,18 @@ class FullPipeline:
             "e_star": 0.0,
             "error": 1.0,
         }
+
+    def _get_exchange_codes(self, stock_data: pd.DataFrame) -> dict[int, int]:
+        """
+        Extract exchange codes from stock_data for Shumway delisting imputation.
+
+        Exchange codes: 1=NYSE, 2=AMEX, 3=NASDAQ.
+
+        :param stock_data (pd.DataFrame): Stock metadata with 'permno' and 'exchange_code'
+
+        :return exchange_codes (dict[int, int]): permno -> exchange code
+        """
+        if "exchange_code" not in stock_data.columns:
+            # Fallback: assume NYSE (conservative Shumway = -30%)
+            return {}
+        return stock_data.groupby("permno")["exchange_code"].first().to_dict()

@@ -231,6 +231,7 @@ class VAETrainer:
         epoch_kl = torch.tensor(0.0, device=self.device)
         epoch_co = torch.tensor(0.0, device=self.device)
         epoch_sigma_sq = torch.tensor(0.0, device=self.device)
+        epoch_recon_per_feature: list[float] | None = None  # Per-feature recon loss
         n_batches = 0
 
         # Zero gradients before first accumulation window
@@ -357,6 +358,14 @@ class VAETrainer:
             epoch_kl += components["kl"]
             epoch_co += components["co_mov"]
             epoch_sigma_sq += components["sigma_sq"]
+
+            # Accumulate per-feature reconstruction loss (CPU list)
+            rpf = components.get("recon_per_feature")
+            if rpf is not None and len(rpf) > 0:
+                if epoch_recon_per_feature is None:
+                    epoch_recon_per_feature = [0.0] * len(rpf)
+                for i, val in enumerate(rpf):
+                    epoch_recon_per_feature[i] += val
             n_batches += 1
             self._global_step += 1
 
@@ -427,6 +436,9 @@ class VAETrainer:
                 phase2_frac=self.curriculum_phase2_frac,
             ),
             "learning_rate": self.scheduler.get_lr(),
+            "recon_per_feature": [
+                v / n_batches for v in epoch_recon_per_feature
+            ] if epoch_recon_per_feature is not None else [],
         }
 
         # Fix 5: Monitor σ² hitting bounds (DVT monitoring prescription)

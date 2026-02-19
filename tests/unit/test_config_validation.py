@@ -33,9 +33,15 @@ class TestDataPipelineConfigValidation:
     def test_default_valid(self) -> None:
         DataPipelineConfig()
 
-    def test_n_stocks_zero(self) -> None:
+    def test_n_stocks_zero_is_valid(self) -> None:
+        """n_stocks=0 is valid and means 'no cap, use all available stocks'."""
+        config = DataPipelineConfig(n_stocks=0)
+        assert config.n_stocks == 0
+
+    def test_n_stocks_negative(self) -> None:
+        """Negative n_stocks should raise ValueError."""
         with pytest.raises(ValueError, match="n_stocks"):
-            DataPipelineConfig(n_stocks=0)
+            DataPipelineConfig(n_stocks=-1)
 
     def test_window_length_zero(self) -> None:
         with pytest.raises(ValueError, match="window_length"):

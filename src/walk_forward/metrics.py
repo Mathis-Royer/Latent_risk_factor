@@ -9,9 +9,14 @@ Reference: ISD Section MOD-009 — Sub-task 4.
 """
 
 import logging
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+if TYPE_CHECKING:
+    from src.walk_forward.oos_rebalancing import OOSRebalancingResult
 
 logger = logging.getLogger(__name__)
 
@@ -523,3 +528,124 @@ def crisis_period_return(
     n_crisis = len(crisis_returns)
     cumulative = float(np.exp(np.sum(np.asarray(crisis_returns))))
     return cumulative ** (252.0 / n_crisis) - 1.0
+
+
+def portfolio_metrics_from_oos_result(
+    result: "OOSRebalancingResult",
+    AU: int = 0,
+    K: int = 0,
+    Sigma_hat: np.ndarray | None = None,
+    n_signal: int = 0,
+) -> dict[str, float]:
+    """
+    Compute portfolio metrics from OOS rebalancing simulation result.
+
+    Computes standard metrics (annualized return, vol, Sharpe, drawdown) plus
+    rebalancing-specific metrics (turnover, transaction cost, entropy trajectory).
+
+    :param result (OOSRebalancingResult): Result from simulate_oos_rebalancing()
+    :param AU (int): Active units (for H_norm computation)
+    :param K (int): Total latent capacity (for H_norm computation)
+    :param Sigma_hat (np.ndarray | None): Final covariance matrix (for DR)
+    :param n_signal (int): Number of signal eigenvalues from DGJ
+
+    :return metrics (dict): Portfolio performance metrics
+    """
+    port_returns = result.daily_returns
+    n_days = len(port_returns)
+
+    if n_days == 0:
+        return {"error": 1.0}
+
+    # Geometric annualized return
+    cumulative = float(np.exp(np.sum(port_returns)))
+    ann_return = cumulative ** (252.0 / n_days) - 1.0 if n_days > 0 else 0.0
+
+    # Annualized volatility
+    ann_vol = float(np.std(port_returns, ddof=1) * np.sqrt(252)) if n_days > 1 else 0.0
+
+    # Sharpe ratio (gross)
+    sharpe_gross = ann_return / max(ann_vol, 1e-10)
+
+    # Net return after transaction costs
+    ann_tc = result.total_transaction_cost * (252.0 / n_days) if n_days > 0 else 0.0
+    ann_return_net = ann_return - ann_tc
+    sharpe_net = ann_return_net / max(ann_vol, 1e-10)
+
+    # Maximum drawdown
+    cum_returns = np.cumsum(port_returns)
+    running_max = np.maximum.accumulate(cum_returns)
+    log_drawdowns = cum_returns - running_max
+    max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
+
+    # Calmar and Sortino
+    calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0
+    downside = port_returns[port_returns < 0]
+    downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if len(downside) > 1 else 1e-10
+    sortino = ann_return / max(downside_vol, 1e-10)
+
+    # Entropy trajectory statistics
+    H_traj = result.entropy_trajectory
+    H_initial = H_traj[0] if H_traj else 0.0
+    H_final = H_traj[-1] if H_traj else 0.0
+    H_mean = float(np.mean(H_traj)) if H_traj else 0.0
+    H_min = float(np.min(H_traj)) if H_traj else 0.0
+
+    # Normalized entropy (same logic as portfolio_metrics)
+    denom_K = max(np.log(max(K, 1)), 1e-10) if K > 0 else 1e-10
+    denom_AU = max(np.log(max(AU, 1)), 1e-10) if AU > 0 else 1e-10
+    denom_signal = max(np.log(max(n_signal, 2)), 1e-10) if n_signal > 1 else denom_AU
+    H_norm = H_final / denom_K if K > 0 else H_final / denom_AU
+    H_norm_au = H_final / denom_AU if AU > 0 else 0.0
+    H_norm_signal = H_final / denom_signal if n_signal > 1 else H_norm_au
+
+    # Effective number of positions (final weights)
+    w_final = result.final_weights
+    eff_n = float(1.0 / np.sum(w_final ** 2)) if np.sum(w_final ** 2) > 0 else 0.0
+    n_active_positions = int(np.sum(w_final > 0.001))
+
+    # Diversification ratio
+    dr = 0.0
+    if Sigma_hat is not None and ann_vol > 0:
+        n_active = len(w_final)
+        if Sigma_hat.shape[0] >= n_active:
+            sigma_diag = np.sqrt(np.diag(Sigma_hat[:n_active, :n_active]))
+            weighted_vol = float(w_final @ sigma_diag)
+            port_vol = float(np.sqrt(w_final @ Sigma_hat[:n_active, :n_active] @ w_final))
+            dr = weighted_vol / max(port_vol, 1e-10)
+
+    # Rebalancing counts
+    n_rebalances = result.n_scheduled_rebalances + result.n_exceptional_rebalances
+
+    return {
+        # Primary metrics
+        "H_norm_oos": H_norm,
+        "ann_vol_oos": ann_vol,
+        "max_drawdown_oos": max_drawdown,
+        # Return metrics
+        "ann_return": ann_return,
+        "ann_return_net": ann_return_net,
+        "sharpe": sharpe_gross,
+        "sharpe_net": sharpe_net,
+        "calmar": calmar,
+        "sortino": sortino,
+        # Position metrics
+        "eff_n_positions": eff_n,
+        "diversification_ratio": dr,
+        "n_active_positions": float(n_active_positions),
+        "n_days_oos": float(n_days),
+        # Rebalancing metrics
+        "cumulative_turnover": result.cumulative_turnover,
+        "total_transaction_cost": result.total_transaction_cost,
+        "n_rebalances_scheduled": float(result.n_scheduled_rebalances),
+        "n_rebalances_exceptional": float(result.n_exceptional_rebalances),
+        "n_rebalances_total": float(n_rebalances),
+        # Entropy trajectory
+        "H_initial": H_initial,
+        "H_final": H_final,
+        "H_mean": H_mean,
+        "H_min": H_min,
+        "H_norm_au": H_norm_au,
+        "H_norm_signal": H_norm_signal,
+        "n_signal": float(n_signal),
+    }

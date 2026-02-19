@@ -120,6 +120,85 @@ def check_hard_constraints(
     return status
 
 
+def get_binding_constraints(
+    w: np.ndarray,
+    w_old: np.ndarray | None,
+    constraint_params: dict[str, float],
+    tol: float = 1e-6,
+) -> dict[str, object]:
+    """
+    Analyze which constraints are binding at the current solution.
+
+    A constraint is considered binding if the solution is within `tol` of the
+    constraint boundary. This diagnostic helps identify when constraints are
+    limiting the optimizer's ability to improve the objective.
+
+    :param w (np.ndarray): Current weights (n,)
+    :param w_old (np.ndarray | None): Previous weights (for turnover constraint)
+    :param constraint_params (dict): Constraint parameters with keys:
+        - w_max (float): Maximum weight per stock (default 0.05)
+        - w_min (float): Minimum active weight (default 0.001)
+        - w_bar (float): Concentration penalty threshold (default 0.03)
+        - tau_max (float): Maximum one-way turnover (default 0.30)
+    :param tol (float): Tolerance for considering a constraint binding
+
+    :return binding (dict): Binding constraint analysis with keys:
+        - n_at_w_max (int): Stocks hitting maximum weight cap
+        - n_at_w_min (int): Stocks near minimum weight threshold
+        - n_above_w_bar (int): Stocks exceeding concentration threshold
+        - w_max_binding (bool): True if any stock hits w_max
+        - tau_binding (bool): True if turnover constraint is binding
+        - actual_turnover (float): Current one-way turnover
+        - concentrated_weight (float): Sum of weights exceeding w_bar
+        - binding_fraction (float): Fraction of portfolio at constraints
+    """
+    w_max = constraint_params.get("w_max", 0.05)
+    w_min = constraint_params.get("w_min", 0.001)
+    w_bar = constraint_params.get("w_bar", 0.03)
+    tau_max = constraint_params.get("tau_max", 0.30)
+
+    n = len(w)
+    active_mask = w > tol  # Non-zero positions
+
+    # Count positions at maximum weight
+    n_at_w_max = int(np.sum(w >= w_max - tol))
+
+    # Count positions at minimum weight (but non-zero)
+    n_at_w_min = int(np.sum((w > tol) & (w <= w_min + tol)))
+
+    # Count positions above concentration threshold
+    n_above_w_bar = int(np.sum(w > w_bar + tol))
+
+    # Concentrated weight: sum of weights that exceed w_bar
+    excess_weight = np.maximum(0.0, w - w_bar)
+    concentrated_weight = float(np.sum(excess_weight))
+
+    # Turnover analysis
+    actual_turnover = 0.0
+    tau_binding = False
+    if w_old is not None:
+        actual_turnover = float(0.5 * np.sum(np.abs(w - w_old)))
+        tau_binding = actual_turnover >= tau_max - tol
+
+    # Fraction of portfolio at constraints
+    weight_at_caps = float(np.sum(w[w >= w_max - tol]))
+    binding_fraction = weight_at_caps / max(np.sum(w), 1e-10)
+
+    return {
+        "n_at_w_max": n_at_w_max,
+        "n_at_w_min": n_at_w_min,
+        "n_above_w_bar": n_above_w_bar,
+        "n_active": int(np.sum(active_mask)),
+        "n_total": n,
+        "w_max_binding": n_at_w_max > 0,
+        "tau_binding": tau_binding,
+        "actual_turnover": actual_turnover,
+        "tau_max": tau_max,
+        "concentrated_weight": concentrated_weight,
+        "binding_fraction": binding_fraction,
+    }
+
+
 def project_to_constraints(
     w: np.ndarray,
     w_max: float = 0.05,

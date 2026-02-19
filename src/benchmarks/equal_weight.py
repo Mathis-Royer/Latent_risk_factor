@@ -39,3 +39,19 @@ class EqualWeight(BenchmarkModel):
         w = np.ones(self.n) / self.n
         w_max = self.constraint_params["w_max"]
         return np.clip(w, 0.0, w_max)
+
+    def rebalance(
+        self,
+        returns_trailing: pd.DataFrame,
+        trailing_vol: pd.DataFrame | None,
+        w_old: np.ndarray,
+        universe: list[str],
+        current_date: str,
+    ) -> np.ndarray:
+        """
+        Trivial rebalancing: return 1/n on current universe.
+
+        :return w (np.ndarray): Equal weights on new universe
+        """
+        self.n = len(universe)
+        return self.optimize(w_old=w_old, is_first=False)

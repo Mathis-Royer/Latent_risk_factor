@@ -61,6 +61,40 @@ def compute_reconstruction_loss(
 
 
 # ---------------------------------------------------------------------------
+# Sub-task 1b: Per-feature reconstruction loss
+# ---------------------------------------------------------------------------
+
+def compute_reconstruction_loss_per_feature(
+    x: torch.Tensor,
+    x_hat: torch.Tensor,
+) -> list[float]:
+    """
+    Compute per-feature MSE (averaged over batch and time).
+
+    Used for diagnostics to identify if the VAE reconstructs some features
+    (e.g., returns) better than others (e.g., volatility).
+
+    :param x (torch.Tensor): Input windows (B, T, F)
+    :param x_hat (torch.Tensor): Reconstruction (B, T, F)
+
+    :return per_feature_mse (list[float]): MSE for each feature [mse_0, mse_1, ...]
+    """
+    # Ensure float32 for numerical stability
+    x = x.float()
+    x_hat = x_hat.float()
+
+    F = x.shape[2]
+    per_feature_mse: list[float] = []
+
+    for f in range(F):
+        # MSE for feature f, averaged over batch and time
+        mse_f = torch.mean((x[:, :, f] - x_hat[:, :, f]) ** 2).item()
+        per_feature_mse.append(mse_f)
+
+    return per_feature_mse
+
+
+# ---------------------------------------------------------------------------
 # Sub-task 2: KL divergence
 # ---------------------------------------------------------------------------
 
@@ -198,6 +232,9 @@ def compute_loss(
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
         total_loss = recon_term + log_norm_term + beta_fixed * L_kl + co_term
 
+    # Per-feature reconstruction loss (for diagnostics)
+    per_feature_mse = compute_reconstruction_loss_per_feature(x, x_hat)
+
     # Monitoring components — detached tensors to avoid per-batch GPU sync
     components: dict[str, Any] = {
         "recon": L_recon.detach(),
@@ -208,6 +245,7 @@ def compute_loss(
         "recon_term": recon_term.detach(),
         "log_norm_term": log_norm_term.detach(),
         "total": total_loss.detach(),
+        "recon_per_feature": per_feature_mse,  # [mse_return, mse_vol] for F=2
     }
 
     if mode == "F":

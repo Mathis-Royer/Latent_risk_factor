@@ -36,7 +36,7 @@ class TestSingleStockPortfolio:
         Sigma_assets = np.array([[0.04]])  # 20% vol, single stock
         D_eps = np.array([0.01])
 
-        w_best, f_best, H_best = multi_start_optimize(
+        w_best, f_best, H_best, _ = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -245,7 +245,7 @@ class TestNearSingularCovariance:
         ])
 
         # Ledoit-Wolf should handle this
-        Sigma_z, _ = estimate_sigma_z(z_hat)
+        Sigma_z, _, _ = estimate_sigma_z(z_hat)
 
         # Verify PSD: all eigenvalues >= 0
         eigvals = np.linalg.eigvalsh(Sigma_z)

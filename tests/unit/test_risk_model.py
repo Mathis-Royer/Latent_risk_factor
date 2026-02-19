@@ -318,7 +318,7 @@ class TestCovariance:
         rng = np.random.RandomState(SEED)
 
         z_hat = rng.randn(100, AU).astype(np.float64) * 0.01
-        Sigma_z, n_signal = estimate_sigma_z(z_hat)  # default: spiked (DGJ)
+        Sigma_z, n_signal, _ = estimate_sigma_z(z_hat)  # default: spiked (DGJ)
 
         assert isinstance(n_signal, int) and n_signal >= 0
         eigenvalues = np.linalg.eigvalsh(Sigma_z)
@@ -339,7 +339,9 @@ class TestCovariance:
 
         z_hat = rng.randn(100, AU).astype(np.float64) * 0.01
         # Use truncation method (which applies LW internally)
-        Sigma_z, n_signal_trunc = estimate_sigma_z(z_hat, shrinkage_method="truncation")
+        Sigma_z, n_signal_trunc, shrink_alpha = estimate_sigma_z(z_hat, shrinkage_method="truncation")
+        # Verify shrinkage intensity is returned for truncation method
+        assert shrink_alpha is not None and 0.0 <= shrink_alpha <= 1.0
 
         # B1: Verify LW shrinkage formula directly
         lw = LedoitWolf()
@@ -654,7 +656,7 @@ class TestCovarianceProperties:
         au = 5
         n_dates = 30  # Small sample -> poorly conditioned sample cov
         z_hat = rng.randn(n_dates, au)
-        Sigma_lw, _ = estimate_sigma_z(z_hat)
+        Sigma_lw, _, _ = estimate_sigma_z(z_hat)
         Sigma_sample = np.cov(z_hat.T)
         cond_lw = np.linalg.cond(Sigma_lw)
         cond_sample = np.linalg.cond(Sigma_sample)
@@ -746,9 +748,9 @@ class TestSigmaZFullHistory:
         # Full history = both periods
         z_full = np.vstack([z_period1, z_period2])
 
-        Sigma_full, _ = estimate_sigma_z(z_full)
-        Sigma_p1, _ = estimate_sigma_z(z_period1)
-        Sigma_p2, _ = estimate_sigma_z(z_period2)
+        Sigma_full, _, _ = estimate_sigma_z(z_full)
+        Sigma_p1, _, _ = estimate_sigma_z(z_period1)
+        Sigma_p2, _, _ = estimate_sigma_z(z_period2)
 
         # Sigma_full must differ from both period-specific estimates
         assert not np.allclose(Sigma_full, Sigma_p1, atol=1e-6), (
@@ -773,7 +775,7 @@ class TestSigmaZFullHistory:
         rng = np.random.RandomState(42)
         for au in [3, 5, 10]:
             z_hat = rng.randn(50, au) * 0.01
-            Sigma_z, n_sig = estimate_sigma_z(z_hat)
+            Sigma_z, n_sig, _ = estimate_sigma_z(z_hat)
             assert isinstance(n_sig, int) and n_sig >= 0
             assert Sigma_z.shape == (au, au), (
                 f"Sigma_z shape {Sigma_z.shape} != expected ({au}, {au})"

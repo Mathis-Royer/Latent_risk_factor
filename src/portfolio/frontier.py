@@ -92,7 +92,7 @@ def compute_variance_entropy_frontier(
         # this reduces the number of SCA iterations needed.
         warm_start_w = prev_w
 
-        w_opt, f_opt, H_opt = multi_start_optimize(
+        w_opt, f_opt, H_opt, _ = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,

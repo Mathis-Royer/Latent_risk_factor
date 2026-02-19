@@ -256,7 +256,7 @@ def test_B_to_risk_model_to_Sigma() -> None:
     assert z_hat.shape[0] > 0, "No valid dates for factor regression"
 
     # Covariance
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
     eigenvalues = np.linalg.eigvalsh(Sigma_z)
     assert np.all(eigenvalues >= -1e-10), (
         f"Sigma_z not PSD: min eigenvalue = {eigenvalues.min():.2e}"
@@ -316,7 +316,7 @@ def test_Sigma_to_portfolio_weights() -> None:
     D_eps = rng.uniform(0.001, 0.01, size=n).astype(np.float64)
     Sigma_assets = B_A_port @ Sigma_z @ B_A_port.T + np.diag(D_eps)
 
-    w_opt, f_opt, H_opt = multi_start_optimize(
+    w_opt, f_opt, H_opt, _ = multi_start_optimize(
         Sigma_assets=Sigma_assets,
         B_prime=B_prime,
         eigenvalues=eigenvalues,
@@ -425,13 +425,13 @@ def test_risk_model_to_portfolio_chain() -> None:
     assert z_hat.shape[0] > 0, "No valid factor returns"
 
     # Covariance
-    Sigma_z, _ = estimate_sigma_z(z_hat)
+    Sigma_z, _, _ = estimate_sigma_z(z_hat)
     residuals = compute_residuals(B_A_by_date, z_hat, returns, universe_snapshots, valid_dates, stock_ids)
     D_eps = estimate_d_eps(residuals, stock_ids)
     risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps)
 
     # Portfolio
-    w_opt, f_opt, H_opt = multi_start_optimize(
+    w_opt, f_opt, H_opt, _ = multi_start_optimize(
         Sigma_assets=risk_model["Sigma_assets"],
         B_prime=risk_model["B_prime_port"],
         eigenvalues=risk_model["eigenvalues"],

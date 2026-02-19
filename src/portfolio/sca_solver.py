@@ -468,7 +468,7 @@ def sca_optimize(
     D_eps: np.ndarray | None = None,
     idio_weight: float = 0.2,
     budget: np.ndarray | None = None,
-) -> tuple[np.ndarray, float, float, int]:
+) -> tuple[np.ndarray, float, float, int, dict[str, object]]:
     """
     SCA optimization from a single starting point.
 
@@ -508,6 +508,11 @@ def sca_optimize(
     :return f_final (float): Final objective value
     :return H_final (float): Final entropy
     :return n_iters (int): Number of SCA iterations used
+    :return convergence_info (dict): Solver diagnostics with keys:
+        - converged (bool): True if tol reached before max_iter
+        - final_grad_norm (float): Norm of smooth gradient at solution
+        - step_sizes (list[float]): Armijo step sizes per iteration
+        - obj_improvements (list[float]): Objective change per iteration
     """
     n = len(w_init)
 
@@ -533,9 +538,16 @@ def sca_optimize(
 
     f_current = obj_fn(w)
 
+    # Convergence tracking
+    step_sizes: list[float] = []
+    obj_improvements: list[float] = []
+    converged = False
+    final_grad_norm = 0.0
+    final_iter = 0
+
     for it in range(max_iter):
         # Compute entropy and gradient at current point
-        H_current, grad_H = compute_entropy_and_gradient(
+        _, grad_H = compute_entropy_and_gradient(
             w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
             idio_weight=idio_weight, budget=budget,
         )
@@ -544,6 +556,7 @@ def sca_optimize(
         w_star = subproblem.solve(grad_H)
 
         if w_star is None:
+            final_iter = it + 1
             break
 
         # Directional derivative of the smooth part of the objective:
@@ -559,11 +572,15 @@ def sca_optimize(
         direction = w_star - w
         delta_surr = max(float(grad_f_smooth @ direction), 0.0)
 
+        # Track gradient norm for convergence diagnostics
+        final_grad_norm = float(np.linalg.norm(grad_f_smooth))
+
         # Armijo backtracking
         eta = armijo_backtracking(
             w, w_star, f_current, delta_surr,
             obj_fn, armijo_c, armijo_rho, armijo_max_iter,
         )
+        step_sizes.append(eta)
 
         # Update
         w_new = w + eta * (w_star - w)
@@ -580,19 +597,31 @@ def sca_optimize(
                 break
 
         f_new = obj_fn(w_new)
+        obj_improvements.append(f_new - f_current)
 
         # Convergence check: relative change in objective (scale-independent)
         if abs(f_new - f_current) < tol * max(1e-10, abs(f_current)):
             w = w_new
             f_current = f_new
+            converged = True
+            final_iter = it + 1
             break
 
         w = w_new
         f_current = f_new
+        final_iter = it + 1
 
     H_final = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
                                     idio_weight=idio_weight, budget=budget)
-    return w, f_current, H_final, it + 1
+
+    convergence_info: dict[str, object] = {
+        "converged": converged,
+        "final_grad_norm": final_grad_norm,
+        "step_sizes": step_sizes,
+        "obj_improvements": obj_improvements,
+    }
+
+    return w, f_current, H_final, final_iter, convergence_info
 
 
 def multi_start_optimize(
@@ -605,7 +634,7 @@ def multi_start_optimize(
     seed: int = 42,
     warm_start_w: np.ndarray | None = None,
     **kwargs: float | np.ndarray | bool | None,
-) -> tuple[np.ndarray, float, float]:
+) -> tuple[np.ndarray, float, float, dict[str, object]]:
     """
     Multi-start SCA optimization with parallel execution.
 
@@ -634,6 +663,12 @@ def multi_start_optimize(
     :return w_best (np.ndarray): Best weights (n,)
     :return f_best (float): Best objective value
     :return H_best (float): Entropy at best solution
+    :return solver_stats (dict): Aggregated solver statistics:
+        - n_starts (int): Number of starts used
+        - best_start_idx (int): Index of winning start
+        - converged_count (int): Number of starts that converged
+        - iterations (list[int]): Iterations per start
+        - best_convergence_info (dict): Detailed info from best start
     """
     n = Sigma_assets.shape[0]
     rng = np.random.RandomState(seed)
@@ -706,7 +741,9 @@ def multi_start_optimize(
 
     active_starts = starts[:n_starts]
 
-    def _run_start(w_init: np.ndarray) -> tuple[np.ndarray, float, float, int]:
+    def _run_start(
+        w_init: np.ndarray,
+    ) -> tuple[np.ndarray, float, float, int, dict[str, object]]:
         return sca_optimize(
             w_init=w_init,
             Sigma_assets=Sigma_assets,
@@ -722,10 +759,21 @@ def multi_start_optimize(
     best_w = active_starts[0]
     best_f = -np.inf
     best_H = 0.0
+    best_convergence_info: dict[str, object] = {}
+    best_start_idx = 0
+    iterations_list: list[int] = []
+    converged_count = 0
 
     if len(active_starts) <= 1:
-        w_opt, f_opt, H_opt, _ = _run_start(active_starts[0])
-        return w_opt, f_opt, H_opt
+        w_opt, f_opt, H_opt, n_iter, conv_info = _run_start(active_starts[0])
+        solver_stats: dict[str, object] = {
+            "n_starts": 1,
+            "best_start_idx": 0,
+            "converged_count": 1 if conv_info.get("converged", False) else 0,
+            "iterations": [n_iter],
+            "best_convergence_info": conv_info,
+        }
+        return w_opt, f_opt, H_opt, solver_stats
 
     # Parallel execution: solvers (MOSEK/CLARABEL/ECOS) release the GIL
     with ThreadPoolExecutor(max_workers=len(active_starts)) as executor:
@@ -734,11 +782,24 @@ def multi_start_optimize(
             for w_init in active_starts
         ]
         # Iterate in submission order to preserve determinism on ties
-        for future in futures:
-            w_opt, f_opt, H_opt, _ = future.result()
+        for idx, future in enumerate(futures):
+            w_opt, f_opt, H_opt, n_iter, conv_info = future.result()
+            iterations_list.append(n_iter)
+            if conv_info.get("converged", False):
+                converged_count += 1
             if f_opt > best_f:
                 best_w = w_opt
                 best_f = f_opt
                 best_H = H_opt
+                best_convergence_info = conv_info
+                best_start_idx = idx
 
-    return best_w, best_f, best_H
+    solver_stats = {
+        "n_starts": len(active_starts),
+        "best_start_idx": best_start_idx,
+        "converged_count": converged_count,
+        "iterations": iterations_list,
+        "best_convergence_info": best_convergence_info,
+    }
+
+    return best_w, best_f, best_H, solver_stats
