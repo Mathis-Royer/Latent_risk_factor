@@ -448,7 +448,7 @@ class RiskModelConfig:
     ridge_scale: float = 1e-6
     sigma_z_shrinkage: str = "analytical_nonlinear"  # Ledoit-Wolf 2020 (robust to non-spiked spectra)
     sigma_z_eigenvalue_pct: float = 0.95
-    sigma_z_ewma_half_life: int = 126  # ~6 months (Barra USE4 §4.3 standard, reduces temporal leakage)
+    sigma_z_ewma_half_life: int = 0  # 0 = equal weights (no EWMA); 126 = ~6 months Barra USE4 standard
     b_a_shrinkage_alpha: float = 0.0
     b_a_clip_threshold: float = 3.5
     use_wls: bool = True
