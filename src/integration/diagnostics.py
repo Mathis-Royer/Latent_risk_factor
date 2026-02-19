@@ -14,6 +14,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from src.risk_model.factor_quality import (
+    bai_ng_ic2,
+    compute_factor_quality_dashboard,
+    onatski_eigenvalue_ratio,
+)
 from src.walk_forward.metrics import (
     factor_explanatory_power_dynamic,
     factor_explanatory_power_oos,
@@ -49,6 +54,10 @@ _THRESHOLDS = {
     "condition_number_warn": 1e6,
     "condition_number_crit": 1e8,
     "best_epoch_frac_lo": 0.15,
+    # Factor quality thresholds
+    "au_bai_ng_diff_warn": 10,  # |AU - k_bai_ng| > 10 triggers warning
+    "au_bai_ng_diff_crit": 20,
+    "latent_stability_min": 0.85,  # Spearman rho between folds
 }
 
 
@@ -234,6 +243,110 @@ def latent_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
         "B_shape": list(B.shape) if B.ndim >= 2 else [],
         "B_A_shape": list(B_A.shape) if B_A.ndim >= 2 else [],
         "B_stats": b_stats,
+    }
+
+
+def factor_quality_diagnostics(
+    state_bag: dict[str, Any],
+    returns: pd.DataFrame,
+    inferred_stock_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """
+    Factor quality analysis: persistence, breadth, AU validation.
+
+    Computes diagnostic metrics for factor characterization without
+    affecting portfolio optimization (agnostic diversification).
+
+    :param state_bag (dict): Pipeline state bag with B_A, eigenvalues, z_hat
+    :param returns (pd.DataFrame): Historical returns for Bai-Ng IC2 comparison
+    :param inferred_stock_ids (list[int] | None): Stock IDs matching B_A rows.
+        Used to filter returns for consistent Bai-Ng comparison.
+
+    :return diag (dict): Factor quality metrics and AU validation
+    """
+    B_A: np.ndarray = state_bag.get("B_A", np.array([]))
+    risk_model: dict[str, Any] = state_bag.get("risk_model", {})
+    eigenvalues: np.ndarray = risk_model.get("eigenvalues", np.array([]))
+    z_hat: np.ndarray = state_bag.get("z_hat", np.array([]))
+    stability_rho: float | None = state_bag.get("latent_stability_rho")
+
+    if B_A.ndim != 2 or B_A.size == 0:
+        return {"available": False, "reason": "B_A not available"}
+
+    n_stocks, AU = B_A.shape
+
+    # Prepare centered returns for Bai-Ng IC2
+    # Filter to inferred stocks for consistent comparison with AU
+    returns_centered: np.ndarray | None = None
+    T_returns: int = 0
+    if returns.shape[0] > 50 and returns.shape[1] > 10:
+        # Filter columns to inferred stocks if IDs provided
+        if inferred_stock_ids:
+            avail_cols = [c for c in inferred_stock_ids if c in returns.columns]
+            ret_filtered = returns[avail_cols] if avail_cols else returns
+        else:
+            ret_filtered = returns
+
+        ret_clean = ret_filtered.dropna(axis=0, how="all").dropna(axis=1, how="all")
+        T_returns = ret_clean.shape[0]
+        if T_returns > 50 and ret_clean.shape[1] >= 10:
+            R_mat = ret_clean.values.astype(np.float64)
+            returns_centered = R_mat - R_mat.mean(axis=0, keepdims=True)
+
+    # Factor returns for persistence (if available)
+    factor_returns: np.ndarray | None = None
+    if z_hat.ndim == 2 and z_hat.shape[0] > 10:
+        factor_returns = z_hat
+
+    # Compute factor quality dashboard
+    dashboard = compute_factor_quality_dashboard(
+        B_A=B_A,
+        eigenvalues=eigenvalues if eigenvalues.size > 0 else np.ones(AU),
+        factor_returns=factor_returns,
+        returns_centered=returns_centered,
+        stability_rho=stability_rho,
+    )
+
+    # Additional AU validation via direct Bai-Ng on returns
+    k_bai_ng_direct: int | None = None
+    if returns_centered is not None:
+        k_bai_ng_direct = bai_ng_ic2(returns_centered, k_max=min(50, AU + 20))
+
+    # Onatski test on eigenvalues
+    # Use T_returns (from filtered returns) for consistent dimensions
+    k_onatski: int | None = None
+    onatski_ratio: float | None = None
+    if eigenvalues.size >= 5:
+        T_est = max(252, T_returns) if T_returns > 0 else max(252, returns.shape[0])
+        k_onatski, onatski_ratio = onatski_eigenvalue_ratio(
+            eigenvalues, n_stocks, T_est
+        )
+
+    return {
+        "available": True,
+        "AU": AU,
+        "n_stocks": n_stocks,
+        # Factor classification summary
+        "n_structural": dashboard.get("n_structural", 0),
+        "n_style": dashboard.get("n_style", 0),
+        "n_episodic": dashboard.get("n_episodic", 0),
+        "pct_structural": dashboard.get("pct_structural", 0.0),
+        # Per-factor details (first 10 for brevity)
+        "breadth_top10": dashboard.get("breadth", [])[:10],
+        "half_lives_top10": dashboard.get("half_lives", [])[:10],
+        "categories_top10": dashboard.get("categories", [])[:10],
+        # AU validation
+        "k_bai_ng": k_bai_ng_direct,
+        "k_onatski": k_onatski,
+        "onatski_ratio": onatski_ratio,
+        "au_bai_ng_diff": AU - k_bai_ng_direct if k_bai_ng_direct is not None else None,
+        "au_onatski_diff": AU - k_onatski if k_onatski is not None else None,
+        # Stability
+        "latent_stability_rho": stability_rho,
+        "stability_ok": stability_rho is None or stability_rho > 0.85,
+        # Eigenvalue gaps
+        "max_gap_index": dashboard.get("max_gap_index", 0),
+        "eigenvalue_gaps_top5": dashboard.get("eigenvalue_gaps", [])[:5],
     }
 
 
@@ -729,6 +842,7 @@ def run_health_checks(
     portfolio: dict[str, Any],
     data_quality: dict[str, Any],
     benchmark_comparison_data: dict[str, Any] | None = None,
+    factor_quality: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
     Run automated health checks across all diagnostic categories.
@@ -739,6 +853,7 @@ def run_health_checks(
     :param portfolio (dict): Portfolio diagnostics
     :param data_quality (dict): Data quality diagnostics
     :param benchmark_comparison_data (dict | None): Benchmark comparison with per-benchmark metrics
+    :param factor_quality (dict | None): Factor quality diagnostics
 
     :return checks (list[dict]): List of {category, check, status, message}
         where status is "OK", "WARNING", or "CRITICAL"
@@ -810,6 +925,52 @@ def run_health_checks(
     else:
         _add("Latent", "Active units", "OK",
              f"AU = {au} / K = {k} ({latent.get('utilization_ratio', 0):.1%} utilization)")
+
+    # --- Factor quality checks ---
+    if factor_quality is not None and factor_quality.get("available", False):
+        # AU validation vs Bai-Ng IC2
+        au_bn_diff = factor_quality.get("au_bai_ng_diff")
+        k_bn = factor_quality.get("k_bai_ng")
+        if au_bn_diff is not None and k_bn is not None:
+            if abs(au_bn_diff) > _THRESHOLDS["au_bai_ng_diff_crit"]:
+                _add("Factor Quality", "AU vs Bai-Ng IC2", "CRITICAL",
+                     f"AU={au}, k_bai_ng={k_bn}, diff={au_bn_diff} — large divergence")
+            elif abs(au_bn_diff) > _THRESHOLDS["au_bai_ng_diff_warn"]:
+                _add("Factor Quality", "AU vs Bai-Ng IC2", "WARNING",
+                     f"AU={au}, k_bai_ng={k_bn}, diff={au_bn_diff}")
+            else:
+                _add("Factor Quality", "AU vs Bai-Ng IC2", "OK",
+                     f"AU={au}, k_bai_ng={k_bn} (consistent)")
+
+        # AU validation vs Onatski
+        k_onatski = factor_quality.get("k_onatski")
+        au_on_diff = factor_quality.get("au_onatski_diff")
+        if k_onatski is not None and au_on_diff is not None:
+            if abs(au_on_diff) > _THRESHOLDS["au_bai_ng_diff_crit"]:
+                _add("Factor Quality", "AU vs Onatski", "WARNING",
+                     f"AU={au}, k_onatski={k_onatski}, diff={au_on_diff}")
+            else:
+                _add("Factor Quality", "AU vs Onatski", "OK",
+                     f"AU={au}, k_onatski={k_onatski}")
+
+        # Latent stability between folds
+        stability_rho = factor_quality.get("latent_stability_rho")
+        if stability_rho is not None and not np.isnan(stability_rho):
+            if stability_rho < _THRESHOLDS["latent_stability_min"]:
+                _add("Factor Quality", "Latent stability", "WARNING",
+                     f"rho={stability_rho:.3f} < {_THRESHOLDS['latent_stability_min']} — "
+                     "factor structure unstable between folds")
+            else:
+                _add("Factor Quality", "Latent stability", "OK",
+                     f"rho={stability_rho:.3f} — factor structure stable")
+
+        # Factor composition summary
+        n_struct = factor_quality.get("n_structural", 0)
+        n_style = factor_quality.get("n_style", 0)
+        n_epis = factor_quality.get("n_episodic", 0)
+        if n_struct + n_style + n_epis > 0:
+            _add("Factor Quality", "Factor composition", "OK",
+                 f"{n_struct} structural, {n_style} style, {n_epis} episodic")
 
     # --- Risk model checks ---
     var_ratio = risk_model.get("var_ratio_oos", float("nan"))
@@ -978,11 +1139,19 @@ def collect_diagnostics(
     """
     inferred_stock_ids = state_bag.get("inferred_stock_ids", [])
 
+    # Inject latent_stability_rho from vae_metrics into state_bag if available
+    # (walk-forward computes it outside _run_single_fold and stores in metrics)
+    if "latent_stability_rho" not in state_bag and "latent_stability_rho" in vae_metrics:
+        state_bag["latent_stability_rho"] = vae_metrics["latent_stability_rho"]
+
     logger.info("Collecting training diagnostics...")
     training = training_diagnostics(state_bag.get("fit_result"))
 
     logger.info("Collecting latent space diagnostics...")
     latent = latent_diagnostics(state_bag)
+
+    logger.info("Collecting factor quality diagnostics...")
+    factor_qual = factor_quality_diagnostics(state_bag, returns, inferred_stock_ids)
 
     logger.info("Collecting risk model diagnostics...")
     risk = risk_model_diagnostics(state_bag, returns_oos, w_vae, inferred_stock_ids)
@@ -997,7 +1166,9 @@ def collect_diagnostics(
     data_qual = data_quality_diagnostics(stock_data, returns)
 
     logger.info("Running health checks...")
-    checks = run_health_checks(training, latent, risk, portfolio, data_qual, bench_comp)
+    checks = run_health_checks(
+        training, latent, risk, portfolio, data_qual, bench_comp, factor_qual
+    )
 
     n_critical = sum(1 for c in checks if c["status"] == "CRITICAL")
     n_warning = sum(1 for c in checks if c["status"] == "WARNING")
@@ -1010,6 +1181,7 @@ def collect_diagnostics(
     return {
         "training": training,
         "latent": latent,
+        "factor_quality": factor_qual,
         "risk_model": risk,
         "portfolio": portfolio,
         "benchmark_comparison": bench_comp,

@@ -161,7 +161,9 @@ class Decoder(nn.Module):
             h = h[:, :, :self.T]
         elif h.shape[2] < self.T:
             pad_size = self.T - h.shape[2]
-            h = F_torch.pad(h, (0, pad_size), mode="replicate")
+            # Use constant padding (zeros) to avoid artificial temporal correlation
+            # at boundaries that "replicate" mode would introduce.
+            h = F_torch.pad(h, (0, pad_size), mode="constant", value=0.0)
 
         # Output head
         x_hat = self.output_head(h)  # (B, F, T)

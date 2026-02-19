@@ -47,24 +47,61 @@ def vae_reconstruction_metrics(
 def latent_stability(
     B_current: np.ndarray,
     B_previous: np.ndarray,
+    ids_current: list[int] | None = None,
+    ids_previous: list[int] | None = None,
 ) -> float:
     """
     Spearman rank correlation of pairwise inter-stock distances
     between retrainings. Target: ρ > 0.85.
 
-    :param B_current (np.ndarray): Current exposure matrix (n, AU)
-    :param B_previous (np.ndarray): Previous exposure matrix (n, AU)
+    When stock IDs are provided, aligns the matrices by matching stocks
+    that exist in both folds before computing distances. This is critical
+    because the universe changes between folds (stocks enter/exit).
+
+    :param B_current (np.ndarray): Current exposure matrix (n_curr, AU)
+    :param B_previous (np.ndarray): Previous exposure matrix (n_prev, AU)
+    :param ids_current (list[int] | None): Stock IDs for B_current rows
+    :param ids_previous (list[int] | None): Stock IDs for B_previous rows
 
     :return rho (float): Spearman correlation of distance matrices
     """
     from scipy.spatial.distance import pdist
 
-    n = min(B_current.shape[0], B_previous.shape[0])
-    if n < 3:
-        return 0.0
+    # If stock IDs provided, align matrices by matching stocks
+    if ids_current is not None and ids_previous is not None:
+        # Find common stocks between folds
+        set_current = set(ids_current)
+        set_previous = set(ids_previous)
+        common_ids = sorted(set_current & set_previous)
 
-    dist_current = pdist(B_current[:n])
-    dist_previous = pdist(B_previous[:n])
+        if len(common_ids) < 3:
+            logger.debug(
+                "latent_stability: only %d common stocks between folds",
+                len(common_ids),
+            )
+            return 0.0
+
+        # Build index maps for alignment
+        idx_curr = {sid: i for i, sid in enumerate(ids_current)}
+        idx_prev = {sid: i for i, sid in enumerate(ids_previous)}
+
+        # Extract aligned rows (same stock order for both matrices)
+        rows_curr = [idx_curr[sid] for sid in common_ids]
+        rows_prev = [idx_prev[sid] for sid in common_ids]
+
+        B_curr_aligned = B_current[rows_curr]
+        B_prev_aligned = B_previous[rows_prev]
+
+        dist_current = pdist(B_curr_aligned)
+        dist_previous = pdist(B_prev_aligned)
+    else:
+        # Fallback: truncate to min size (legacy behavior, less accurate)
+        n = min(B_current.shape[0], B_previous.shape[0])
+        if n < 3:
+            return 0.0
+
+        dist_current = pdist(B_current[:n])
+        dist_previous = pdist(B_previous[:n])
 
     result = stats.spearmanr(dist_current, dist_previous)
     rho = float(result.statistic)  # type: ignore[union-attr]

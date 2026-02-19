@@ -66,6 +66,7 @@ from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.metrics import (
     crisis_period_return,
     factor_explanatory_power_dynamic,
+    latent_stability,
     portfolio_metrics,
     realized_vs_predicted_correlation,
 )
@@ -584,6 +585,10 @@ class FullPipeline:
             name: None for name in BENCHMARK_CLASSES
         }
 
+        # B_A tracker for latent stability measurement between folds
+        B_A_previous: np.ndarray | None = None
+        B_A_previous_ids: list[int] | None = None
+
         logger.info("Starting walk-forward: %d folds + holdout", n_folds)
 
         # Default config (used when Phase A is skipped or fails)
@@ -620,7 +625,7 @@ class FullPipeline:
                 is_holdout=False,
             )
 
-            vae_metrics, w_vae, vae_ids = self._run_single_fold(
+            vae_metrics, w_vae, vae_ids, B_A_current = self._run_single_fold(
                 fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, best_config, e_star, torch_device,
                 use_early_stopping=skip_phase_a,
@@ -629,6 +634,28 @@ class FullPipeline:
                 is_first=(fold_idx == 0),
                 w_old_ids=w_old_vae_ids,
             )
+
+            # Latent stability between folds (Spearman correlation of distances)
+            # Pass stock IDs to align matrices properly when universe changes
+            if B_A_previous is not None and B_A_current.size > 0:
+                stability_rho = latent_stability(
+                    B_A_current, B_A_previous,
+                    ids_current=vae_ids,
+                    ids_previous=B_A_previous_ids,
+                )
+                vae_metrics["latent_stability_rho"] = stability_rho
+                if stability_rho < 0.85:
+                    logger.warning(
+                        "[Fold %d] Latent stability low: rho=%.3f < 0.85",
+                        fold_id, stability_rho,
+                    )
+            else:
+                vae_metrics["latent_stability_rho"] = float("nan")
+
+            # Store B_A and IDs for next fold's stability computation
+            if B_A_current.size > 0:
+                B_A_previous = B_A_current.copy()
+                B_A_previous_ids = vae_ids.copy() if vae_ids else None
 
             # Turnover measurement and net-of-cost Sharpe
             # (DeMiguel et al. 2009, Novy-Marx & Velikov 2016)
@@ -694,7 +721,7 @@ class FullPipeline:
             else:
                 holdout_config = {"mode": "P", "learning_rate": self.config.training.learning_rate, "alpha": 1.0}
 
-            holdout_metrics, _, _ = self._run_single_fold(
+            holdout_metrics, _, _, _ = self._run_single_fold(
                 holdout_fold, returns, trailing_vol, rolling_vol, stock_data,
                 vix_data, holdout_config, e_star_holdout, torch_device,
                 use_early_stopping=skip_phase_a,
@@ -902,13 +929,16 @@ class FullPipeline:
                 e_star = int(ckpt_fit.get("best_epoch", 0))
 
         state_bag: dict[str, Any] = {}
-        vae_metrics, w_vae, _ = self._run_single_fold(
+        vae_metrics, w_vae, _, B_A_direct = self._run_single_fold(
             fold, returns, trailing_vol, rolling_vol, stock_data,
             vix_data, hp_config, e_star, torch_device,
             use_early_stopping=True,
             _state_bag=state_bag,
             pretrained_model=loaded_model,
         )
+        # Store B_A in state_bag for diagnostic access
+        if B_A_direct.size > 0:
+            state_bag["B_A"] = B_A_direct
 
         # When loading from checkpoint, carry over build_params and vae_info
         # (needed for descriptive checkpoint filenames and metadata)
@@ -1479,7 +1509,7 @@ class FullPipeline:
         w_old: np.ndarray | None = None,
         is_first: bool = True,
         w_old_ids: list[int] | None = None,
-    ) -> tuple[dict[str, float], np.ndarray, list[int]]:
+    ) -> tuple[dict[str, float], np.ndarray, list[int], np.ndarray]:
         """
         Run Phase B for a single fold: train → infer → risk model → portfolio → metrics.
 
@@ -1506,6 +1536,7 @@ class FullPipeline:
         :return metrics (dict): Fold metrics
         :return w (np.ndarray): Portfolio weights (n_port,)
         :return inferred_stock_ids (list[int]): Stock IDs corresponding to w
+        :return B_A (np.ndarray): Active exposure matrix (n, AU) for latent stability
         """
         train_start = str(fold["train_start"])
         train_end = str(fold["train_end"])
@@ -1533,7 +1564,7 @@ class FullPipeline:
         )
 
         if windows.shape[0] < 10:
-            return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids), stock_ids
+            return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids), stock_ids, np.array([[]])
 
         logger.info(
             "  [Fold %d] Windowing: %d train windows (stride=%d) from %d stocks, %d days",
@@ -1727,7 +1758,7 @@ class FullPipeline:
         AU, active_dims = truncate_active_dims(AU, kl_per_dim, active_dims, au_max)
 
         if AU == 0:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids
+            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids, np.array([[]])
 
         B_A = filter_exposure_matrix(B, active_dims)
         logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
@@ -1884,7 +1915,7 @@ class FullPipeline:
 
         n_factors = z_hat.shape[1] if z_hat.shape[0] > 0 else AU
         if z_hat.shape[0] < n_factors:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids
+            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids, B_A
 
         # Split z_hat into estimation (80%) / holdout (20%) for unbiased VT.
         # Sigma_z and D_eps are estimated from estimation period only, so the
@@ -2011,7 +2042,10 @@ class FullPipeline:
                 ))
             else:
                 vt_idio = 1.0
-            D_eps_port = D_eps_port * vt_idio
+            D_eps_port = np.maximum(
+                D_eps_port * vt_idio,
+                self.config.risk_model.d_eps_floor,
+            )
 
             logger.info(
                 "  Variance targeting (per-factor, %d holdout days): "
@@ -2035,7 +2069,10 @@ class FullPipeline:
             )
             eigenvalues = eigenvalues * vt_sys
             eigenvalues_signal = eigenvalues_signal * vt_sys
-            D_eps_port = D_eps_port * vt_idio
+            D_eps_port = np.maximum(
+                D_eps_port * vt_idio,
+                self.config.risk_model.d_eps_floor,
+            )
 
         Sigma_sys_vt = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
         Sigma_assets = Sigma_sys_vt + np.diag(D_eps_port)
@@ -2326,7 +2363,7 @@ class FullPipeline:
             torch.cuda.reset_peak_memory_stats(device)
         clear_device_cache(device)
 
-        return metrics, w_final, inferred_stock_ids
+        return metrics, w_final, inferred_stock_ids, B_A
 
     # -------------------------------------------------------------------
     # Benchmarks
@@ -2390,6 +2427,10 @@ class FullPipeline:
             "delta_bar": pc.delta_bar,
             "tau_max": pc.tau_max,
             "lambda_risk": pc.lambda_risk,
+            # INV-012: Ensure benchmarks use identical entropy/momentum params
+            "entropy_idio_weight": pc.entropy_idio_weight,
+            "entropy_budget_mode": pc.entropy_budget_mode,
+            "momentum_weight": pc.momentum_weight,
         }
 
         benchmark = bench_cls(constraint_params=constraint_params)

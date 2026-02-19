@@ -458,3 +458,133 @@ class TestEmbargoGapExactCount:
                 f"Fold {fold['fold_id']}: embargo calendar days={cal_days}, "
                 f"should be >= 21 (21 trading days ≈ 29 calendar days)"
             )
+
+
+# ---------------------------------------------------------------------------
+# 8. Latent Stability Tests
+# ---------------------------------------------------------------------------
+
+class TestLatentStability:
+    """Tests for latent_stability function with stock ID alignment."""
+
+    def test_identical_matrices_perfect_stability(self) -> None:
+        """Identical B_A matrices should have rho=1.0."""
+        from src.walk_forward.metrics import latent_stability
+
+        np.random.seed(42)
+        B = np.random.randn(50, 10)
+
+        rho = latent_stability(B, B.copy())
+        assert rho > 0.99, f"Identical matrices should have rho~1.0, got {rho:.3f}"
+
+    def test_random_matrices_low_stability(self) -> None:
+        """Unrelated random matrices should have low correlation."""
+        from src.walk_forward.metrics import latent_stability
+
+        np.random.seed(42)
+        B1 = np.random.randn(50, 10)
+        B2 = np.random.randn(50, 10)
+
+        rho = latent_stability(B1, B2)
+        # Random matrices should have low (but not necessarily zero) correlation
+        assert -0.5 < rho < 0.5, f"Random matrices should have low rho, got {rho:.3f}"
+
+    def test_stock_id_alignment_same_stocks(self) -> None:
+        """With same stock IDs, alignment should give same result as no alignment."""
+        from src.walk_forward.metrics import latent_stability
+
+        np.random.seed(42)
+        B = np.random.randn(30, 5)
+        B_noisy = B + np.random.randn(30, 5) * 0.1
+        ids = list(range(100, 130))  # Stock IDs 100-129
+
+        rho_no_ids = latent_stability(B, B_noisy)
+        rho_with_ids = latent_stability(B, B_noisy, ids_current=ids, ids_previous=ids)
+
+        assert abs(rho_no_ids - rho_with_ids) < 0.01, (
+            f"Same IDs should give same result: no_ids={rho_no_ids:.3f}, "
+            f"with_ids={rho_with_ids:.3f}"
+        )
+
+    def test_stock_id_alignment_shuffled_stocks(self) -> None:
+        """With shuffled stock IDs, alignment should recover correct correlation."""
+        from src.walk_forward.metrics import latent_stability
+
+        np.random.seed(42)
+        n_stocks = 30
+        B_original = np.random.randn(n_stocks, 5)
+        B_noisy = B_original + np.random.randn(n_stocks, 5) * 0.1
+        ids_original = list(range(100, 100 + n_stocks))
+
+        # Shuffle the order of B_noisy and its IDs
+        perm = np.random.permutation(n_stocks)
+        B_shuffled = B_noisy[perm]
+        ids_shuffled = [ids_original[i] for i in perm]
+
+        # Without ID alignment: comparing misaligned rows -> low rho
+        rho_no_align = latent_stability(B_original, B_shuffled)
+
+        # With ID alignment: should recover high rho
+        rho_aligned = latent_stability(
+            B_original, B_shuffled,
+            ids_current=ids_original,
+            ids_previous=ids_shuffled,
+        )
+
+        assert rho_aligned > 0.9, (
+            f"Aligned shuffled matrices should have high rho, got {rho_aligned:.3f}"
+        )
+        # Misaligned comparison should be worse (though not always much worse for random data)
+        # The key test is that alignment recovers the correct high correlation
+
+    def test_stock_id_alignment_partial_overlap(self) -> None:
+        """With partial stock overlap, only common stocks are compared."""
+        from src.walk_forward.metrics import latent_stability
+
+        np.random.seed(42)
+        # Previous fold: stocks 100-119 (20 stocks)
+        B_prev = np.random.randn(20, 5)
+        ids_prev = list(range(100, 120))
+
+        # Current fold: stocks 110-129 (20 stocks, 10 overlap: 110-119)
+        B_curr = np.random.randn(20, 5)
+        ids_curr = list(range(110, 130))
+
+        # The overlapping stocks (110-119) are:
+        # - In B_prev: rows 10-19 (indices for stocks 110-119)
+        # - In B_curr: rows 0-9 (indices for stocks 110-119)
+        # Make the overlapping portion similar
+        B_curr[:10] = B_prev[10:20] + np.random.randn(10, 5) * 0.1
+
+        rho = latent_stability(
+            B_curr, B_prev,
+            ids_current=ids_curr,
+            ids_previous=ids_prev,
+        )
+
+        # Should find high correlation because overlapping stocks are similar
+        assert rho > 0.8, (
+            f"Partial overlap with similar data should have high rho, got {rho:.3f}"
+        )
+
+    def test_insufficient_common_stocks(self) -> None:
+        """With fewer than 3 common stocks, returns 0.0."""
+        from src.walk_forward.metrics import latent_stability
+
+        B1 = np.random.randn(10, 5)
+        B2 = np.random.randn(10, 5)
+        ids1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        ids2 = [11, 12, 1, 14, 15, 16, 17, 18, 19, 20]  # Only 1 common (stock 1)
+
+        rho = latent_stability(B1, B2, ids_current=ids1, ids_previous=ids2)
+        assert rho == 0.0, f"With <3 common stocks, should return 0.0, got {rho}"
+
+    def test_small_matrices_return_zero(self) -> None:
+        """Matrices with fewer than 3 rows should return 0.0."""
+        from src.walk_forward.metrics import latent_stability
+
+        B1 = np.random.randn(2, 5)
+        B2 = np.random.randn(2, 5)
+
+        rho = latent_stability(B1, B2)
+        assert rho == 0.0, f"With <3 rows, should return 0.0, got {rho}"

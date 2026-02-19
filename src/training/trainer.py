@@ -12,6 +12,7 @@ Handles:
 Reference: ISD Section MOD-005 — Sub-task 2.
 """
 
+import copy
 import logging
 import math
 from typing import Any
@@ -281,6 +282,10 @@ class VAETrainer:
                     phase2_frac=self.curriculum_phase2_frac,
                 )
                 if raw_ret is not None and cur_lambda_co > 0 and x.shape[0] >= 2:
+                    # Validate raw_returns shape matches batch (avoid silent correlation errors)
+                    assert raw_ret.shape == (x.shape[0], x.shape[1]), (
+                        f"raw_ret shape {raw_ret.shape} != expected ({x.shape[0]}, {x.shape[1]})"
+                    )
                     co_mov_loss = compute_co_movement_loss(
                         mu, raw_ret, max_pairs=self.max_pairs,
                     )
@@ -684,9 +689,11 @@ class VAETrainer:
             elif self.loss_mode == "F" and epoch == warmup_epochs:
                 # First post-warmup epoch: seed early stopping with current
                 # ELBO so all future comparisons use the β=1 regime.
+                # Capture state dict now — if this epoch is optimal (no future
+                # improvement), restore_best() needs a valid checkpoint.
                 self.early_stopping.best_loss = val_elbo
                 self.early_stopping.best_epoch = epoch
-                self.early_stopping.best_state = None  # will be set on next improvement
+                self.early_stopping.best_state = copy.deepcopy(self.model.state_dict())
                 self.early_stopping.counter = 0
                 self.early_stopping.check(val_elbo, epoch, self.model)
             else:

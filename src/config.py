@@ -548,10 +548,6 @@ class PortfolioConfig:
         in two-layer entropy formulation.
         0.2 (default): fixed weight — robust default that balances factor
             and idiosyncratic diversification without circular EW dependency.
-        -1.0 = **auto**: dynamically calibrated per fold as
-            idio_risk / (sys_risk + idio_risk) using the EW portfolio.
-            Not recommended: EW risk decomposition is a poor proxy for the
-            optimal portfolio's decomposition (Meucci 2009, Roncalli 2013).
         0.0 = factor-only entropy (no idiosyncratic layer).
         (0, 1] = fixed weight for idiosyncratic layer.
     :param target_enb (float): Target effective number of bets (ENB = exp(H)).
@@ -594,7 +590,7 @@ class PortfolioConfig:
     momentum_lookback: int = 252
     momentum_skip: int = 21
     momentum_weight: float = 0.30
-    entropy_idio_weight: float = 0.0
+    entropy_idio_weight: float = 0.20
     target_enb: float = 0.0
     transaction_cost_bps: float = 10.0
     normalize_entropy_gradient: bool = False  # Grid search on α suffisant (Meucci 2009, DeMiguel 2009)
@@ -647,7 +643,7 @@ class PortfolioConfig:
         _validate_range("target_enb", self.target_enb,
                         default=0.0, lo=-1.0)
         _validate_range("entropy_idio_weight", self.entropy_idio_weight,
-                        default=-1.0, lo=-1.0, hi=1.0)
+                        default=0.2, lo=0.0, hi=1.0)
         _validate_in("entropy_budget_mode", self.entropy_budget_mode,
                      {"uniform", "proportional"}, default="proportional")
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:

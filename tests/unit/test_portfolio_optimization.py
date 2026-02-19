@@ -694,6 +694,69 @@ class TestCardinality:
         self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
         assert abs(np.sum(w_enforced) - 1.0) < 1e-6
 
+    def test_cardinality_with_idiosyncratic_entropy(self) -> None:
+        """Test cardinality enforcement preserves D_eps alignment.
+
+        Validates that after cardinality enforcement with idio_weight > 0:
+        1. D_eps slicing produces correct shape alignment
+        2. Entropy computation works on the reduced universe
+        3. The semi-continuous constraint is satisfied
+        """
+        np.random.seed(SEED)
+        data = _make_portfolio_data()
+        w_min = 0.01
+        idio_weight = 0.3
+
+        rng = np.random.RandomState(SEED)
+        w = rng.dirichlet(np.ones(N_STOCKS)).astype(np.float64)
+        # Force violations
+        w[0] = 0.005
+        w[1] = 0.002
+        w = w / w.sum()
+
+        sca_kwargs: dict[str, Any] = {
+            "Sigma_assets": data["Sigma_assets"],
+            "B_prime": data["B_prime"],
+            "eigenvalues": data["eigenvalues"],
+            "alpha": 1.0,
+            "lambda_risk": 1.0,
+            "phi": 25.0,
+            "w_bar": 0.03,
+            "w_max": 0.10,
+            "w_old": None,
+            "is_first": True,
+            "kappa_1": 0.1,
+            "kappa_2": 7.5,
+            "delta_bar": 0.01,
+            "tau_max": 0.30,
+            "entropy_eps": 1e-30,
+        }
+
+        w_enforced = enforce_cardinality(
+            w=w,
+            B_prime=data["B_prime"],
+            eigenvalues=data["eigenvalues"],
+            w_min=w_min,
+            sca_solver_fn=sca_optimize,
+            sca_kwargs=sca_kwargs,
+            method="gradient",
+            D_eps=data["D_eps"],
+            idio_weight=idio_weight,
+        )
+
+        # Check semi-continuous constraint
+        self._check_semi_continuous(w_enforced, w_min, N_STOCKS)
+        assert abs(np.sum(w_enforced) - 1.0) < 1e-6
+
+        # Compute entropy with D_eps on the full portfolio
+        # This should not raise shape errors
+        H = compute_entropy_only(
+            w_enforced, data["B_prime"], data["eigenvalues"],
+            D_eps=data["D_eps"], idio_weight=idio_weight,
+        )
+        assert np.isfinite(H), f"Entropy should be finite, got {H}"
+        assert H >= 0.0, f"Entropy should be non-negative, got {H}"
+
     def test_cardinality_preserves_momentum_tilt(self) -> None:
         """MIQP/two_stage cardinality preserves momentum signal.
 

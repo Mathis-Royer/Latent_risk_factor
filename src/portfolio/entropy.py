@@ -117,6 +117,12 @@ def compute_entropy_and_gradient(
     :return H (float): Combined entropy value
     :return grad_H (np.ndarray): Gradient (n,)
     """
+    # Shape validation
+    if D_eps is not None:
+        assert len(D_eps) == len(w), (
+            f"D_eps length {len(D_eps)} != w length {len(w)}"
+        )
+
     # Portfolio exposure in principal factor basis
     beta_prime = B_prime.T @ w  # (AU,)
 
@@ -186,6 +192,12 @@ def compute_entropy_only(
 
     :return H (float): Combined entropy value
     """
+    # Shape validation
+    if D_eps is not None:
+        assert len(D_eps) == len(w), (
+            f"D_eps length {len(D_eps)} != w length {len(w)}"
+        )
+
     beta_prime = B_prime.T @ w
     c_sys = (beta_prime ** 2) * eigenvalues
 

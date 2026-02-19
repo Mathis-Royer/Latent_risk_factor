@@ -156,6 +156,10 @@ class PCAFactorRiskParity(BenchmarkModel):
         if alpha_grid is None:
             alpha_grid = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
+        # Extract idio_weight from constraint_params for fair comparison with VAE
+        # Key must match PortfolioConfig.entropy_idio_weight (INV-012)
+        idio_weight = float(cp.get("entropy_idio_weight", 0.2))
+
         frontier, frontier_weights = compute_variance_entropy_frontier(
             Sigma_assets=self.Sigma_assets,
             B_prime=self.B_prime,
@@ -175,6 +179,7 @@ class PCAFactorRiskParity(BenchmarkModel):
             is_first=is_first,
             n_starts=3,
             seed=42,
+            idio_weight=idio_weight,
         )
 
         # Select alpha via adaptive ENB target (Meucci 2009)

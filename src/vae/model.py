@@ -97,9 +97,11 @@ class VAEModel(nn.Module):
 
         :return z (torch.Tensor): Sampled latent vector (B, K)
         """
-        # Clamp log_var to prevent exp overflow under AMP float16/bfloat16.
-        # log_var=20 → std=exp(10)≈22026 (safe); log_var=88 → exp(44) overflows float16.
-        log_var = log_var.clamp(-20.0, 20.0)
+        # Clamp log_var for numerical stability and VAE regularization.
+        # For z-scored inputs (std≈1), [-6, 6] gives std ∈ [0.05, 20] — tighter range
+        # prevents posterior collapse (var→∞) and degenerate priors (var→0).
+        # Reference: "How to train your VAE" (arXiv 2024); β-VAE (Higgins 2017).
+        log_var = log_var.clamp(-6.0, 6.0)
         std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         return mu + std * eps

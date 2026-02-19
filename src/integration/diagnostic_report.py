@@ -222,6 +222,76 @@ def generate_diagnostic_markdown(
         lines.append(f"- **Mean stock norm**: {_fmt(b_stats.get('mean_stock_norm', 0))}")
     lines.append("")
 
+    # ===== 3.5 Factor Quality Dashboard =====
+    factor_qual = diagnostics.get("factor_quality", {})
+    if factor_qual.get("available", False):
+        lines.append("## 3.5 Factor Quality Dashboard")
+        lines.append("")
+        lines.append("### AU Validation")
+        lines.append("")
+        au = factor_qual.get("AU", 0)
+        k_bn = factor_qual.get("k_bai_ng")
+        k_on = factor_qual.get("k_onatski")
+        lines.append(f"- **VAE Active Units (AU)**: {au}")
+        if k_bn is not None:
+            lines.append(f"- **Bai-Ng IC2 optimal k**: {k_bn}")
+        if k_on is not None:
+            lines.append(f"- **Onatski test k**: {k_on}")
+
+        au_bn_diff = factor_qual.get("au_bai_ng_diff")
+        au_on_diff = factor_qual.get("au_onatski_diff")
+        if au_bn_diff is not None or au_on_diff is not None:
+            lines.append("")
+            status = "[OK]" if (
+                (au_bn_diff is None or abs(au_bn_diff) <= 10) and
+                (au_on_diff is None or abs(au_on_diff) <= 20)
+            ) else "[WARN]"
+            lines.append(f"**Status**: {status} AU consistent with statistical tests")
+        lines.append("")
+
+        # Factor composition
+        lines.append("### Factor Composition")
+        lines.append("")
+        n_struct = factor_qual.get("n_structural", 0)
+        n_style = factor_qual.get("n_style", 0)
+        n_epis = factor_qual.get("n_episodic", 0)
+        lines.append(f"- **Structural factors**: {n_struct} ({factor_qual.get('pct_structural', 0):.0%})")
+        lines.append(f"- **Style factors**: {n_style}")
+        lines.append(f"- **Episodic factors**: {n_epis}")
+        lines.append("")
+
+        # Per-factor table (top 10)
+        breadths = factor_qual.get("breadth_top10", [])
+        half_lives = factor_qual.get("half_lives_top10", [])
+        categories = factor_qual.get("categories_top10", [])
+        if breadths or half_lives or categories:
+            lines.append("### Top Factors (by KL divergence)")
+            lines.append("")
+            lines.append("| Factor | Breadth | Persistence (days) | Category |")
+            lines.append("|--------|---------|-------------------|----------|")
+            for i in range(min(10, len(categories))):
+                br = breadths[i] if i < len(breadths) else "?"
+                hl_raw = half_lives[i] if i < len(half_lives) else float("inf")
+                hl = "inf" if not np.isfinite(hl_raw) else f"{hl_raw:.0f}"
+                cat = categories[i] if i < len(categories) else "?"
+                lines.append(f"| {i+1} | {br} | {hl} | {cat} |")
+            lines.append("")
+
+        # Latent stability
+        stability_rho = factor_qual.get("latent_stability_rho")
+        lines.append("### Latent Stability")
+        lines.append("")
+        if stability_rho is not None and not np.isnan(stability_rho):
+            status = "[OK]" if stability_rho >= 0.85 else "[WARN]"
+            lines.append(
+                f"- **Spearman rho between folds**: {stability_rho:.3f} {status}"
+            )
+        else:
+            lines.append(
+                "- **Spearman rho between folds**: N/A (single fold or first fold)"
+            )
+        lines.append("")
+
     # ===== 4. Risk Model =====
     lines.append("## 4. Risk Model Quality")
     lines.append("")
