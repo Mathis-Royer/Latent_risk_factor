@@ -49,6 +49,26 @@ def _fmt(val: object, precision: int = 4) -> str:
     return str(val)
 
 
+def _get_component_status(score: float) -> str:
+    """
+    Map composite score to status string.
+
+    :param score (float): Score in [0, 100]
+
+    :return status (str): Status label
+    """
+    if score >= 90:
+        return "Excellent"
+    elif score >= 75:
+        return "Good"
+    elif score >= 60:
+        return "Review"
+    elif score >= 40:
+        return "Marginal"
+    else:
+        return "Critical"
+
+
 def _extract_ew_mdd(bench: dict[str, Any]) -> float | None:
     """
     Extract equal-weight benchmark MDD as market proxy.
@@ -96,14 +116,27 @@ def generate_diagnostic_markdown(
     lines.append("---")
     lines.append("")
 
-    # ===== Executive Summary =====
+    # ===== Executive Summary with Composite Scores =====
+    composite = diagnostics.get("composite_scores", {})
+    overall = composite.get("overall", {})
+    overall_score = overall.get("score", 0)
+    overall_grade = overall.get("grade", "?")
+    overall_status = overall.get("status", "UNKNOWN")
+    overall_summary = overall.get("summary", "")
+
     lines.append("## Executive Summary")
     lines.append("")
+
     n_crit = summary.get("n_critical", 0)
     n_warn = summary.get("n_warning", 0)
     n_ok = summary.get("n_ok", 0)
 
-    if n_crit > 0:
+    # Overall status line with composite score
+    if overall_score > 0:
+        lines.append(
+            f"**Overall Status: {overall_status}** (Score: {overall_score:.0f}/100, Grade: {overall_grade})"
+        )
+    elif n_crit > 0:
         lines.append(
             f"**Overall Status: ISSUES DETECTED** — "
             f"{n_crit} critical, {n_warn} warnings, {n_ok} OK"
@@ -115,6 +148,63 @@ def generate_diagnostic_markdown(
         )
     else:
         lines.append(f"**Overall Status: ALL CLEAR** — {n_ok} checks passed")
+    lines.append("")
+
+    if overall_summary:
+        lines.append(overall_summary)
+        lines.append("")
+
+    # Component scores table
+    comp_scores = overall.get("component_scores", {})
+    if comp_scores:
+        lines.append("### Component Scores")
+        lines.append("")
+        lines.append("| Component | Score | Grade | Status |")
+        lines.append("|-----------|-------|-------|--------|")
+        component_order = ["solver", "constraint", "covariance", "reconstruction"]
+        component_labels = {
+            "solver": "Solver",
+            "constraint": "Constraints",
+            "covariance": "Covariance",
+            "reconstruction": "Reconstruction",
+        }
+        for comp_name in component_order:
+            if comp_name in comp_scores:
+                comp_data = comp_scores[comp_name]
+                label = component_labels.get(comp_name, comp_name)
+                score_val = comp_data.get("score", 0)
+                grade_val = comp_data.get("grade", "?")
+                avail = comp_data.get("available", False)
+                status_val = _get_component_status(score_val) if avail else "N/A"
+                if avail:
+                    lines.append(f"| {label} | {score_val:.0f} | {grade_val} | {status_val} |")
+                else:
+                    lines.append(f"| {label} | - | - | N/A |")
+        lines.append("")
+
+    # Priority actions
+    priority_actions = overall.get("priority_actions", [])
+    if priority_actions:
+        lines.append("### Priority Actions")
+        lines.append("")
+        for i, action_item in enumerate(priority_actions[:5], 1):
+            comp_name = action_item.get("component", "")
+            action_score = action_item.get("score", 0)
+            action_text = action_item.get("action", "")
+            lines.append(f"{i}. **{comp_name.title()}** ({action_score:.0f}): {action_text}")
+        lines.append("")
+
+    # Interpretation from each component
+    lines.append("### Interpretation")
+    lines.append("")
+    for comp_name in ["solver", "constraint", "covariance", "reconstruction"]:
+        comp_detail = composite.get(comp_name, {})
+        interp = comp_detail.get("interpretation", "")
+        if interp and comp_detail.get("available", False):
+            lines.append(f"- **{comp_name.title()}**: {interp}")
+    lines.append("")
+
+    lines.append("---")
     lines.append("")
 
     # Health check table

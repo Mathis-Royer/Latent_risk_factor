@@ -1350,6 +1350,23 @@ def collect_diagnostics(
         n_ok, n_warning, n_critical,
     )
 
+    # Compute composite scores
+    logger.info("Computing composite scores...")
+    n_active = portfolio.get("n_active_positions", 0)
+    composite_scores = compute_all_composite_scores(
+        solver_stats=solver if solver.get("available", False) else None,
+        constraints=constraints if constraints.get("available", False) else None,
+        risk_model=risk,
+        training=training if training.get("available", False) else None,
+        n_active=n_active,
+    )
+    overall_score = composite_scores.get("overall", {}).get("score", 0)
+    overall_grade = composite_scores.get("overall", {}).get("grade", "F")
+    logger.info(
+        "Composite scores computed: overall=%.1f (%s)",
+        overall_score, overall_grade,
+    )
+
     return {
         "training": training,
         "latent": latent,
@@ -1361,10 +1378,13 @@ def collect_diagnostics(
         "benchmark_comparison": bench_comp,
         "data_quality": data_qual,
         "health_checks": checks,
+        "composite_scores": composite_scores,
         "config": config_dict,
         "summary": {
             "n_critical": n_critical,
             "n_warning": n_warning,
             "n_ok": n_ok,
+            "overall_score": overall_score,
+            "overall_grade": overall_grade,
         },
     }
