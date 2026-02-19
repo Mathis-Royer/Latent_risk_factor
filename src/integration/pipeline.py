@@ -282,11 +282,13 @@ class FullPipeline:
         r_max_config = self.config.vae.r_max
 
         # Step 1: Cap K based on AU_max_stat (binding downstream constraint)
+        # IMPORTANT: ewma_half_life=0 for K adaptation because the encoder sees
+        # all windows with equal weight. EWMA is only for Sigma_z estimation.
         n_obs = T_annee * 252
         au_max = compute_au_max_stat(
             n_obs=n_obs,
             r_min=self.config.inference.r_min,
-            ewma_half_life=self.config.risk_model.sigma_z_ewma_half_life,
+            ewma_half_life=0,
         )
         K_adapted = min(K_config, max(2 * au_max, 10))
 
