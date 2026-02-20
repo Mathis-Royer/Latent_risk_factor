@@ -24,8 +24,24 @@ from src.walk_forward.metrics import (
     factor_explanatory_power_oos,
     realized_vs_predicted_correlation,
     realized_vs_predicted_variance,
+    eigenvector_rotation_stability,
+    au_retention_analysis,
+    deflated_sharpe_ratio,
 )
 from src.integration.composite_scores import compute_all_composite_scores
+from src.integration.statistical_tests import compute_pbo
+
+# Import new diagnostic modules
+from src.diagnostics.factor_diagnostics import (
+    analyze_exposure_norms,
+    compute_eigenvalue_concentration,
+    track_regression_quality,
+    validate_dgj_recovery,
+)
+from src.diagnostics.vae_diagnostics import (
+    analyze_reconstruction_temporal_structure,
+    estimate_mutual_information,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +81,16 @@ _THRESHOLDS = {
     "sca_converged_ratio_warn": 0.5,  # At least 50% of starts should converge
     # Constraint binding thresholds
     "binding_fraction_warn": 0.5,  # More than 50% at w_max is concerning
+    # New diagnostic thresholds (G1-G9)
+    "kl_collapsed_frac_warn": 0.5,  # G1: >50% dims with KL<0.01 before warmup
+    "eigenvector_alignment_warn": 0.70,  # G3: mean alignment < 0.70
+    "au_turnover_warn": 0.40,  # G6: mean turnover > 0.40
+    "dsr_probability_warn": 0.25,  # G9: DSR < 0.25
+    "recon_acf1_warn": 0.3,  # G5: temporal autocorrelation > 0.3
+    "recon_boundary_ratio_warn": 1.5,  # G5: boundary ratio > 1.5
+    "mutual_info_warn": 0.3,  # G2: total MI < 0.3 nats
+    "dgj_noise_cv_warn": 0.2,  # G4: noise CV > 0.2
+    "pbo_probability_warn": 0.5,  # G8: PBO > 0.5 indicates overfitting
 }
 
 
@@ -665,6 +691,20 @@ def portfolio_diagnostics(
                 "max_entropy": max_entropy_au,
             }
 
+    # G9: Deflated Sharpe Ratio (if OOS returns available for higher moments)
+    dsr_result: dict[str, float] = {}
+    oos_returns = state_bag.get("oos_returns_portfolio")  # Daily returns
+    sharpe = vae_metrics.get("sharpe", 0.0)
+    n_trials = state_bag.get("n_strategies_tested", 7)  # VAE + 6 benchmarks
+    if oos_returns is not None and len(oos_returns) > 10:
+        try:
+            skew = float(sp_stats.skew(oos_returns))
+            kurt = float(sp_stats.kurtosis(oos_returns, fisher=True))  # Excess kurtosis
+            T = len(oos_returns)
+            dsr_result = deflated_sharpe_ratio(sharpe, n_trials, T, skew, kurt)
+        except Exception as e:
+            logger.debug("Could not compute deflated Sharpe: %s", e)
+
     return {
         "alpha_opt": alpha_opt,
         "n_active_positions": n_active,
@@ -677,7 +717,7 @@ def portfolio_diagnostics(
         "w_mean": float(np.mean(w_pos)) if len(w_pos) > 0 else 0.0,
         "w_std": float(np.std(w_pos)) if len(w_pos) > 0 else 0.0,
         # OOS metrics
-        "sharpe": vae_metrics.get("sharpe", 0.0),
+        "sharpe": sharpe,
         "ann_return": vae_metrics.get("ann_return", 0.0),
         "ann_vol": vae_metrics.get("ann_vol_oos", 0.0),
         "max_drawdown": vae_metrics.get("max_drawdown_oos", 0.0),
@@ -689,6 +729,9 @@ def portfolio_diagnostics(
         "n_eff_eigenvalue": n_eff_eigenvalue,
         "sortino": vae_metrics.get("sortino", 0.0),
         "calmar": vae_metrics.get("calmar", 0.0),
+        # G9: Deflated Sharpe Ratio
+        "dsr_probability": dsr_result.get("dsr_probability", 0.0),
+        "sharpe_deflated": dsr_result.get("sharpe_deflated", 0.0),
         # Frontier
         "frontier": frontier_diag,
         # Risk decomposition
@@ -778,6 +821,194 @@ def constraint_binding_diagnostics(state_bag: dict[str, Any]) -> dict[str, Any]:
         "concentrated_weight": binding_status.get("concentrated_weight", 0.0),
         "binding_fraction": binding_status.get("binding_fraction", 0.0),
     }
+
+
+# ---------------------------------------------------------------------------
+# VAE Posterior Diagnostics (new diagnostic module integration)
+# ---------------------------------------------------------------------------
+
+def vae_posterior_diagnostics(
+    fit_result: dict[str, Any] | None,
+    state_bag: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Collect VAE posterior quality diagnostics using new diagnostic modules.
+
+    Integrates analyze_log_var_distribution and compute_kl_per_dimension
+    from src.diagnostics.vae_diagnostics.
+
+    :param fit_result (dict | None): Return value of VAETrainer.fit()
+    :param state_bag (dict): Pipeline state bag
+
+    :return diag (dict): VAE posterior diagnostics for composite scores
+    """
+    result: dict[str, Any] = {"available": False}
+
+    # Get log_var stats from training history if available
+    if fit_result is not None:
+        history: list[dict[str, Any]] = fit_result.get("history", [])
+        if history:
+            # Get final epoch log_var stats
+            last_entry = history[-1]
+            log_var_stats = last_entry.get("log_var_stats", {})
+
+            if log_var_stats:
+                result["available"] = True
+                result["collapse_severity"] = log_var_stats.get(
+                    "global_frac_at_lower", 0.0
+                )
+                result["explosion_severity"] = log_var_stats.get(
+                    "global_frac_at_upper", 0.0
+                )
+                result["n_collapsed"] = log_var_stats.get("n_collapsed", 0)
+                result["n_exploded"] = log_var_stats.get("n_exploded", 0)
+
+    # Get KL balance from latent diagnostics
+    kl_per_dim = state_bag.get("kl_per_dim", np.array([]))
+    if kl_per_dim.size > 0:
+        kl_total = float(np.sum(kl_per_dim))
+        if kl_total > 0:
+            kl_probs = kl_per_dim / kl_total
+            kl_probs_pos = kl_probs[kl_probs > 1e-20]
+            kl_entropy = float(-np.sum(kl_probs_pos * np.log(kl_probs_pos)))
+            K = len(kl_per_dim)
+            max_entropy = np.log(K) if K > 1 else 1.0
+            kl_balance = kl_entropy / max_entropy if max_entropy > 0 else 0.0
+            result["available"] = True
+            result["kl_balance"] = kl_balance
+            result["kl_entropy"] = kl_entropy
+        else:
+            result["kl_balance"] = 0.5  # Neutral default
+    else:
+        result["kl_balance"] = 0.5
+
+    # Get per-feature reconstruction loss from training
+    if fit_result is not None:
+        history = fit_result.get("history", [])
+        if history:
+            best_epoch = fit_result.get("best_epoch", len(history))
+            best_idx = min(best_epoch - 1, len(history) - 1)
+            best_idx = max(0, best_idx)
+            rpf = history[best_idx].get("recon_per_feature", [])
+            if isinstance(rpf, list) and len(rpf) >= 2:
+                result["recon_per_feature"] = [float(v) for v in rpf]
+
+    # G5: Reconstruction temporal structure (if reconstruction errors available)
+    recon_errors = state_bag.get("reconstruction_errors")
+    if recon_errors is not None and isinstance(recon_errors, np.ndarray) and recon_errors.ndim == 2:
+        try:
+            temporal_analysis = analyze_reconstruction_temporal_structure(recon_errors)
+            result["recon_acf_1"] = temporal_analysis.get("acf_1", 0.0)
+            result["recon_boundary_ratio"] = temporal_analysis.get("boundary_ratio", 1.0)
+            result["available"] = True
+        except Exception as e:
+            logger.debug("Could not analyze temporal structure: %s", e)
+
+    # G2: Mutual information (if latent samples and input data available)
+    z_samples = state_bag.get("z_samples")  # (B, K) latent representations
+    x_flat = state_bag.get("x_flat")  # (B, D) flattened input
+    if z_samples is not None and x_flat is not None:
+        try:
+            mi_analysis = estimate_mutual_information(x_flat, z_samples)
+            result["mutual_info_total"] = mi_analysis.get("total_mi", 0.0)
+            result["mutual_info_per_dim"] = mi_analysis.get("mi_per_dim", [])
+            result["available"] = True
+        except Exception as e:
+            logger.debug("Could not estimate mutual information: %s", e)
+
+    return result
+
+
+def factor_model_extended_diagnostics(
+    state_bag: dict[str, Any],
+    returns: pd.DataFrame,
+) -> dict[str, Any]:
+    """
+    Collect extended factor model diagnostics using new diagnostic modules.
+
+    Integrates compute_eigenvalue_concentration, track_regression_quality,
+    and analyze_exposure_norms from src.diagnostics.factor_diagnostics.
+
+    :param state_bag (dict): Pipeline state bag
+    :param returns (pd.DataFrame): Historical returns
+
+    :return diag (dict): Extended factor diagnostics for composite scores
+    """
+    result: dict[str, Any] = {"available": False}
+
+    risk_model: dict[str, Any] = state_bag.get("risk_model", {})
+    eigenvalues: np.ndarray = risk_model.get("eigenvalues", np.array([]))
+    B_A: np.ndarray = state_bag.get("B_A", np.array([]))
+    z_hat: np.ndarray = state_bag.get("z_hat", np.array([]))
+    B_A_by_date: dict[str, np.ndarray] = state_bag.get("B_A_by_date", {})
+    valid_dates: list[str] = state_bag.get("valid_dates", [])
+
+    # Eigenvalue concentration
+    if eigenvalues.size > 0:
+        eig_analysis = compute_eigenvalue_concentration(eigenvalues)
+        if eig_analysis.get("available", False):
+            result["available"] = True
+            result["concentration_ratio"] = eig_analysis.get(
+                "var_explained_top1", 0.0
+            )
+            result["eff_dim"] = eig_analysis.get("eff_dim", 0.0)
+            result["signal_noise_boundary"] = eig_analysis.get(
+                "signal_noise_boundary", 0
+            )
+
+    # Regression quality tracking
+    if B_A_by_date and z_hat.size > 0 and valid_dates:
+        # Prepare returns as array (ensure ndarray type)
+        returns_arr: np.ndarray = (
+            returns.values if hasattr(returns, "values") else np.asarray(returns)
+        )
+        reg_analysis = track_regression_quality(
+            B_A_by_date, z_hat, returns_arr, valid_dates
+        )
+        if reg_analysis.get("available", False):
+            result["available"] = True
+            result["rank_deficiency_rate"] = reg_analysis.get(
+                "rank_deficiency_rate", 0.0
+            )
+            result["cs_r2_mean"] = reg_analysis.get("cs_r2_mean", 0.0)
+            result["cs_r2_std"] = reg_analysis.get("cs_r2_std", 0.0)
+            result["n_extreme_z_hat"] = reg_analysis.get("n_extreme_z_hat", 0)
+            result["n_dates"] = reg_analysis.get("n_dates", 1)
+            result["cond_mean"] = reg_analysis.get("cond_mean", 0.0)
+
+    # Exposure norms
+    if B_A.size > 0:
+        norm_analysis = analyze_exposure_norms(B_A)
+        if norm_analysis.get("available", False):
+            result["available"] = True
+            result["n_outlier_factors"] = norm_analysis.get(
+                "n_outlier_factors", 0
+            )
+            result["sparsity"] = norm_analysis.get("sparsity", 0.0)
+
+    # G4: DGJ shrinkage validation
+    eigs_sample = risk_model.get("eigenvalues_sample", np.array([]))
+    eigs_shrunk = risk_model.get("eigenvalues_shrunk", eigenvalues)
+    gamma = risk_model.get("aspect_ratio", 1.0)
+    if eigs_sample.size > 0 and eigs_shrunk.size > 0 and gamma > 0:
+        try:
+            dgj_analysis = validate_dgj_recovery(eigs_sample, eigs_shrunk, gamma)
+            result["dgj_n_signal"] = dgj_analysis.get("n_signal", 0)
+            result["dgj_noise_cv"] = dgj_analysis.get("noise_cv", 0.0)
+            result["dgj_bbp_threshold"] = dgj_analysis.get("bbp_threshold", 0.0)
+            result["available"] = True
+        except Exception as e:
+            logger.debug("Could not validate DGJ recovery: %s", e)
+
+    # G3: Eigenvector rotation stability (cross-fold, stored in state_bag)
+    eigenvector_rotation = state_bag.get("eigenvector_rotation")
+    if eigenvector_rotation is not None:
+        result["eigenvector_mean_alignment"] = eigenvector_rotation.get("mean_alignment", 0.0)
+        result["eigenvector_min_alignment"] = eigenvector_rotation.get("min_alignment", 0.0)
+        result["eigenvector_n_rotated"] = eigenvector_rotation.get("n_rotated", 0)
+        result["available"] = True
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +1182,8 @@ def run_health_checks(
     factor_quality: dict[str, Any] | None = None,
     solver: dict[str, Any] | None = None,
     constraints: dict[str, Any] | None = None,
+    vae_posterior: dict[str, Any] | None = None,
+    factor_extended: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
     Run automated health checks across all diagnostic categories.
@@ -964,6 +1197,8 @@ def run_health_checks(
     :param factor_quality (dict | None): Factor quality diagnostics
     :param solver (dict | None): Solver convergence diagnostics
     :param constraints (dict | None): Constraint binding diagnostics
+    :param vae_posterior (dict | None): VAE posterior diagnostics (G1-G2-G5)
+    :param factor_extended (dict | None): Extended factor model diagnostics (G3-G4)
 
     :return checks (list[dict]): List of {category, check, status, message}
         where status is "OK", "WARNING", or "CRITICAL"
@@ -1254,6 +1489,106 @@ def run_health_checks(
             _add("Constraints", "Turnover constraint", "OK",
                  f"Turnover = {actual_turnover:.1%}")
 
+    # --- VAE posterior checks (G1, G2, G5) ---
+    if vae_posterior is not None and vae_posterior.get("available", False):
+        # G5: Reconstruction temporal structure
+        recon_acf1 = vae_posterior.get("recon_acf_1")
+        recon_boundary = vae_posterior.get("recon_boundary_ratio")
+        if recon_acf1 is not None:
+            if recon_acf1 > _THRESHOLDS["recon_acf1_warn"]:
+                _add("VAE Posterior", "Recon temporal autocorr (G5)", "WARNING",
+                     f"ACF(1) = {recon_acf1:.3f} > {_THRESHOLDS['recon_acf1_warn']} — "
+                     "systematic temporal patterns")
+            else:
+                _add("VAE Posterior", "Recon temporal autocorr (G5)", "OK",
+                     f"ACF(1) = {recon_acf1:.3f}")
+
+        if recon_boundary is not None:
+            if recon_boundary > _THRESHOLDS["recon_boundary_ratio_warn"]:
+                _add("VAE Posterior", "Recon boundary ratio (G5)", "WARNING",
+                     f"Boundary ratio = {recon_boundary:.2f} > {_THRESHOLDS['recon_boundary_ratio_warn']} — "
+                     "boundary effect detected")
+            else:
+                _add("VAE Posterior", "Recon boundary ratio (G5)", "OK",
+                     f"Boundary ratio = {recon_boundary:.2f}")
+
+        # G2: Mutual information
+        mi_total = vae_posterior.get("mutual_info_total")
+        if mi_total is not None:
+            if mi_total < _THRESHOLDS["mutual_info_warn"]:
+                _add("VAE Posterior", "Mutual information (G2)", "WARNING",
+                     f"MI = {mi_total:.3f} nats < {_THRESHOLDS['mutual_info_warn']} — "
+                     "latent may lose input information")
+            else:
+                _add("VAE Posterior", "Mutual information (G2)", "OK",
+                     f"MI = {mi_total:.3f} nats")
+
+        # Collapse/explosion severity (from existing log_var analysis)
+        collapse_sev = vae_posterior.get("collapse_severity", 0.0)
+        explosion_sev = vae_posterior.get("explosion_severity", 0.0)
+        if collapse_sev > 0.3:
+            _add("VAE Posterior", "Posterior collapse", "WARNING",
+                 f"{collapse_sev:.0%} dims at lower bound — partial collapse")
+        elif collapse_sev > 0.1:
+            _add("VAE Posterior", "Posterior collapse", "OK",
+                 f"{collapse_sev:.0%} dims at lower bound")
+
+        if explosion_sev > 0.3:
+            _add("VAE Posterior", "Posterior explosion", "WARNING",
+                 f"{explosion_sev:.0%} dims at upper bound — partial explosion")
+        elif explosion_sev > 0.1:
+            _add("VAE Posterior", "Posterior explosion", "OK",
+                 f"{explosion_sev:.0%} dims at upper bound")
+
+    # --- Extended factor model checks (G3, G4) ---
+    if factor_extended is not None and factor_extended.get("available", False):
+        # G3: Eigenvector rotation stability
+        eig_alignment = factor_extended.get("eigenvector_mean_alignment")
+        if eig_alignment is not None:
+            n_rotated = factor_extended.get("eigenvector_n_rotated", 0)
+            if eig_alignment < _THRESHOLDS["eigenvector_alignment_warn"]:
+                _add("Factor Model", "Eigenvector stability (G3)", "WARNING",
+                     f"Mean alignment = {eig_alignment:.3f} < {_THRESHOLDS['eigenvector_alignment_warn']}, "
+                     f"{n_rotated} dims rotated — factor interpretation unstable")
+            else:
+                _add("Factor Model", "Eigenvector stability (G3)", "OK",
+                     f"Mean alignment = {eig_alignment:.3f}, {n_rotated} dims rotated")
+
+        # G4: DGJ shrinkage validation
+        dgj_noise_cv = factor_extended.get("dgj_noise_cv")
+        dgj_n_signal = factor_extended.get("dgj_n_signal")
+        if dgj_noise_cv is not None:
+            if dgj_noise_cv > _THRESHOLDS["dgj_noise_cv_warn"]:
+                _add("Factor Model", "DGJ shrinkage (G4)", "WARNING",
+                     f"Noise CV = {dgj_noise_cv:.3f} > {_THRESHOLDS['dgj_noise_cv_warn']}, "
+                     f"n_signal = {dgj_n_signal} — bulk not flat, check shrinkage")
+            else:
+                _add("Factor Model", "DGJ shrinkage (G4)", "OK",
+                     f"Noise CV = {dgj_noise_cv:.3f}, n_signal = {dgj_n_signal}")
+
+        # Eigenvalue concentration (from existing extended diagnostics)
+        concentration = factor_extended.get("concentration_ratio")
+        if concentration is not None and concentration > 0.5:
+            _add("Factor Model", "Eigenvalue concentration", "WARNING",
+                 f"Top eigenvalue explains {concentration:.0%} — dominated by single factor")
+
+        # Rank deficiency rate
+        rank_def_rate = factor_extended.get("rank_deficiency_rate")
+        if rank_def_rate is not None and rank_def_rate > 0.1:
+            _add("Factor Model", "Regression rank deficiency", "WARNING",
+                 f"{rank_def_rate:.0%} of dates had rank-deficient B_A")
+
+    # --- Portfolio checks (G9: Deflated Sharpe Ratio) ---
+    dsr_prob = portfolio.get("dsr_probability")
+    if dsr_prob is not None and dsr_prob > 0:
+        if dsr_prob < _THRESHOLDS["dsr_probability_warn"]:
+            _add("Portfolio", "Deflated Sharpe (G9)", "WARNING",
+                 f"DSR probability = {dsr_prob:.3f} < {_THRESHOLDS['dsr_probability_warn']} — "
+                 "Sharpe may be overstated due to multiple testing")
+        else:
+            _add("Portfolio", "Deflated Sharpe (G9)", "OK",
+                 f"DSR probability = {dsr_prob:.3f}")
+
     # --- Data quality checks ---
     miss = data_quality.get("missing_pct", 0.0)
     if miss > 10.0:
@@ -1336,10 +1671,20 @@ def collect_diagnostics(
     logger.info("Collecting data quality diagnostics...")
     data_qual = data_quality_diagnostics(stock_data, returns)
 
+    # Compute VAE posterior diagnostics (new module integration)
+    logger.info("Collecting VAE posterior diagnostics...")
+    vae_posterior = vae_posterior_diagnostics(
+        state_bag.get("fit_result"), state_bag
+    )
+
+    # Compute factor model extended diagnostics (new module integration)
+    logger.info("Collecting extended factor model diagnostics...")
+    factor_extended = factor_model_extended_diagnostics(state_bag, returns)
+
     logger.info("Running health checks...")
     checks = run_health_checks(
         training, latent, risk, portfolio, data_qual, bench_comp, factor_qual,
-        solver, constraints,
+        solver, constraints, vae_posterior, factor_extended,
     )
 
     n_critical = sum(1 for c in checks if c["status"] == "CRITICAL")
@@ -1359,6 +1704,11 @@ def collect_diagnostics(
         risk_model=risk,
         training=training if training.get("available", False) else None,
         n_active=n_active,
+        vae_diagnostics=vae_posterior if vae_posterior.get("available", False) else None,
+        factor_diagnostics=factor_extended if factor_extended.get("available", False) else None,
+        latent=latent,
+        portfolio=portfolio,
+        factor_quality=factor_qual if factor_qual.get("available", False) else None,
     )
     overall_score = composite_scores.get("overall", {}).get("score", 0)
     overall_grade = composite_scores.get("overall", {}).get("grade", "F")
@@ -1379,6 +1729,8 @@ def collect_diagnostics(
         "data_quality": data_qual,
         "health_checks": checks,
         "composite_scores": composite_scores,
+        "vae_posterior": vae_posterior,
+        "factor_extended": factor_extended,
         "config": config_dict,
         "summary": {
             "n_critical": n_critical,

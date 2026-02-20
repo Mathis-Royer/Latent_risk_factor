@@ -209,7 +209,7 @@ class VAETrainer:
         total_epochs: int,
         crisis_fractions: torch.Tensor | None = None,
         progress_bar: tqdm | None = None,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """
         Run one training epoch.
 
@@ -232,6 +232,8 @@ class VAETrainer:
         epoch_co = torch.tensor(0.0, device=self.device)
         epoch_sigma_sq = torch.tensor(0.0, device=self.device)
         epoch_recon_per_feature: list[float] | None = None  # Per-feature recon loss
+        epoch_log_var_stats: dict[str, Any] | None = None  # VAE posterior diagnostics
+        epoch_kl_per_dim_accum: torch.Tensor | None = None  # G1: Per-dimension KL trajectory
         n_batches = 0
 
         # Zero gradients before first accumulation window
@@ -274,6 +276,46 @@ class VAETrainer:
                     x_hat, mu, log_var = cp_out
                 else:
                     x_hat, mu, log_var = self.model(x)
+
+                # Capture log_var stats (for VAE posterior diagnostics)
+                with torch.no_grad():
+                    log_var_batch = log_var.detach()
+                    # Track bounds (using clamping bounds for latent log_var)
+                    lower_bound = -6.0
+                    upper_bound = 6.0
+                    if epoch_log_var_stats is None:
+                        epoch_log_var_stats = {
+                            "mean_per_dim_accum": log_var_batch.mean(dim=0).cpu(),
+                            "frac_at_lower_accum": (
+                                log_var_batch <= lower_bound + 0.1
+                            ).float().mean(dim=0).cpu(),
+                            "frac_at_upper_accum": (
+                                log_var_batch >= upper_bound - 0.1
+                            ).float().mean(dim=0).cpu(),
+                            "batch_count": 1,
+                        }
+                    else:
+                        epoch_log_var_stats["mean_per_dim_accum"] += (
+                            log_var_batch.mean(dim=0).cpu()
+                        )
+                        epoch_log_var_stats["frac_at_lower_accum"] += (
+                            log_var_batch <= lower_bound + 0.1
+                        ).float().mean(dim=0).cpu()
+                        epoch_log_var_stats["frac_at_upper_accum"] += (
+                            log_var_batch >= upper_bound - 0.1
+                        ).float().mean(dim=0).cpu()
+                        epoch_log_var_stats["batch_count"] += 1
+
+                    # G1: Per-dimension KL trajectory tracking
+                    # KL_k = (1/B) Σ_i 0.5(μ²_ik + exp(lv_ik) - lv_ik - 1)
+                    kl_per_dim_batch = 0.5 * torch.mean(
+                        mu.detach() ** 2 + torch.exp(log_var_batch) - log_var_batch - 1.0,
+                        dim=0,
+                    )
+                    if epoch_kl_per_dim_accum is None:
+                        epoch_kl_per_dim_accum = kl_per_dim_batch.cpu()
+                    else:
+                        epoch_kl_per_dim_accum += kl_per_dim_batch.cpu()
 
                 # Co-movement loss on raw returns (ISD MOD-004: NOT z-scored)
                 co_mov_loss: torch.Tensor | None = None
@@ -423,7 +465,7 @@ class VAETrainer:
         au_count = self._compute_batch_au(mu, log_var)
 
         # Single sync point: convert GPU accumulators to Python floats
-        metrics: dict[str, float] = {
+        metrics: dict[str, Any] = {
             "train_loss": float(epoch_loss / n_batches),
             "train_recon": float(epoch_recon / n_batches),
             "train_kl": float(epoch_kl / n_batches),
@@ -440,6 +482,22 @@ class VAETrainer:
                 v / n_batches for v in epoch_recon_per_feature
             ] if epoch_recon_per_feature is not None else [],
         }
+
+        # Add log_var statistics for VAE posterior diagnostics
+        if epoch_log_var_stats is not None:
+            bc = epoch_log_var_stats["batch_count"]
+            metrics["log_var_stats"] = {
+                "mean_per_dim": (epoch_log_var_stats["mean_per_dim_accum"] / bc).tolist(),
+                "frac_at_lower": (epoch_log_var_stats["frac_at_lower_accum"] / bc).tolist(),
+                "frac_at_upper": (epoch_log_var_stats["frac_at_upper_accum"] / bc).tolist(),
+            }
+
+        # G1: Per-dimension KL trajectory — averaged across batches
+        if epoch_kl_per_dim_accum is not None:
+            kl_per_dim = (epoch_kl_per_dim_accum / n_batches).tolist()
+            n_collapsed = sum(1 for kl in kl_per_dim if kl < 0.01)
+            metrics["kl_per_dim"] = kl_per_dim
+            metrics["n_collapsed_dims"] = n_collapsed
 
         # Fix 5: Monitor σ² hitting bounds (DVT monitoring prescription)
         avg_sigma_sq = float(epoch_sigma_sq / n_batches)

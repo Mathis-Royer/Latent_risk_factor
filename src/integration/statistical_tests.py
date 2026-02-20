@@ -160,3 +160,143 @@ def regime_decomposition(
         "n_crisis": len(crisis_folds),
         "n_calm": len(calm_folds),
     }
+
+
+def _compute_sharpe(returns: np.ndarray, annualization: float = 252.0) -> float:
+    """
+    Compute annualized Sharpe ratio from daily returns.
+
+    :param returns (np.ndarray): Daily returns
+    :param annualization (float): Annualization factor (252 for daily)
+
+    :return sharpe (float): Annualized Sharpe ratio
+    """
+    if len(returns) == 0 or np.std(returns) == 0:
+        return 0.0
+    return float(np.mean(returns) / np.std(returns) * np.sqrt(annualization))
+
+
+def compute_pbo(
+    fold_returns: list[np.ndarray],
+    strategy_returns: list[np.ndarray],
+    max_combinations: int = 10000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """
+    Compute Probability of Backtest Overfitting (PBO) using CSCV.
+
+    Combinatorial Symmetric Cross-Validation splits N folds into
+    C(N, N/2) combinations of in-sample/out-of-sample sets. For each
+    combination, compares whether the in-sample Sharpe winner is also
+    the out-of-sample winner.
+
+    Reference: Bailey, Borwein, Lopez de Prado, Zhu (2017)
+    "The Probability of Backtest Overfitting", Journal of Computational Finance.
+
+    :param fold_returns (np.ndarray): Benchmark returns per fold (list of arrays)
+    :param strategy_returns (np.ndarray): Strategy returns per fold (list of arrays)
+    :param max_combinations (int): Maximum combinations to sample (for large N)
+    :param seed (int): Random seed for sampling
+
+    :return result (dict): pbo_probability, n_combinations, logit_statistic, is_overfitted
+    """
+    n_folds = len(fold_returns)
+
+    # Validate inputs
+    if n_folds != len(strategy_returns):
+        raise ValueError(
+            f"fold_returns and strategy_returns must have same length: "
+            f"{n_folds} != {len(strategy_returns)}"
+        )
+
+    if n_folds < 4:
+        # Not enough folds for meaningful CSCV
+        return {
+            "pbo_probability": np.nan,
+            "n_combinations": 0,
+            "logit_statistic": np.nan,
+            "is_overfitted": False,
+            "warning": "Insufficient folds for CSCV (need >= 4)",
+        }
+
+    # Use even number of folds
+    effective_n = n_folds if n_folds % 2 == 0 else n_folds - 1
+    half_n = effective_n // 2
+
+    # Compute Sharpe ratios for each fold
+    benchmark_sharpes = np.array([_compute_sharpe(r) for r in fold_returns[:effective_n]])
+    strategy_sharpes = np.array([_compute_sharpe(r) for r in strategy_returns[:effective_n]])
+
+    # Generate combinations
+    from itertools import combinations
+    from math import comb
+
+    total_combinations = comb(effective_n, half_n)
+    all_indices = list(range(effective_n))
+
+    rng = np.random.RandomState(seed)
+
+    # Determine if we need to sample
+    if total_combinations <= max_combinations:
+        # Use all combinations
+        is_combinations = list(combinations(all_indices, half_n))
+        sampled = False
+    else:
+        # Sample combinations randomly
+        is_combinations = []
+        seen: set[tuple[int, ...]] = set()
+        while len(is_combinations) < max_combinations:
+            perm = rng.permutation(effective_n)
+            is_set = tuple(sorted(perm[:half_n]))
+            if is_set not in seen:
+                seen.add(is_set)
+                is_combinations.append(is_set)
+        sampled = True
+
+    n_overfit = 0
+    n_valid = 0
+
+    for is_indices in is_combinations:
+        is_set = set(is_indices)
+        oos_indices = [i for i in all_indices if i not in is_set]
+
+        # Compute IS Sharpe (average across IS folds)
+        is_benchmark_sharpe = np.mean(benchmark_sharpes[list(is_indices)])
+        is_strategy_sharpe = np.mean(strategy_sharpes[list(is_indices)])
+
+        # Compute OOS Sharpe (average across OOS folds)
+        oos_benchmark_sharpe = np.mean(benchmark_sharpes[oos_indices])
+        oos_strategy_sharpe = np.mean(strategy_sharpes[oos_indices])
+
+        # IS winner: strategy beats benchmark?
+        is_strategy_wins = is_strategy_sharpe > is_benchmark_sharpe
+
+        # OOS winner: strategy beats benchmark?
+        oos_strategy_wins = oos_strategy_sharpe > oos_benchmark_sharpe
+
+        # Check consistency
+        if is_strategy_wins != oos_strategy_wins:
+            n_overfit += 1
+
+        n_valid += 1
+
+    # Compute PBO
+    pbo = n_overfit / n_valid if n_valid > 0 else np.nan
+
+    # Compute logit statistic: log(PBO / (1 - PBO))
+    # Clamp to avoid log(0) or log(inf)
+    pbo_clamped = np.clip(pbo, 1e-10, 1.0 - 1e-10)
+    logit = float(np.log(pbo_clamped / (1.0 - pbo_clamped)))
+
+    result: dict[str, Any] = {
+        "pbo_probability": float(pbo) if not np.isnan(pbo) else pbo,
+        "n_combinations": n_valid,
+        "logit_statistic": logit,
+        "is_overfitted": bool(pbo > 0.5),
+    }
+
+    if sampled:
+        result["sampled"] = True
+        result["total_possible_combinations"] = total_combinations
+
+    return result

@@ -19,6 +19,101 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# AI-Readable Summary
+# ---------------------------------------------------------------------------
+
+def generate_ai_summary(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """
+    Generate 3-tier AI-readable summary for automated systems.
+
+    Tier 1: Overall verdict (pass/warn/fail)
+    Tier 2: Key findings (3-5 bullet points)
+    Tier 3: Link to detailed scores for further analysis
+
+    :param diagnostics (dict): Full diagnostics from collect_diagnostics()
+
+    :return summary (dict): verdict, key_findings, detailed_scores_ref
+    """
+    composite = diagnostics.get("composite_scores", {})
+    overall = composite.get("overall", {})
+    overall_score = overall.get("score", 0.0)
+    overall_status = overall.get("status", "UNKNOWN")
+
+    # Tier 1: Verdict
+    if overall_score >= 75:
+        verdict = "pass"
+        verdict_message = "Pipeline operating normally"
+    elif overall_score >= 50:
+        verdict = "warn"
+        verdict_message = "Pipeline needs attention"
+    else:
+        verdict = "fail"
+        verdict_message = "Critical pipeline issues detected"
+
+    # Tier 2: Key findings (3-5 items)
+    key_findings: list[str] = []
+
+    # Add overall summary
+    overall_summary = overall.get("summary", "")
+    if overall_summary:
+        key_findings.append(overall_summary)
+
+    # Add component-specific findings
+    component_scores = overall.get("component_scores", {})
+    for comp_name in ["solver", "constraint", "covariance", "reconstruction"]:
+        comp_data = component_scores.get(comp_name, {})
+        comp_score = comp_data.get("score", 0.0)
+        comp_avail = comp_data.get("available", False)
+
+        if not comp_avail:
+            continue
+
+        comp_detail = composite.get(comp_name, {})
+        interpretation = comp_detail.get("interpretation", "")
+
+        if comp_score < 60:
+            key_findings.append(f"[CRITICAL] {comp_name.title()}: {interpretation}")
+        elif comp_score < 75:
+            key_findings.append(f"[WARN] {comp_name.title()}: {interpretation}")
+
+    # Add priority actions to findings
+    priority_actions = overall.get("priority_actions", [])
+    for action_item in priority_actions[:2]:
+        comp = action_item.get("component", "")
+        action = action_item.get("action", "")
+        if action and len(key_findings) < 5:
+            key_findings.append(f"[ACTION] {comp.title()}: {action}")
+
+    # Ensure 3-5 findings
+    if len(key_findings) < 3:
+        # Add healthy components as positive findings
+        for comp_name in ["solver", "constraint", "covariance", "reconstruction"]:
+            comp_data = component_scores.get(comp_name, {})
+            comp_score = comp_data.get("score", 0.0)
+            comp_avail = comp_data.get("available", False)
+            if comp_avail and comp_score >= 80 and len(key_findings) < 3:
+                key_findings.append(f"[OK] {comp_name.title()}: healthy (score={comp_score:.0f})")
+
+    # Trim to max 5 findings
+    key_findings = key_findings[:5]
+
+    # Tier 3: Reference to detailed scores
+    detailed_scores_ref = {
+        "location": "diagnostics.composite_scores",
+        "components": list(component_scores.keys()),
+        "overall_score": float(overall_score),
+        "overall_grade": overall.get("grade", "?"),
+    }
+
+    return {
+        "verdict": verdict,
+        "verdict_message": verdict_message,
+        "key_findings": key_findings,
+        "detailed_scores_ref": detailed_scores_ref,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Markdown report generation
 # ---------------------------------------------------------------------------
 
@@ -161,12 +256,23 @@ def generate_diagnostic_markdown(
         lines.append("")
         lines.append("| Component | Score | Grade | Status |")
         lines.append("|-----------|-------|-------|--------|")
-        component_order = ["solver", "constraint", "covariance", "reconstruction"]
+        component_order = [
+            "solver", "constraint", "covariance", "reconstruction",
+            "vae_health", "factor_model",
+            "training_convergence", "active_unit",
+            "portfolio_diversification", "factor_stability",
+        ]
         component_labels = {
             "solver": "Solver",
             "constraint": "Constraints",
             "covariance": "Covariance",
             "reconstruction": "Reconstruction",
+            "vae_health": "VAE Health",
+            "factor_model": "Factor Model",
+            "training_convergence": "Training Convergence",
+            "active_unit": "Active Units",
+            "portfolio_diversification": "Portfolio Diversification",
+            "factor_stability": "Factor Stability",
         }
         for comp_name in component_order:
             if comp_name in comp_scores:
@@ -197,11 +303,30 @@ def generate_diagnostic_markdown(
     # Interpretation from each component
     lines.append("### Interpretation")
     lines.append("")
-    for comp_name in ["solver", "constraint", "covariance", "reconstruction"]:
+    interpretation_order = [
+        "solver", "constraint", "covariance", "reconstruction",
+        "vae_health", "factor_model",
+        "training_convergence", "active_unit",
+        "portfolio_diversification", "factor_stability",
+    ]
+    interpretation_labels = {
+        "solver": "Solver",
+        "constraint": "Constraints",
+        "covariance": "Covariance",
+        "reconstruction": "Reconstruction",
+        "vae_health": "VAE Health",
+        "factor_model": "Factor Model",
+        "training_convergence": "Training",
+        "active_unit": "Active Units",
+        "portfolio_diversification": "Diversification",
+        "factor_stability": "Stability",
+    }
+    for comp_name in interpretation_order:
         comp_detail = composite.get(comp_name, {})
         interp = comp_detail.get("interpretation", "")
         if interp and comp_detail.get("available", False):
-            lines.append(f"- **{comp_name.title()}**: {interp}")
+            label = interpretation_labels.get(comp_name, comp_name.title())
+            lines.append(f"- **{label}**: {interp}")
     lines.append("")
 
     lines.append("---")

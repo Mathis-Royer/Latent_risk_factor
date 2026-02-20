@@ -17,6 +17,103 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Score Confidence and Temporal Context
+# ---------------------------------------------------------------------------
+
+def compute_score_confidence(
+    score: float,
+    n_samples: int,
+    std: float,
+) -> dict[str, Any]:
+    """
+    Compute confidence interval for a score.
+
+    Uses standard error to estimate confidence bounds and reliability.
+
+    :param score (float): The computed score (0-100)
+    :param n_samples (int): Number of samples used to compute the score
+    :param std (float): Standard deviation of the underlying metric
+
+    :return result (dict): score, confidence_interval, reliability
+    """
+    se = std / np.sqrt(max(n_samples, 1))
+    ci_lower = max(0.0, score - 1.96 * se)
+    ci_upper = min(100.0, score + 1.96 * se)
+
+    if std < 10:
+        reliability = "high"
+    elif std < 20:
+        reliability = "medium"
+    else:
+        reliability = "low"
+
+    return {
+        "score": float(score),
+        "confidence_interval": (float(ci_lower), float(ci_upper)),
+        "reliability": reliability,
+    }
+
+
+def encode_temporal_context(
+    current: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Add temporal context to current score.
+
+    Computes delta vs previous, trend direction, and anomaly detection.
+
+    :param current (dict): Current score dict with at least "score" key
+    :param history (list[dict]): List of historical score dicts
+
+    :return context (dict): current_score, delta_vs_previous, trend_direction, is_anomaly
+    """
+    current_score = current.get("score", 0.0)
+
+    if not history:
+        return {
+            "current_score": float(current_score),
+            "delta_vs_previous": 0.0,
+            "trend_direction": "stable",
+            "is_anomaly": False,
+        }
+
+    prev = history[-1].get("score", 0.0)
+    delta = current_score - prev
+
+    # Compute trend over last 3+ folds
+    if len(history) >= 3:
+        recent = [h.get("score", 0.0) for h in history[-3:]] + [current_score]
+        x = np.arange(len(recent))
+        slope = np.polyfit(x, recent, 1)[0]
+        if slope > 2:
+            trend = "improving"
+        elif slope < -2:
+            trend = "degrading"
+        else:
+            trend = "stable"
+    else:
+        trend = "stable"
+
+    # Anomaly detection
+    if len(history) >= 3:
+        historical_scores = [h.get("score", 0.0) for h in history]
+        mean = np.mean(historical_scores)
+        std = np.std(historical_scores)
+        z_score = (current_score - mean) / max(std, 1.0)
+        is_anomaly = abs(z_score) > 2.0
+    else:
+        is_anomaly = False
+
+    return {
+        "current_score": float(current_score),
+        "delta_vs_previous": float(delta),
+        "trend_direction": trend,
+        "is_anomaly": bool(is_anomaly),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Grade mapping
 # ---------------------------------------------------------------------------
 
@@ -558,6 +655,853 @@ def compute_reconstruction_balance_score(
 
 
 # ---------------------------------------------------------------------------
+# Training Convergence Score
+# ---------------------------------------------------------------------------
+
+def compute_training_convergence_score(
+    training: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Compute training convergence quality score.
+
+    Evaluates:
+    - Best epoch timing (30%): Was best epoch at optimal fraction of training?
+    - Convergence stability (25%): Was val ELBO still decreasing at end?
+    - LR scheduling (25%): Did ReduceLROnPlateau work appropriately?
+    - Sigma bounds (20%): Did sigma_sq hit its bounds?
+
+    :param training (dict | None): From training_diagnostics()
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    if training is None or not training.get("available", False):
+        return {
+            "available": False,
+            "score": 50.0,  # Neutral default
+            "grade": "C",
+            "interpretation": "Training diagnostics not available",
+            "action": None,
+        }
+
+    best_epoch_fraction = training.get("best_epoch_fraction", 0.5)
+    still_decreasing = training.get("still_decreasing_at_end", False)
+    n_lr_reductions = training.get("n_lr_reductions", 0)
+    sigma_min_hit = training.get("sigma_sq_min_hit", False)
+    sigma_max_hit = training.get("sigma_sq_max_hit", False)
+    overfit_ratio = training.get("overfit_ratio", 1.0)
+
+    # Timing score (30 points)
+    # Optimal: best epoch at 30-85% of training
+    # Too early (<15%): underfitting
+    # Too late (>95%): may still be converging
+    if 0.30 <= best_epoch_fraction <= 0.85:
+        timing_score = 30.0
+    elif best_epoch_fraction < 0.15:
+        # Too early = underfitting
+        timing_score = 10.0
+    elif best_epoch_fraction > 0.95:
+        # Very late = may not have converged
+        timing_score = 15.0
+    elif best_epoch_fraction < 0.30:
+        # Early but not too early
+        timing_score = 10.0 + 20.0 * (best_epoch_fraction - 0.15) / 0.15
+    else:
+        # Late but not too late
+        timing_score = 30.0 - 15.0 * (best_epoch_fraction - 0.85) / 0.10
+
+    timing_score = np.clip(timing_score, 0, 30)
+
+    # Stability score (25 points)
+    # Penalize if val ELBO still decreasing at end
+    if still_decreasing:
+        stability_score = 15.0  # 40% penalty
+    else:
+        stability_score = 25.0
+
+    # LR scheduling score (25 points)
+    # Ideal: 2-5 reductions (scheduler found plateaus)
+    # 0-1: May not need scheduling or didn't trigger
+    # >10: Too many reductions = instability
+    if 2 <= n_lr_reductions <= 5:
+        lr_score = 25.0
+    elif n_lr_reductions <= 1:
+        lr_score = 15.0
+    elif n_lr_reductions <= 7:
+        lr_score = 20.0
+    elif n_lr_reductions <= 10:
+        lr_score = 15.0
+    else:
+        lr_score = 10.0
+
+    # Sigma bounds score (20 points)
+    # Penalize if sigma_sq hit its bounds
+    sigma_score = 20.0
+    if sigma_min_hit:
+        sigma_score -= 10.0
+    if sigma_max_hit:
+        sigma_score -= 10.0
+
+    total_score = timing_score + stability_score + lr_score + sigma_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    issues = []
+    if best_epoch_fraction < 0.15:
+        issues.append("best epoch too early (underfitting?)")
+    elif best_epoch_fraction > 0.95:
+        issues.append("best epoch at end (may need more epochs)")
+    if still_decreasing:
+        issues.append("val ELBO still decreasing")
+    if n_lr_reductions > 10:
+        issues.append("many LR reductions (unstable)")
+    if sigma_min_hit:
+        issues.append("sigma hit lower bound")
+    if sigma_max_hit:
+        issues.append("sigma hit upper bound")
+
+    if total_score >= 85:
+        interpretation = (
+            f"Training converged optimally. Best epoch at {best_epoch_fraction:.0%}, "
+            f"{n_lr_reductions} LR reductions."
+        )
+    elif total_score >= 70:
+        interpretation = (
+            f"Training converged acceptably. Best epoch at {best_epoch_fraction:.0%}."
+        )
+        if issues:
+            interpretation += f" Minor issues: {', '.join(issues[:2])}."
+    elif total_score >= 55:
+        interpretation = f"Training convergence needs review: {', '.join(issues[:3])}."
+    else:
+        interpretation = f"Training convergence problems: {', '.join(issues)}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if still_decreasing:
+            action = "Increase max_epochs — training did not converge"
+        elif best_epoch_fraction < 0.15:
+            action = "Model underfitting — increase capacity or reduce regularization"
+        elif sigma_min_hit or sigma_max_hit:
+            action = "Adjust sigma_sq bounds to allow better fit"
+        elif n_lr_reductions > 10:
+            action = "Review LR scheduler settings — too many reductions"
+        else:
+            action = "Review training configuration"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "best_epoch_fraction": best_epoch_fraction,
+            "still_decreasing": still_decreasing,
+            "n_lr_reductions": n_lr_reductions,
+            "sigma_min_hit": sigma_min_hit,
+            "sigma_max_hit": sigma_max_hit,
+            "overfit_ratio": overfit_ratio,
+            "component_scores": {
+                "timing": float(timing_score),
+                "stability": float(stability_score),
+                "lr_scheduling": float(lr_score),
+                "sigma_bounds": float(sigma_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Active Unit Score
+# ---------------------------------------------------------------------------
+
+def compute_active_unit_score(
+    training: dict[str, Any] | None,
+    latent: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Compute active unit utilization score.
+
+    Evaluates:
+    - Utilization ratio (35%): AU/K in optimal range
+    - AU stability (30%): Final AU vs max during training
+    - Effective dimensions (35%): Balanced KL distribution
+
+    :param training (dict | None): From training_diagnostics()
+    :param latent (dict | None): From latent_diagnostics()
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    # Get latent metrics
+    if latent is None:
+        return {
+            "available": False,
+            "score": 50.0,
+            "grade": "C",
+            "interpretation": "Latent diagnostics not available",
+            "action": None,
+        }
+
+    AU = latent.get("AU", 0)
+    K = latent.get("K", 1)
+    utilization_ratio = latent.get("utilization_ratio", 0.0)
+    eff_latent_dims = latent.get("eff_latent_dims", 0.0)
+
+    # Get training AU evolution if available
+    au_final = AU
+    au_max_during = AU
+    if training is not None and training.get("available", False):
+        au_final = training.get("au_final", AU)
+        au_max_during = training.get("au_max_during_training", AU)
+
+    # Utilization score (35 points)
+    # Optimal: 15-60% of capacity used
+    # <5%: collapse
+    # >80%: saturation
+    if 0.15 <= utilization_ratio <= 0.60:
+        util_score = 35.0
+    elif utilization_ratio < 0.05:
+        util_score = 5.0  # Severe collapse
+    elif utilization_ratio < 0.15:
+        # Partial collapse
+        util_score = 5.0 + 30.0 * (utilization_ratio - 0.05) / 0.10
+    elif utilization_ratio <= 0.80:
+        # Slight oversaturation
+        util_score = 35.0 - 15.0 * (utilization_ratio - 0.60) / 0.20
+    else:
+        # Heavy saturation
+        util_score = 20.0
+
+    util_score = np.clip(util_score, 0, 35)
+
+    # AU stability score (30 points)
+    # Ratio of final AU to max during training
+    # High ratio = stable; low ratio = excessive pruning
+    if au_max_during > 0:
+        au_retention = au_final / au_max_during
+    else:
+        au_retention = 1.0
+
+    if 0.8 <= au_retention <= 1.0:
+        stability_score = 30.0
+    elif au_retention < 0.5:
+        stability_score = 10.0  # Excessive pruning
+    elif au_retention < 0.8:
+        stability_score = 10.0 + 20.0 * (au_retention - 0.5) / 0.3
+    else:
+        stability_score = 30.0
+
+    stability_score = np.clip(stability_score, 0, 30)
+
+    # Spectrum score (35 points)
+    # Ratio of effective dims to AU — balanced distribution
+    # Ideal: eff_dims/AU in [0.5, 1.0]
+    if AU > 0 and eff_latent_dims > 0:
+        spectrum_ratio = eff_latent_dims / AU
+    else:
+        spectrum_ratio = 0.0
+
+    if 0.5 <= spectrum_ratio <= 1.0:
+        spectrum_score = 35.0
+    elif spectrum_ratio < 0.3:
+        spectrum_score = 15.0  # Few dims dominate
+    elif spectrum_ratio < 0.5:
+        spectrum_score = 15.0 + 20.0 * (spectrum_ratio - 0.3) / 0.2
+    else:
+        # ratio > 1 means more "effective" dims than active (shouldn't happen normally)
+        spectrum_score = 35.0
+
+    spectrum_score = np.clip(spectrum_score, 0, 35)
+
+    total_score = util_score + stability_score + spectrum_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    if total_score >= 80:
+        interpretation = (
+            f"Latent space well-utilized. AU={AU}/{K} ({utilization_ratio:.0%}), "
+            f"eff_dims={eff_latent_dims:.1f}."
+        )
+    elif total_score >= 60:
+        interpretation = (
+            f"Latent space acceptable. AU={AU}/{K} ({utilization_ratio:.0%})."
+        )
+        if au_retention < 0.8:
+            interpretation += f" AU dropped from {au_max_during} to {au_final} during training."
+    else:
+        issues = []
+        if utilization_ratio < 0.05:
+            issues.append("severe collapse")
+        elif utilization_ratio < 0.15:
+            issues.append("low utilization")
+        elif utilization_ratio > 0.80:
+            issues.append("near saturation")
+        if au_retention < 0.5:
+            issues.append("excessive pruning")
+        if spectrum_ratio < 0.3:
+            issues.append("few dims dominate")
+        interpretation = f"Latent space issues: {', '.join(issues)}. AU={AU}/{K}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if utilization_ratio < 0.05:
+            action = "Posterior collapse detected — reduce beta or slow KL annealing"
+        elif utilization_ratio < 0.15:
+            action = "Low AU — increase training data or reduce regularization"
+        elif utilization_ratio > 0.80:
+            action = "Near saturation — consider increasing K"
+        elif au_retention < 0.5:
+            action = "Excessive AU pruning — review early stopping or KL weight"
+        elif spectrum_ratio < 0.3:
+            action = "Few dimensions dominate — check for mode collapse"
+        else:
+            action = "Review VAE architecture"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "AU": AU,
+            "K": K,
+            "utilization_ratio": utilization_ratio,
+            "au_final": au_final,
+            "au_max_during": au_max_during,
+            "au_retention": au_retention,
+            "eff_latent_dims": eff_latent_dims,
+            "spectrum_ratio": spectrum_ratio,
+            "component_scores": {
+                "utilization": float(util_score),
+                "stability": float(stability_score),
+                "spectrum": float(spectrum_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Diversification Score
+# ---------------------------------------------------------------------------
+
+def compute_portfolio_diversification_score(
+    portfolio: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Compute portfolio diversification quality score.
+
+    Evaluates:
+    - Factor entropy (40%): H_norm_signal normalized entropy
+    - ENB ratio (25%): Effective number of bets vs n_signal
+    - Position balance (25%): Effective N vs active positions
+    - Gini coefficient (10%): Weight equality
+
+    :param portfolio (dict | None): From portfolio_diagnostics()
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    if portfolio is None:
+        return {
+            "available": False,
+            "score": 50.0,
+            "grade": "C",
+            "interpretation": "Portfolio diagnostics not available",
+            "action": None,
+        }
+
+    H_norm_signal = portfolio.get("H_norm_signal", 0.0)
+    H_norm_eff = portfolio.get("H_norm_eff", 0.0)
+    enb = portfolio.get("enb", 0.0)
+    n_signal = portfolio.get("n_signal", 1)
+    eff_n_positions = portfolio.get("eff_n_positions", 0.0)
+    n_active_positions = portfolio.get("n_active_positions", 1)
+    gini = portfolio.get("gini_coefficient", 0.0)
+
+    # Use H_norm_signal if available, else fallback to H_norm_eff
+    h_norm = H_norm_signal if H_norm_signal > 0 else H_norm_eff
+
+    # Entropy score (40 points)
+    # H_norm >= 0.5 is excellent diversification
+    if h_norm >= 0.5:
+        entropy_score = 40.0
+    elif h_norm >= 0.3:
+        entropy_score = 40.0 * (h_norm / 0.5)
+    else:
+        entropy_score = 40.0 * (h_norm / 0.3) * 0.6  # Severe penalty below 0.3
+
+    entropy_score = np.clip(entropy_score, 0, 40)
+
+    # ENB ratio score (25 points)
+    # ENB / n_signal close to 1 = perfect diversification
+    n_signal_safe = max(n_signal, 1)
+    enb_ratio = min(enb / n_signal_safe, 1.0) if enb > 0 else 0.0
+    enb_score = 25.0 * enb_ratio
+
+    # Position balance score (25 points)
+    # eff_n / n_active close to 1 = balanced weights
+    n_active_safe = max(n_active_positions, 1)
+    position_ratio = eff_n_positions / n_active_safe if eff_n_positions > 0 else 0.0
+    if position_ratio >= 0.7:
+        position_score = 25.0
+    elif position_ratio >= 0.3:
+        position_score = 25.0 * (position_ratio / 0.7)
+    else:
+        position_score = 10.0  # Very concentrated
+
+    position_score = np.clip(position_score, 0, 25)
+
+    # Gini score (10 points)
+    # Gini = 0 (equal) → 10 pts, Gini = 1 (one stock) → 0 pts
+    gini_score = 10.0 * (1.0 - np.clip(gini, 0, 1))
+
+    total_score = entropy_score + enb_score + position_score + gini_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    if total_score >= 80:
+        interpretation = (
+            f"Excellent factor diversification. H_norm={h_norm:.3f}, "
+            f"ENB={enb:.1f}/{n_signal}, eff_N={eff_n_positions:.1f}."
+        )
+    elif total_score >= 60:
+        interpretation = (
+            f"Acceptable diversification. H_norm={h_norm:.3f}, ENB={enb:.1f}."
+        )
+    else:
+        issues = []
+        if h_norm < 0.3:
+            issues.append(f"low factor entropy ({h_norm:.2f})")
+        if enb_ratio < 0.5:
+            issues.append(f"low ENB ({enb:.1f}/{n_signal})")
+        if position_ratio < 0.3:
+            issues.append("concentrated positions")
+        if gini > 0.7:
+            issues.append("high Gini")
+        interpretation = f"Diversification issues: {', '.join(issues)}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if h_norm < 0.3:
+            action = "Factor entropy low — review alpha/entropy tradeoff"
+        elif position_ratio < 0.3:
+            action = "Positions concentrated — check if w_max is too restrictive"
+        elif enb_ratio < 0.5:
+            action = "Low ENB — factors may not offer diversification"
+        else:
+            action = "Review diversification constraints"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "H_norm_signal": H_norm_signal,
+            "H_norm_eff": H_norm_eff,
+            "h_norm_used": h_norm,
+            "enb": enb,
+            "n_signal": n_signal,
+            "enb_ratio": enb_ratio,
+            "eff_n_positions": eff_n_positions,
+            "n_active_positions": n_active_positions,
+            "position_ratio": position_ratio,
+            "gini_coefficient": gini,
+            "component_scores": {
+                "entropy": float(entropy_score),
+                "enb": float(enb_score),
+                "position_balance": float(position_score),
+                "gini": float(gini_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Factor Stability Score
+# ---------------------------------------------------------------------------
+
+def compute_factor_stability_score(
+    factor_quality: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Compute factor stability score.
+
+    Evaluates:
+    - Latent stability (50%): Spearman rho between folds
+    - Factor composition (30%): Percentage of structural factors
+    - AU consistency (20%): Agreement with Bai-Ng IC2
+
+    :param factor_quality (dict | None): From factor_quality_diagnostics()
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    if factor_quality is None or not factor_quality.get("available", False):
+        return {
+            "available": False,
+            "score": 50.0,
+            "grade": "C",
+            "interpretation": "Factor quality diagnostics not available",
+            "action": None,
+        }
+
+    stability_rho = factor_quality.get("latent_stability_rho")
+    pct_structural = factor_quality.get("pct_structural", 0.0)
+    n_structural = factor_quality.get("n_structural", 0)
+    au_bai_ng_diff = factor_quality.get("au_bai_ng_diff")
+    au_onatski_diff = factor_quality.get("au_onatski_diff")
+    AU = factor_quality.get("AU", 0)
+
+    # Latent stability score (50 points)
+    # rho >= 0.85: very stable
+    # rho < 0.70: unstable
+    # None (single fold): neutral 35 pts
+    if stability_rho is None or np.isnan(stability_rho):
+        stability_score = 35.0  # Neutral for single fold
+        stability_status = "N/A (single fold)"
+    elif stability_rho >= 0.85:
+        stability_score = 50.0
+        stability_status = "stable"
+    elif stability_rho >= 0.70:
+        stability_score = 20.0 + 30.0 * (stability_rho - 0.70) / 0.15
+        stability_status = "moderate"
+    else:
+        stability_score = 20.0 * (stability_rho / 0.70)
+        stability_status = "unstable"
+
+    stability_score = np.clip(stability_score, 0, 50)
+
+    # Composition score (30 points)
+    # >50% structural factors: persistent factors dominate
+    # <20% structural: dominated by episodic
+    if pct_structural >= 0.50:
+        composition_score = 30.0
+    elif pct_structural >= 0.20:
+        composition_score = 15.0 + 15.0 * (pct_structural - 0.20) / 0.30
+    else:
+        composition_score = 15.0 * (pct_structural / 0.20)
+
+    composition_score = np.clip(composition_score, 0, 30)
+
+    # AU consistency score (20 points)
+    # |AU - k_bai_ng| < 5: consistent
+    # |AU - k_bai_ng| > 20: divergent
+    if au_bai_ng_diff is not None:
+        abs_diff = abs(au_bai_ng_diff)
+        if abs_diff < 5:
+            consistency_score = 20.0
+        elif abs_diff < 10:
+            consistency_score = 15.0
+        elif abs_diff < 20:
+            consistency_score = 10.0
+        else:
+            consistency_score = 5.0
+    else:
+        # Not available, neutral
+        consistency_score = 10.0
+
+    total_score = stability_score + composition_score + consistency_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    if total_score >= 80:
+        interpretation = (
+            f"Factor structure robust. Stability={stability_status}, "
+            f"{n_structural} structural factors ({pct_structural:.0%})."
+        )
+    elif total_score >= 60:
+        interpretation = (
+            f"Factor structure acceptable. {pct_structural:.0%} structural."
+        )
+        if stability_status == "moderate":
+            interpretation += " Stability moderate."
+    else:
+        issues = []
+        if stability_rho is not None and stability_rho < 0.70:
+            issues.append(f"low stability (rho={stability_rho:.2f})")
+        if pct_structural < 0.20:
+            issues.append("few structural factors")
+        if au_bai_ng_diff is not None and abs(au_bai_ng_diff) > 20:
+            issues.append(f"AU diverges from Bai-Ng by {au_bai_ng_diff}")
+        interpretation = f"Factor stability issues: {', '.join(issues) if issues else 'multiple concerns'}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if stability_rho is not None and stability_rho < 0.70:
+            action = "Factor structure unstable between folds — increase training window"
+        elif pct_structural < 0.20:
+            action = "Most factors are episodic — risk of OOS degradation"
+        elif au_bai_ng_diff is not None and abs(au_bai_ng_diff) > 20:
+            action = "AU count diverges from statistical tests — review KL threshold"
+        else:
+            action = "Review factor extraction methodology"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "latent_stability_rho": stability_rho,
+            "stability_status": stability_status,
+            "pct_structural": pct_structural,
+            "n_structural": n_structural,
+            "au_bai_ng_diff": au_bai_ng_diff,
+            "au_onatski_diff": au_onatski_diff,
+            "AU": AU,
+            "component_scores": {
+                "stability": float(stability_score),
+                "composition": float(composition_score),
+                "consistency": float(consistency_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# VAE Health Score
+# ---------------------------------------------------------------------------
+
+def compute_vae_health_score(vae_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Compute VAE posterior quality score.
+
+    Evaluates:
+    - Posterior collapse (35%): Fraction of latent units not collapsed
+    - Posterior explosion (25%): Fraction of latent units not exploded
+    - KL balance (25%): Balance of KL divergence
+    - Reconstruction balance (15%): Balance between features
+
+    :param vae_diagnostics (dict | None): VAE posterior diagnostics
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    if vae_diagnostics is None:
+        return {
+            "available": False,
+            "score": 0.0,
+            "grade": "F",
+            "interpretation": "VAE diagnostics not available",
+            "action": "Run pipeline with VAE diagnostics enabled",
+        }
+
+    # Extract values with defaults
+    collapse_severity = vae_diagnostics.get("collapse_severity", 0.0)
+    explosion_severity = vae_diagnostics.get("explosion_severity", 0.0)
+    kl_balance = vae_diagnostics.get("kl_balance", 0.5)
+    recon_per_feature = vae_diagnostics.get("recon_per_feature", [])
+
+    # Posterior collapse score (35 points)
+    # collapse_severity is fraction at lower bound; lower is better
+    collapse_score = 35.0 * (1.0 - np.clip(collapse_severity, 0, 1))
+
+    # Posterior explosion score (25 points)
+    # explosion_severity is fraction at upper bound; lower is better
+    explosion_score = 25.0 * (1.0 - np.clip(explosion_severity, 0, 1))
+
+    # KL balance score (25 points)
+    # kl_balance should ideally be around 0.5 (balanced)
+    # Score higher when closer to balanced
+    kl_deviation = abs(kl_balance - 0.5)
+    kl_score = 25.0 * (1.0 - np.clip(kl_deviation * 2, 0, 1))
+
+    # Reconstruction balance score (15 points)
+    if len(recon_per_feature) >= 2:
+        max_recon = max(recon_per_feature[0], recon_per_feature[1], 1e-10)
+        imbalance = abs(recon_per_feature[0] - recon_per_feature[1]) / max_recon
+        balance_score = 15.0 * (1.0 - np.clip(imbalance, 0, 1))
+        feature_imbalance = imbalance
+    else:
+        balance_score = 10.0  # Neutral if unavailable
+        feature_imbalance = None
+
+    total_score = collapse_score + explosion_score + kl_score + balance_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    issues = []
+    if collapse_severity > 0.2:
+        issues.append(f"{collapse_severity:.0%} collapsed")
+    if explosion_severity > 0.1:
+        issues.append(f"{explosion_severity:.0%} exploded")
+    if kl_deviation > 0.3:
+        issues.append(f"KL imbalance={kl_balance:.2f}")
+
+    if total_score >= 85:
+        interpretation = (
+            f"VAE posterior healthy. "
+            f"Collapse={collapse_severity:.1%}, explosion={explosion_severity:.1%}."
+        )
+    elif total_score >= 70:
+        interpretation = (
+            f"VAE posterior acceptable. "
+            f"Collapse={collapse_severity:.1%}, explosion={explosion_severity:.1%}."
+        )
+    elif total_score >= 50:
+        interpretation = f"VAE posterior issues: {', '.join(issues) if issues else 'moderate degradation'}."
+    else:
+        interpretation = f"VAE posterior critical: {', '.join(issues) if issues else 'severe degradation'}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if collapse_severity > 0.3:
+            action = "Posterior collapse detected; reduce beta or KL annealing"
+        elif explosion_severity > 0.2:
+            action = "Posterior explosion detected; increase regularization"
+        elif kl_deviation > 0.3:
+            action = "KL imbalance detected; review loss weights"
+        else:
+            action = "Review VAE training hyperparameters"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "collapse_severity": collapse_severity,
+            "explosion_severity": explosion_severity,
+            "kl_balance": kl_balance,
+            "feature_imbalance": feature_imbalance,
+            "recon_per_feature": recon_per_feature if len(recon_per_feature) >= 2 else None,
+            "component_scores": {
+                "collapse": float(collapse_score),
+                "explosion": float(explosion_score),
+                "kl_balance": float(kl_score),
+                "reconstruction_balance": float(balance_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Factor Model Score
+# ---------------------------------------------------------------------------
+
+def compute_factor_model_score(factor_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Compute factor model quality score.
+
+    Evaluates:
+    - Eigenvalue quality (30%): Based on concentration ratio and gap structure
+    - Regression stability (30%): 1 - rank deficiency rate
+    - R-squared consistency (25%): cs_r2_mean / (1 + cs_r2_std)
+    - z_hat normality (15%): 1 - fraction of extreme z_hat values
+
+    :param factor_diagnostics (dict | None): Factor model diagnostics
+
+    :return result (dict): score, grade, interpretation, action, details
+    """
+    if factor_diagnostics is None:
+        return {
+            "available": False,
+            "score": 0.0,
+            "grade": "F",
+            "interpretation": "Factor model diagnostics not available",
+            "action": "Run pipeline with factor model diagnostics enabled",
+        }
+
+    # Extract values with defaults
+    concentration_ratio = factor_diagnostics.get("concentration_ratio", 0.0)
+    rank_deficiency_rate = factor_diagnostics.get("rank_deficiency_rate", 0.0)
+    cs_r2_mean = factor_diagnostics.get("cs_r2_mean", 0.0)
+    cs_r2_std = factor_diagnostics.get("cs_r2_std", 0.0)
+    n_extreme_z_hat = factor_diagnostics.get("n_extreme_z_hat", 0)
+    n_dates = factor_diagnostics.get("n_dates", 1)
+
+    # Eigenvalue quality score (30 points)
+    # concentration_ratio > 0.5 is good (factors explain more than residual)
+    # Ideal: 0.6-0.9
+    if concentration_ratio >= 0.6:
+        eigen_score = 30.0 * min(concentration_ratio / 0.9, 1.0)
+    elif concentration_ratio >= 0.3:
+        eigen_score = 30.0 * (concentration_ratio / 0.6)
+    else:
+        eigen_score = 30.0 * (concentration_ratio / 0.3) * 0.5
+
+    # Regression stability score (30 points)
+    # rank_deficiency_rate should be low (ideally 0)
+    stability_score = 30.0 * (1.0 - np.clip(rank_deficiency_rate, 0, 1))
+
+    # R-squared consistency score (25 points)
+    # Higher mean and lower std is better
+    if cs_r2_mean > 0:
+        r2_normalized = cs_r2_mean / (1.0 + cs_r2_std)
+        # Scale: 0.1 normalized -> full score
+        r2_score = 25.0 * min(r2_normalized / 0.1, 1.0)
+    else:
+        r2_score = 0.0
+
+    # z_hat normality score (15 points)
+    # Fewer extreme values is better
+    n_dates = max(n_dates, 1)  # Avoid division by zero
+    extreme_fraction = n_extreme_z_hat / n_dates
+    normality_score = 15.0 * (1.0 - np.clip(extreme_fraction * 10, 0, 1))
+
+    total_score = eigen_score + stability_score + r2_score + normality_score
+    total_score = np.clip(total_score, 0, 100)
+
+    # Generate interpretation
+    parts = []
+    parts.append(f"conc_ratio={concentration_ratio:.2f}")
+    if rank_deficiency_rate > 0:
+        parts.append(f"rank_def={rank_deficiency_rate:.1%}")
+    parts.append(f"R2={cs_r2_mean:.3f}±{cs_r2_std:.3f}")
+
+    if total_score >= 80:
+        interpretation = f"Factor model well-specified. {', '.join(parts)}."
+    elif total_score >= 60:
+        interpretation = f"Factor model acceptable. {', '.join(parts)}."
+    elif total_score >= 40:
+        interpretation = f"Factor model issues. {', '.join(parts)}."
+    else:
+        interpretation = f"Factor model critical issues. {', '.join(parts)}."
+
+    # Generate action if needed
+    action = None
+    if total_score < 60:
+        if rank_deficiency_rate > 0.1:
+            action = "High rank deficiency; reduce factor count or increase sample size"
+        elif concentration_ratio < 0.3:
+            action = "Low factor explanatory power; review factor extraction"
+        elif extreme_fraction > 0.1:
+            action = "Many extreme z_hat values; check for outliers or misspecification"
+        else:
+            action = "Review factor model specification"
+
+    return {
+        "available": True,
+        "score": float(total_score),
+        "grade": _get_grade(total_score),
+        "interpretation": interpretation,
+        "action": action,
+        "details": {
+            "concentration_ratio": concentration_ratio,
+            "rank_deficiency_rate": rank_deficiency_rate,
+            "cs_r2_mean": cs_r2_mean,
+            "cs_r2_std": cs_r2_std,
+            "n_extreme_z_hat": n_extreme_z_hat,
+            "n_dates": n_dates,
+            "extreme_fraction": extreme_fraction,
+            "component_scores": {
+                "eigenvalue": float(eigen_score),
+                "stability": float(stability_score),
+                "r2_consistency": float(r2_score),
+                "normality": float(normality_score),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Overall Score
 # ---------------------------------------------------------------------------
 
@@ -566,36 +1510,74 @@ def compute_overall_score(
     constraint: dict[str, Any],
     covariance: dict[str, Any],
     reconstruction: dict[str, Any],
+    vae_health: dict[str, Any] | None = None,
+    factor_model: dict[str, Any] | None = None,
+    training_convergence: dict[str, Any] | None = None,
+    active_unit: dict[str, Any] | None = None,
+    portfolio_diversification: dict[str, Any] | None = None,
+    factor_stability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute weighted overall diagnostic score.
 
-    Weights:
-    - Covariance: 35% (risk model accuracy is critical)
-    - Solver: 25% (must find actual optimum)
-    - Reconstruction: 25% (VAE must learn meaningful factors)
-    - Constraints: 15% (some pressure is acceptable)
+    Weights (10 components, total = 100%):
+    - Covariance: 20% (risk model accuracy is critical)
+    - Solver: 15% (must find actual optimum)
+    - Reconstruction: 12% (VAE must learn meaningful factors)
+    - VAE Health: 10% (posterior quality)
+    - Factor Model: 10% (factor model specification)
+    - Constraints: 8% (some pressure is acceptable)
+    - Training Convergence: 8% (VAE training quality)
+    - Active Unit: 7% (latent space utilization)
+    - Portfolio Diversification: 5% (diversification quality)
+    - Factor Stability: 5% (factor temporal stability)
 
     :param solver (dict): From compute_solver_health_score()
     :param constraint (dict): From compute_constraint_pressure_score()
     :param covariance (dict): From compute_covariance_quality_score()
     :param reconstruction (dict): From compute_reconstruction_balance_score()
+    :param vae_health (dict | None): From compute_vae_health_score()
+    :param factor_model (dict | None): From compute_factor_model_score()
+    :param training_convergence (dict | None): From compute_training_convergence_score()
+    :param active_unit (dict | None): From compute_active_unit_score()
+    :param portfolio_diversification (dict | None): From compute_portfolio_diversification_score()
+    :param factor_stability (dict | None): From compute_factor_stability_score()
 
     :return result (dict): score, grade, status, summary, priority_actions
     """
     weights = {
-        "solver": 0.25,
-        "constraint": 0.15,
-        "covariance": 0.35,
-        "reconstruction": 0.25,
+        "solver": 0.15,
+        "constraint": 0.08,
+        "covariance": 0.20,
+        "reconstruction": 0.12,
+        "vae_health": 0.10,
+        "factor_model": 0.10,
+        "training_convergence": 0.08,
+        "active_unit": 0.07,
+        "portfolio_diversification": 0.05,
+        "factor_stability": 0.05,
     }
 
-    components = {
+    components: dict[str, dict[str, Any]] = {
         "solver": solver,
         "constraint": constraint,
         "covariance": covariance,
         "reconstruction": reconstruction,
     }
+
+    # Add optional components if provided
+    if vae_health is not None:
+        components["vae_health"] = vae_health
+    if factor_model is not None:
+        components["factor_model"] = factor_model
+    if training_convergence is not None:
+        components["training_convergence"] = training_convergence
+    if active_unit is not None:
+        components["active_unit"] = active_unit
+    if portfolio_diversification is not None:
+        components["portfolio_diversification"] = portfolio_diversification
+    if factor_stability is not None:
+        components["factor_stability"] = factor_stability
 
     # Compute weighted score
     total_weight = 0.0
@@ -691,7 +1673,12 @@ def compare_across_folds(fold_scores: list[dict[str, Any]]) -> dict[str, Any]:
     overall_scores = [f.get("score", 0) for f in fold_scores]
 
     # Extract component scores
-    component_names = ["solver", "constraint", "covariance", "reconstruction"]
+    component_names = [
+        "solver", "constraint", "covariance", "reconstruction",
+        "vae_health", "factor_model",
+        "training_convergence", "active_unit",
+        "portfolio_diversification", "factor_stability",
+    ]
     component_scores: dict[str, list[float]] = {name: [] for name in component_names}
 
     for f in fold_scores:
@@ -774,6 +1761,11 @@ def compute_all_composite_scores(
     risk_model: dict[str, Any] | None,
     training: dict[str, Any] | None,
     n_active: int,
+    vae_diagnostics: dict[str, Any] | None = None,
+    factor_diagnostics: dict[str, Any] | None = None,
+    latent: dict[str, Any] | None = None,
+    portfolio: dict[str, Any] | None = None,
+    factor_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute all composite scores in one call.
@@ -783,19 +1775,52 @@ def compute_all_composite_scores(
     :param risk_model (dict | None): From risk_model_diagnostics()
     :param training (dict | None): From training_diagnostics()
     :param n_active (int): Number of active positions
+    :param vae_diagnostics (dict | None): VAE posterior diagnostics
+    :param factor_diagnostics (dict | None): Factor model diagnostics
+    :param latent (dict | None): From latent_diagnostics()
+    :param portfolio (dict | None): From portfolio_diagnostics()
+    :param factor_quality (dict | None): From factor_quality_diagnostics()
 
     :return scores (dict): All composite scores including overall
     """
+    # Original 6 scores
     solver = compute_solver_health_score(solver_stats)
     constraint = compute_constraint_pressure_score(constraints, n_active)
     covariance = compute_covariance_quality_score(risk_model)
     reconstruction = compute_reconstruction_balance_score(training)
-    overall = compute_overall_score(solver, constraint, covariance, reconstruction)
+    vae_health = compute_vae_health_score(vae_diagnostics)
+    factor_model = compute_factor_model_score(factor_diagnostics)
+
+    # 4 new scores
+    training_convergence = compute_training_convergence_score(training)
+    active_unit = compute_active_unit_score(training, latent)
+    portfolio_diversification = compute_portfolio_diversification_score(portfolio)
+    factor_stability = compute_factor_stability_score(factor_quality)
+
+    # Overall score with all 10 components
+    overall = compute_overall_score(
+        solver=solver,
+        constraint=constraint,
+        covariance=covariance,
+        reconstruction=reconstruction,
+        vae_health=vae_health,
+        factor_model=factor_model,
+        training_convergence=training_convergence,
+        active_unit=active_unit,
+        portfolio_diversification=portfolio_diversification,
+        factor_stability=factor_stability,
+    )
 
     return {
         "solver": solver,
         "constraint": constraint,
         "covariance": covariance,
         "reconstruction": reconstruction,
+        "vae_health": vae_health,
+        "factor_model": factor_model,
+        "training_convergence": training_convergence,
+        "active_unit": active_unit,
+        "portfolio_diversification": portfolio_diversification,
+        "factor_stability": factor_stability,
         "overall": overall,
     }

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.linalg import subspace_angles
 
 if TYPE_CHECKING:
     from src.walk_forward.oos_rebalancing import OOSRebalancingResult
@@ -269,6 +270,197 @@ def factor_explanatory_power_dynamic(
         return 0.0
 
     return float(1.0 - residual_var / total_var)
+
+
+def eigenvector_rotation_stability(
+    V_curr: np.ndarray,
+    V_prev: np.ndarray,
+    n_top: int = 10,
+) -> dict[str, float]:
+    """
+    Track rotation of Sigma_z eigenvectors between folds.
+
+    Uses scipy.linalg.subspace_angles to compute principal angles between
+    the subspaces spanned by the top n_top eigenvectors of consecutive
+    covariance matrices. Large rotations indicate factor instability.
+
+    :param V_curr (np.ndarray): Current eigenvectors (K, K), columns ordered by eigenvalue
+    :param V_prev (np.ndarray): Previous eigenvectors (K, K), same ordering
+    :param n_top (int): Number of top eigenvectors to compare (default: 10)
+
+    :return result (dict): {
+        "mean_alignment": mean of cos(angles), target > 0.8,
+        "min_alignment": minimum cos(angle),
+        "n_rotated": count of eigenvectors with cos(angle) < 0.5
+    }
+    """
+    # Validate inputs
+    if V_curr.ndim != 2 or V_prev.ndim != 2:
+        return {"mean_alignment": 0.0, "min_alignment": 0.0, "n_rotated": float(n_top)}
+
+    # Limit n_top to available dimensions
+    k_curr = min(V_curr.shape[1], n_top)
+    k_prev = min(V_prev.shape[1], n_top)
+    k = min(k_curr, k_prev)
+
+    if k == 0:
+        return {"mean_alignment": 0.0, "min_alignment": 0.0, "n_rotated": float(n_top)}
+
+    # Extract top eigenvectors (assume columns sorted by descending eigenvalue)
+    V1 = V_curr[:, :k]
+    V2 = V_prev[:, :k]
+
+    # Handle dimension mismatch: truncate to common row dimension
+    min_rows = min(V1.shape[0], V2.shape[0])
+    if min_rows < k:
+        return {"mean_alignment": 0.0, "min_alignment": 0.0, "n_rotated": float(n_top)}
+
+    V1 = V1[:min_rows, :]
+    V2 = V2[:min_rows, :]
+
+    # Compute principal angles between subspaces
+    angles = subspace_angles(V1, V2)  # Returns angles in radians
+
+    # Compute alignment as cosine of angles
+    alignments = np.cos(angles)
+
+    mean_alignment = float(np.mean(alignments))
+    min_alignment = float(np.min(alignments))
+    n_rotated = int(np.sum(alignments < 0.5))
+
+    return {
+        "mean_alignment": mean_alignment,
+        "min_alignment": min_alignment,
+        "n_rotated": float(n_rotated),
+    }
+
+
+def au_retention_analysis(
+    active_dims_history: list[list[int]],
+) -> dict[str, float]:
+    """
+    Track which latent dimensions remain active across walk-forward folds.
+
+    Identifies "core" dimensions that persist in >80% of folds (indicating
+    stable structural factors) vs ephemeral dimensions that come and go
+    (potentially overfitting or noise-driven).
+
+    :param active_dims_history (list[list[int]]): Active dimension indices per fold,
+        e.g., [[0, 3, 5], [0, 2, 3, 5], [0, 3, 7], ...]
+
+    :return result (dict): {
+        "n_core": number of dimensions active in >80% of folds,
+        "mean_turnover": average |symmetric_diff| / |union| between consecutive folds
+    }
+    """
+    n_folds = len(active_dims_history)
+
+    if n_folds == 0:
+        return {"n_core": 0.0, "mean_turnover": 1.0}
+
+    if n_folds == 1:
+        # Single fold: all dimensions are "core", no turnover measurable
+        return {"n_core": float(len(active_dims_history[0])), "mean_turnover": 0.0}
+
+    # Count appearances of each dimension
+    dim_counts: dict[int, int] = {}
+    for dims in active_dims_history:
+        for d in dims:
+            dim_counts[d] = dim_counts.get(d, 0) + 1
+
+    # Core dimensions appear in >80% of folds
+    threshold = 0.80 * n_folds
+    n_core = sum(1 for count in dim_counts.values() if count > threshold)
+
+    # Compute turnover between consecutive folds
+    turnovers: list[float] = []
+    for i in range(1, n_folds):
+        set_prev = set(active_dims_history[i - 1])
+        set_curr = set(active_dims_history[i])
+
+        symmetric_diff = len(set_prev ^ set_curr)
+        union_size = len(set_prev | set_curr)
+
+        if union_size > 0:
+            turnovers.append(symmetric_diff / union_size)
+        else:
+            turnovers.append(0.0)
+
+    mean_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+
+    return {
+        "n_core": float(n_core),
+        "mean_turnover": mean_turnover,
+    }
+
+
+def deflated_sharpe_ratio(
+    sharpe: float,
+    n_trials: int,
+    T: int,
+    skew: float = 0.0,
+    kurt: float = 3.0,
+) -> dict[str, float]:
+    """
+    Compute Deflated Sharpe Ratio (DSR) correcting for multiple testing.
+
+    Based on Bailey & Lopez de Prado (2014), accounts for the inflation of
+    Sharpe ratios when selecting the best strategy from many trials.
+    Non-normality (skewness, excess kurtosis) inflates standard error.
+
+    :param sharpe (float): Observed Sharpe ratio
+    :param n_trials (int): Number of strategies/trials tested
+    :param T (int): Number of observations (e.g., trading days)
+    :param skew (float): Skewness of returns (default: 0.0 = normal)
+    :param kurt (float): Kurtosis of returns (default: 3.0 = normal)
+
+    :return result (dict): {
+        "dsr_probability": P(true Sharpe > 0 | observed), target > 0.5,
+        "expected_max_sharpe": E[max(SR)] under null,
+        "sharpe_std_error": standard error of Sharpe estimate
+    }
+    """
+    if T <= 1 or n_trials <= 0:
+        return {
+            "dsr_probability": 0.0,
+            "expected_max_sharpe": 0.0,
+            "sharpe_std_error": float("inf"),
+        }
+
+    # Euler-Mascheroni constant
+    gamma = 0.5772156649
+
+    # Expected maximum Sharpe under null (all true Sharpes = 0)
+    # E[max] ≈ (1 - gamma) * Phi^{-1}(1 - 1/n) + gamma * Phi^{-1}(1 - 1/(n*e))
+    # Simplified approximation for large n:
+    # E[max] ≈ sqrt(2 * ln(n)) - (gamma + ln(2 * sqrt(pi))) / sqrt(2 * ln(n))
+    if n_trials == 1:
+        e_max = 0.0
+    else:
+        z_n = stats.norm.ppf(1 - 1 / n_trials)
+        z_ne = stats.norm.ppf(1 - 1 / (n_trials * np.e)) if n_trials * np.e > 1 else 0.0
+        e_max = (1 - gamma) * z_n + gamma * z_ne
+
+    # Standard error of Sharpe ratio (Lo 2002, adjusted for non-normality)
+    # SE(SR) = sqrt((1 + 0.5 * SR^2 - skew * SR + (kurt - 3) / 4 * SR^2) / T)
+    # Simplified: SE ≈ sqrt((1 + (kurt - 1) / 4 * SR^2 - skew * SR) / (T - 1))
+    excess_kurt = kurt - 3.0
+    var_sr = (
+        1.0
+        + 0.5 * sharpe ** 2
+        - skew * sharpe
+        + (excess_kurt / 4.0) * sharpe ** 2
+    ) / max(T - 1, 1)
+    se = np.sqrt(max(var_sr, 1e-10))
+
+    # DSR probability: P(true SR > 0) = Phi((SR - E_max) / SE)
+    dsr_prob = float(stats.norm.cdf((sharpe - e_max) / se))
+
+    return {
+        "dsr_probability": dsr_prob,
+        "expected_max_sharpe": float(e_max),
+        "sharpe_std_error": float(se),
+    }
 
 
 def factor_explanatory_power_oos(

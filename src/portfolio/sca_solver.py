@@ -164,13 +164,20 @@ class _SCASubproblemBuilder:
         self._is_first = is_first
         self._mu = mu
 
-    def solve(self, grad_H: np.ndarray) -> np.ndarray | None:
+    def solve(
+        self, grad_H: np.ndarray
+    ) -> tuple[np.ndarray | None, dict[str, object]]:
         """
         Build and solve a fresh CVXPY problem with the current entropy gradient.
 
         :param grad_H (np.ndarray): Entropy gradient at current iterate (n,)
 
         :return w_star (np.ndarray | None): Optimal weights, or None if infeasible
+        :return shadow_prices (dict): Constraint shadow prices (dual values):
+            - budget (float): Budget constraint dual value
+            - w_max_binding_prices (list[float]): Per-asset w_max dual values
+            - w_min_binding_prices (list[float]): Per-asset w_min (non-neg) dual values
+            - turnover (float | None): Turnover constraint dual value (if active)
         """
         n = self._n
         w = cp.Variable(n)
@@ -212,23 +219,40 @@ class _SCASubproblemBuilder:
             ret_term - risk_term + entropy_term - conc_penalty - turn_penalty
         )
 
+        # Named constraints for shadow price extraction (G7)
         # Hard cap uses w_max directly.  w_bar is only for the soft
         # concentration penalty phi * sum(max(0, w_i - w_bar)^2).
-        cstr_list = [
-            w >= 0,
-            w <= self._w_max,
-            cp.sum(w) == 1,
+        w_min_constraint = w >= 0  # Non-negativity
+        w_max_constraint = w <= self._w_max  # Upper bound
+        budget_constraint = cp.sum(w) == 1  # Budget
+
+        # Use Any type since CVXPY constraint expressions have complex types
+        constraints: list[object] = [
+            w_min_constraint,
+            w_max_constraint,
+            budget_constraint,
         ]
-        constraints: list[cp.Constraint] = cstr_list  # type: ignore[assignment]
         constraints.extend(conc_constraints)
         constraints.extend(turn_constraints)
-        if self._w_old is not None and not self._is_first:
-            turnover_cstr = (
+
+        # Turnover constraint (optional)
+        turnover_constraint: object | None = None
+        has_turnover = self._w_old is not None and not self._is_first
+        if has_turnover:
+            turnover_constraint = (
                 0.5 * cp.sum(cp.abs(w - self._w_old)) <= self._tau_max
             )
-            constraints.append(turnover_cstr)  # type: ignore[arg-type]
+            constraints.append(turnover_constraint)
 
-        problem = cp.Problem(obj, constraints)
+        problem = cp.Problem(obj, constraints)  # type: ignore[arg-type]
+
+        # Default empty shadow prices
+        shadow_prices: dict[str, object] = {
+            "budget": 0.0,
+            "w_max_binding_prices": [],
+            "w_min_binding_prices": [],
+            "turnover": None,
+        }
 
         for solver_name, solver_kwargs in _SOLVER_CHAIN:
             try:
@@ -239,11 +263,45 @@ class _SCASubproblemBuilder:
                         and w.value is not None):
                     result = np.array(w.value).flatten()
                     if not np.any(np.isnan(result)):
-                        return result
+                        # Extract shadow prices (dual values) from constraints
+                        # Budget constraint dual value (scalar for equality)
+                        budget_dual = getattr(budget_constraint, "dual_value", None)
+                        shadow_prices["budget"] = (
+                            float(budget_dual) if budget_dual is not None else 0.0
+                        )
+
+                        # w_max constraint dual values (array for elementwise <=)
+                        w_max_dual = getattr(w_max_constraint, "dual_value", None)
+                        if w_max_dual is not None:
+                            w_max_arr = np.atleast_1d(np.asarray(w_max_dual))  # type: ignore[call-overload]
+                            shadow_prices["w_max_binding_prices"] = [
+                                float(d) for d in w_max_arr  # type: ignore[arg-type]
+                            ]
+                        else:
+                            shadow_prices["w_max_binding_prices"] = [0.0] * n
+
+                        # w_min constraint dual values (array for elementwise >=)
+                        w_min_dual = getattr(w_min_constraint, "dual_value", None)
+                        if w_min_dual is not None:
+                            w_min_arr = np.atleast_1d(np.asarray(w_min_dual))  # type: ignore[call-overload]
+                            shadow_prices["w_min_binding_prices"] = [
+                                float(d) for d in w_min_arr  # type: ignore[arg-type]
+                            ]
+                        else:
+                            shadow_prices["w_min_binding_prices"] = [0.0] * n
+
+                        # Turnover constraint dual value (scalar if exists)
+                        if has_turnover and turnover_constraint is not None:
+                            turn_dual = getattr(turnover_constraint, "dual_value", None)
+                            shadow_prices["turnover"] = (
+                                float(turn_dual) if turn_dual is not None else 0.0  # type: ignore[arg-type]
+                            )
+
+                        return result, shadow_prices
             except (cp.SolverError, ArithmeticError):
                 continue
 
-        return None
+        return None, shadow_prices
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +571,11 @@ def sca_optimize(
         - final_grad_norm (float): Norm of smooth gradient at solution
         - step_sizes (list[float]): Armijo step sizes per iteration
         - obj_improvements (list[float]): Objective change per iteration
+        - shadow_prices (dict): Constraint dual values from final iteration:
+            - budget (float): Budget constraint shadow price
+            - w_max_binding_prices (list[float]): Per-asset upper bound prices
+            - w_min_binding_prices (list[float]): Per-asset lower bound prices
+            - turnover (float | None): Turnover constraint price (if active)
     """
     n = len(w_init)
 
@@ -544,6 +607,12 @@ def sca_optimize(
     converged = False
     final_grad_norm = 0.0
     final_iter = 0
+    final_shadow_prices: dict[str, object] = {
+        "budget": 0.0,
+        "w_max_binding_prices": [],
+        "w_min_binding_prices": [],
+        "turnover": None,
+    }
 
     for it in range(max_iter):
         # Compute entropy and gradient at current point
@@ -553,11 +622,14 @@ def sca_optimize(
         )
 
         # Solve SCA sub-problem (fresh CVXPY problem per iteration)
-        w_star = subproblem.solve(grad_H)
+        w_star, shadow_prices = subproblem.solve(grad_H)
 
         if w_star is None:
             final_iter = it + 1
             break
+
+        # Update shadow prices (keep last successful iteration's values)
+        final_shadow_prices = shadow_prices
 
         # Directional derivative of the smooth part of the objective:
         #   ∇f_smooth = μ - 2λΣw + α∇H(w)
@@ -619,6 +691,7 @@ def sca_optimize(
         "final_grad_norm": final_grad_norm,
         "step_sizes": step_sizes,
         "obj_improvements": obj_improvements,
+        "shadow_prices": final_shadow_prices,
     }
 
     return w, f_current, H_final, final_iter, convergence_info

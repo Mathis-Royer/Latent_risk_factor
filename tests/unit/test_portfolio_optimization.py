@@ -809,7 +809,7 @@ class TestCardinality:
             w_min=w_min,
             sca_solver_fn=sca_optimize,
             sca_kwargs=sca_kwargs,
-            method="gradient",
+            method="two_stage",  # Must use two_stage/miqp to preserve mu signal
         )
 
         # Active stocks should have higher average momentum than eliminated ones
