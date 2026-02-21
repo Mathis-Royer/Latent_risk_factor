@@ -39,9 +39,15 @@ class PCAVolRiskParity(PCAFactorRiskParity):
         k_max = int(kwargs.get("k_max", 30))  # type: ignore[arg-type]
 
         available = [s for s in universe if s in returns.columns]
+        R_df = returns[available]
 
-        # Returns matrix
-        R = returns[available].dropna()
+        # Filter stocks with >50% NaN, then fill residual NaN with 0.
+        # dropna() on 600+ stocks eliminates nearly all rows due to scattered NaN.
+        valid_frac: pd.Series = R_df.notna().mean()  # type: ignore[assignment]
+        keep: list[str] = valid_frac[valid_frac > 0.5].index.tolist()  # type: ignore[assignment]
+        if len(keep) < 2:
+            keep = available
+        R: pd.DataFrame = R_df[keep].fillna(0.0)  # type: ignore[assignment]
         R_mat = R.values.astype(np.float64)
 
         # Z-score returns

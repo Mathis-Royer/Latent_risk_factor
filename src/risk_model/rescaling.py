@@ -115,6 +115,7 @@ def rescale_estimation(
 
         # Impute NaN/zero vols with cross-sectional median
         valid_mask = ~np.isnan(vols) & (vols > 0)
+        assert np.sum(valid_mask) > 0, f"No valid vols for date {date_str}"
         if valid_mask.sum() < 2:
             continue
 
@@ -129,6 +130,7 @@ def rescale_estimation(
         # Rescale: B̃_{A,i,t} = R_{i,t} · μ̄_{A,i}
         B_A_active = B_A[active_indices]  # (n_active, AU)
         B_A_t = B_A_active * ratios[:, np.newaxis]
+        assert np.isfinite(B_A_t).all(), f"B_A_t contains NaN/Inf at date {date_str}"
 
         B_A_by_date[date_str] = B_A_t
 

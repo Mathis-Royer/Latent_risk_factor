@@ -16,6 +16,8 @@ First rebalancing: κ₁ = κ₂ = 0.
 Reference: ISD Section MOD-008 — Sub-task 4.
 """
 
+import warnings
+
 import numpy as np
 
 
@@ -217,6 +219,9 @@ def project_to_constraints(
 
     :return w_proj (np.ndarray): Projected weights (n,)
     """
+    assert 0 < w_min < w_max, (
+        f"Invalid bounds: w_min={w_min}, w_max={w_max}"
+    )
     w = w.copy()
 
     for _ in range(max_iterations):

@@ -23,6 +23,10 @@ import pandas as pd
 
 from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.sca_solver import multi_start_optimize
+from src.validation import (
+    assert_growth_finite,
+    assert_weights_sum_to_one,
+)
 
 if TYPE_CHECKING:
     from src.benchmarks.base import BenchmarkModel
@@ -176,24 +180,31 @@ def _compute_d_eps_rolling(
     :param stock_ids (list[int]): Stock IDs matching B_A rows
     :param d_eps_floor (float): Floor for idiosyncratic variance
 
-    :return D_eps (np.ndarray): Idiosyncratic variances (n,)
+    :return D_eps (np.ndarray): Idiosyncratic variances (n,), aligned to stock_ids
     """
-    # Filter returns to matching stocks
-    available = [sid for sid in stock_ids if sid in returns_trailing.columns]
-    if len(available) < len(stock_ids):
-        # Some stocks missing from trailing data
-        D_eps = np.full(len(stock_ids), d_eps_floor)
-        return D_eps
-
-    R: np.ndarray = np.asarray(returns_trailing[available].values, dtype=np.float64)
     n = len(stock_ids)
 
-    # Simple approach: use sample variance of residuals from factor regression
-    # For efficiency, use the diagonal of the sample covariance minus factor contribution
-    sample_var: np.ndarray = np.var(R, axis=0, ddof=1)  # type: ignore[assignment]
-    D_eps = np.maximum(sample_var, d_eps_floor)
+    # BUG FIX: Use explicit ID-to-variance mapping to ensure correct alignment
+    # (diagnostic fix — original code assumed positional alignment)
+    available = [sid for sid in stock_ids if sid in returns_trailing.columns]
+    if len(available) == 0:
+        return np.full(n, d_eps_floor, dtype=np.float64)
 
-    return D_eps[:n]
+    # Compute variance per available stock
+    R: np.ndarray = np.asarray(returns_trailing[available].values, dtype=np.float64)
+    sample_var: np.ndarray = np.var(R, axis=0, ddof=1)  # type: ignore[assignment]
+
+    # Build ID-to-variance mapping
+    var_dict: dict[int, float] = {}
+    for i, sid in enumerate(available):
+        var_dict[sid] = max(float(sample_var[i]), d_eps_floor)
+
+    # Align to stock_ids order
+    D_eps = np.array([
+        var_dict.get(sid, d_eps_floor) for sid in stock_ids
+    ], dtype=np.float64)
+
+    return D_eps
 
 
 def _execute_rebalancing(
@@ -206,6 +217,7 @@ def _execute_rebalancing(
     constraint_params: dict[str, Any],
     is_first: bool,
     seed: int,
+    trigger: str = "scheduled",
 ) -> np.ndarray:
     """
     Execute full portfolio re-optimization.
@@ -219,6 +231,7 @@ def _execute_rebalancing(
     :param constraint_params (dict): Portfolio constraint parameters
     :param is_first (bool): True for first rebalancing (no turnover constraint)
     :param seed (int): Random seed for multi-start
+    :param trigger (str): "scheduled" (routine) or "exceptional" (urgent H degradation)
 
     :return w_new (np.ndarray): Optimized weights (n,)
     """
@@ -228,6 +241,16 @@ def _execute_rebalancing(
     alpha = float(cp.get("alpha_opt", 0.5))
     idio_weight = float(cp.get("entropy_idio_weight", 0.2))
 
+    # Differentiate solver quality settings based on trigger type:
+    # - Scheduled: quick (n_starts=2, max_iter=50) — portfolio already well-positioned
+    # - Exceptional: full quality (n_starts=5, max_iter=100) — urgent H degradation
+    if trigger == "exceptional":
+        n_starts = int(cp.get("oos_n_starts_exceptional", cp.get("n_starts", 5)))
+        max_iter = int(cp.get("oos_sca_max_iter_exceptional", 100))
+    else:
+        n_starts = int(cp.get("oos_n_starts_scheduled", 2))
+        max_iter = int(cp.get("oos_sca_max_iter_scheduled", 50))
+
     w_new: np.ndarray
     try:
         result = multi_start_optimize(
@@ -235,7 +258,7 @@ def _execute_rebalancing(
             B_prime=B_prime,
             eigenvalues=eigenvalues,
             alpha=alpha,
-            n_starts=int(cp.get("n_starts", 3)),
+            n_starts=n_starts,
             lambda_risk=float(cp.get("lambda_risk", 252.0)),
             w_max=float(cp.get("w_max", 0.05)),
             w_min=float(cp.get("w_min", 0.001)),
@@ -250,6 +273,7 @@ def _execute_rebalancing(
             seed=seed,
             D_eps=D_eps,
             idio_weight=idio_weight,
+            max_iter=max_iter,  # SCA iteration limit (trigger-dependent)
         )
         # multi_start_optimize returns either ndarray or tuple(ndarray, H, var)
         if isinstance(result, tuple):
@@ -355,6 +379,9 @@ def simulate_oos_rebalancing(
     entropy_trajectory: list[float] = [H_initial]
     rebalancing_events: list[RebalancingEvent] = []
 
+    # Expected number of scheduled rebalances (for logging)
+    expected_scheduled = n_days // rebalancing_frequency_days if rebalancing_frequency_days > 0 else 0
+
     # Record initial event
     rebalancing_events.append(RebalancingEvent(
         date=str(oos_dates[0])[:10] if n_days > 0 else "N/A",
@@ -413,9 +440,22 @@ def simulate_oos_rebalancing(
                 w_aligned[i] * np.exp(ret_row.get(sid, 0.0) if pd.notna(ret_row.get(sid)) else 0.0)
                 for i, sid in enumerate(available_ids)
             ])
+
+            # VALIDATION: Growth factors must be finite and non-negative
+            assert_growth_finite(growth, f"oos_growth_{date_str}")
+
             total_growth = np.sum(growth)
             if total_growth > 1e-10:
                 w_aligned = growth / total_growth
+            else:
+                logger.warning(
+                    "Total growth near zero at %s — portfolio may be wiped out",
+                    date_str,
+                )
+
+        # Validate drifted weights still sum to ~1
+        if np.sum(w_aligned) > 1e-10:
+            assert_weights_sum_to_one(w_aligned, "w_aligned_after_drift")
 
         # Update current state
         w_current = w_aligned
@@ -478,7 +518,7 @@ def simulate_oos_rebalancing(
                 D_eps=D_aligned, idio_weight=idio_weight,
             )
 
-            # Re-optimize
+            # Re-optimize with trigger-dependent quality settings
             w_old_for_tc = w_current.copy()
             w_new = _execute_rebalancing(
                 B_prime=B_aligned,
@@ -490,7 +530,11 @@ def simulate_oos_rebalancing(
                 constraint_params=constraint_params,
                 is_first=False,
                 seed=seed + t,
+                trigger=trigger,
             )
+
+            # Validate rebalanced weights before turnover computation
+            assert_weights_sum_to_one(w_new, "w_new_after_rebalancing")
 
             # Compute turnover and TC
             turnover = 0.5 * np.sum(np.abs(w_new - w_old_for_tc))
@@ -522,9 +566,17 @@ def simulate_oos_rebalancing(
                 n_active=int(np.sum(w_new > 1e-6)),
             ))
 
-            logger.debug(
-                "  [Rebal] %s at %s: turnover=%.2f%%, TC=%.4f%%, H=%.4f->%.4f",
-                trigger, date_str, turnover * 100, tc * 100, H_before, H_after,
+            logger.info(
+                "  [Rebal %d/%d] %s at %s: one-way=%.2f%%, two-way=%.2f%%, "
+                "cumul=%.1f%%, H=%.4f→%.4f, n_active=%d",
+                n_scheduled + n_exceptional,  # Current rebalance number
+                expected_scheduled,  # Expected scheduled (excludes exceptional)
+                trigger, date_str,
+                turnover * 100,  # One-way this rebalance
+                turnover * 200,  # Two-way this rebalance
+                total_turnover * 100,  # Cumulative two-way
+                H_before, H_after,
+                int(np.sum(w_new > 1e-6)),
             )
 
     # Final results
@@ -764,6 +816,10 @@ def simulate_benchmark_oos_rebalancing(
                 w_aligned[i] * np.exp(ret_row.get(sid, 0.0) if pd.notna(ret_row.get(sid)) else 0.0)
                 for i, sid in enumerate(available_ids)
             ])
+
+            # VALIDATION: Growth factors must be finite and non-negative
+            assert_growth_finite(growth, f"benchmark_growth_{date_str}")
+
             total_growth = np.sum(growth)
             if total_growth > 1e-10:
                 w_aligned = growth / total_growth
@@ -804,6 +860,9 @@ def simulate_benchmark_oos_rebalancing(
                 tc = turnover * (tc_bps / 10000.0)
                 total_turnover += 2.0 * turnover
                 total_tc += tc
+
+                # Validate benchmark rebalanced weights
+                assert_weights_sum_to_one(w_new, f"benchmark_w_new_{date_str}")
 
                 w_current = w_new
                 days_since_rebalance = 0

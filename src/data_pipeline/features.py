@@ -32,8 +32,20 @@ def compute_trailing_volatility(
     :return vol_df (pd.DataFrame): Annualized trailing vol, same shape as
         returns_df. First `window` rows per stock are NaN.
     """
+    assert window > 0 and window <= len(returns_df), (
+        f"window={window} out of range [1, {len(returns_df)}]"
+    )
+
     vol_df = returns_df.rolling(window=window, min_periods=window).std()
     vol_df = vol_df * np.sqrt(TRADING_DAYS_PER_YEAR)
+
+    # Volatility must be non-negative where computed
+    vol_vals = vol_df.values
+    finite_mask = np.isfinite(vol_vals)
+    assert np.all(vol_vals[finite_mask] >= 0), (
+        "Negative volatility values detected in trailing vol"
+    )
+
     return vol_df
 
 
@@ -57,7 +69,19 @@ def compute_rolling_realized_vol(
     :return vol_df (pd.DataFrame): Rolling realized vol, same shape as
         returns_df. First `rolling_window` rows are NaN.
     """
+    assert rolling_window > 0 and rolling_window <= len(returns_df), (
+        f"rolling_window={rolling_window} out of range [1, {len(returns_df)}]"
+    )
+
     result = returns_df.rolling(
         window=rolling_window, min_periods=rolling_window
     ).std()
+
+    # Volatility must be non-negative where computed
+    result_vals = result.values
+    finite_mask = np.isfinite(result_vals)
+    assert np.all(result_vals[finite_mask] >= 0), (
+        "Negative volatility values detected in rolling realized vol"
+    )
+
     return pd.DataFrame(result)

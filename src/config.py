@@ -596,10 +596,15 @@ class PortfolioConfig:
     normalize_entropy_gradient: bool = False  # Grid search on α suffisant (Meucci 2009, DeMiguel 2009)
     entropy_budget_mode: str = "uniform"
     # OOS Rebalancing (DVT §4.2)
-    rebalancing_frequency_days: int = 21  # Days between rebalances; 0 = buy-and-hold
+    rebalancing_frequency_days: int = 63  # Days between rebalances (quarterly); 0 = buy-and-hold
     entropy_trigger_alpha: float = 0.90  # Exceptional rebalance if H drops below 90% of last H
     delisting_return_nyse_amex: float = -0.30  # Shumway imputation for NYSE/AMEX delistings
     delisting_return_nasdaq: float = -0.55  # Shumway imputation for NASDAQ delistings
+    # OOS Rebalancing Quality Settings — differentiate scheduled (routine) vs exceptional (urgent)
+    oos_n_starts_scheduled: int = 2  # Quick multi-start for routine rebalancing
+    oos_n_starts_exceptional: int = 5  # Full quality for H degradation (exceptional triggers)
+    oos_sca_max_iter_scheduled: int = 50  # Usually converges in ~30-40 for scheduled
+    oos_sca_max_iter_exceptional: int = 100  # Full iterations for exceptional rebalancing
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -653,13 +658,22 @@ class PortfolioConfig:
                      {"uniform", "proportional"}, default="proportional")
         # OOS Rebalancing validation
         _validate_range("rebalancing_frequency_days", self.rebalancing_frequency_days,
-                        default=21, lo=0)
+                        default=63, lo=0)
         _validate_range("entropy_trigger_alpha", self.entropy_trigger_alpha,
                         default=0.90, lo=0.5, hi=1.0)
         _validate_range("delisting_return_nyse_amex", self.delisting_return_nyse_amex,
                         default=-0.30, lo=-1.0, hi=0.0)
         _validate_range("delisting_return_nasdaq", self.delisting_return_nasdaq,
                         default=-0.55, lo=-1.0, hi=0.0)
+        # OOS Quality Settings validation
+        _validate_range("oos_n_starts_scheduled", self.oos_n_starts_scheduled,
+                        default=2, lo=1)
+        _validate_range("oos_n_starts_exceptional", self.oos_n_starts_exceptional,
+                        default=5, lo=1)
+        _validate_range("oos_sca_max_iter_scheduled", self.oos_sca_max_iter_scheduled,
+                        default=50, lo=1)
+        _validate_range("oos_sca_max_iter_exceptional", self.oos_sca_max_iter_exceptional,
+                        default=100, lo=1)
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"

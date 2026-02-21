@@ -97,6 +97,7 @@ latent_risk_factor/
 │   └── integration/                  # MOD-016: E2E orchestration
 │       ├── __init__.py
 │       ├── pipeline.py               # FullPipeline orchestrator
+│       ├── pipeline_state.py         # Incremental checkpointing + state management
 │       ├── statistical_tests.py      # Wilcoxon, Holm-Bonferroni, bootstrap
 │       ├── reporting.py              # Results compilation
 │       ├── diagnostics.py            # E2E diagnostic collection (health checks)
@@ -116,7 +117,8 @@ latent_risk_factor/
 │   │   ├── test_risk_model.py
 │   │   ├── test_portfolio_optimization.py
 │   │   ├── test_benchmarks.py
-│   │   └── test_utils.py             # Hardware adaptation tests
+│   │   ├── test_utils.py             # Hardware adaptation tests
+│   │   └── test_pipeline_state.py    # State management + checkpointing tests
 │   ├── integration/                  # Integration tests
 │   │   ├── __init__.py
 │   │   ├── test_vae_training.py
@@ -160,6 +162,7 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-21 | src/integration/, tests/unit/ | Added `pipeline_state.py` (state management + checkpointing) and `test_pipeline_state.py` |
 | 2026-02-10 | src/integration/, scripts/ | Added diagnostic pipeline: `diagnostics.py`, `diagnostic_report.py`, `diagnostic_plots.py`, `run_diagnostic.py` |
 | 2026-02-07 | src/, tests/ | Added `src/utils.py` (hardware adaptation) and `tests/unit/test_utils.py` |
 | 2026-02-06 | docs/ | Added implementation_decisions.md for logging spec gap decisions |

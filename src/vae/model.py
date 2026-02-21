@@ -13,6 +13,7 @@ Reference: ISD Section MOD-002 — Sub-task 4.
 import torch
 import torch.nn as nn
 
+from src.validation import assert_finite_tensor
 from src.vae.encoder import Encoder
 from src.vae.decoder import Decoder
 
@@ -102,9 +103,12 @@ class VAEModel(nn.Module):
         # prevents posterior collapse (var→∞) and degenerate priors (var→0).
         # Reference: "How to train your VAE" (arXiv 2024); β-VAE (Higgins 2017).
         log_var = log_var.clamp(-6.0, 6.0)
+        assert log_var.min() >= -6.0, f"log_var min {log_var.min().item()} below clamp bound"
         std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
-        return mu + std * eps
+        z = mu + std * eps
+        assert_finite_tensor(z, "latent_z")
+        return z
 
     def forward(
         self, x: torch.Tensor,
@@ -121,6 +125,11 @@ class VAEModel(nn.Module):
         :return mu (torch.Tensor): Latent mean (B, K)
         :return log_var (torch.Tensor): Latent log-variance (B, K)
         """
+        # CRITICAL: Validate input shape (diagnostic fix)
+        assert x.shape[1:] == (self.T, self.F), (
+            f"Expected shape (B, {self.T}, {self.F}), got {x.shape}"
+        )
+
         # Transpose: (B, T, F) → (B, F, T)
         x_enc = x.transpose(1, 2)
 
@@ -129,12 +138,14 @@ class VAEModel(nn.Module):
 
         # Reparameterize
         z = self.reparameterize(mu, log_var)
+        assert_finite_tensor(mu, "latent_mu")
 
         # Decode
         x_hat_enc = self.decoder(z)  # (B, F, T)
 
         # Transpose back: (B, F, T) → (B, T, F)
         x_hat = x_hat_enc.transpose(1, 2)
+        assert_finite_tensor(x_hat, "reconstruction")
 
         return x_hat, mu, log_var
 

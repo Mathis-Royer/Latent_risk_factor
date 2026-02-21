@@ -47,6 +47,48 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Safe diagnostic wrapper for error isolation
+# ---------------------------------------------------------------------------
+
+def _safe_diagnostic(
+    fn_name: str,
+    fn: callable,  # type: ignore[valid-type]
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """
+    Execute a diagnostic function with error isolation.
+
+    If the function raises an exception, returns a dict with:
+    - available: False
+    - error: exception message
+    - error_type: exception class name
+
+    This prevents a single failed diagnostic from crashing the entire
+    diagnostic collection pipeline.
+
+    :param fn_name (str): Function name for logging
+    :param fn (callable): Diagnostic function to execute
+    :param *args: Positional arguments for fn
+    :param **kwargs: Keyword arguments for fn
+
+    :return result (dict): Either fn's return value or error dict
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        logger.warning(
+            "Diagnostic %s failed: %s (%s)",
+            fn_name, e, type(e).__name__,
+        )
+        return {
+            "available": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Health check thresholds
 # ---------------------------------------------------------------------------
 
@@ -92,6 +134,20 @@ _THRESHOLDS = {
     "dgj_noise_cv_warn": 0.2,  # G4: noise CV > 0.2
     "pbo_probability_warn": 0.5,  # G8: PBO > 0.5 indicates overfitting
 }
+
+# Threshold coherence checks
+assert _THRESHOLDS["var_ratio_lo"] < _THRESHOLDS["var_ratio_hi"], (
+    "var_ratio_lo must be < var_ratio_hi"
+)
+assert _THRESHOLDS["overfit_ratio_warn"] < _THRESHOLDS["overfit_ratio_crit"], (
+    "overfit_ratio_warn must be < overfit_ratio_crit"
+)
+assert _THRESHOLDS["au_min_crit"] < _THRESHOLDS["au_min_warn"], (
+    "au_min_crit must be < au_min_warn"
+)
+assert _THRESHOLDS["sca_grad_norm_warn"] < _THRESHOLDS["sca_grad_norm_crit"], (
+    "sca_grad_norm_warn must be < sca_grad_norm_crit"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +207,9 @@ def training_diagnostics(fit_result: dict[str, Any] | None) -> dict[str, Any]:
     if len(finite_pairs) >= 5:
         _x = [p[0] for p in finite_pairs]
         _y = [p[1] for p in finite_pairs]
+        assert np.isfinite(_x).all() and np.isfinite(_y).all(), (
+            "Non-finite values in val_elbo regression inputs"
+        )
         regress_result = sp_stats.linregress(_x, _y)
         slope = float(regress_result[0])  # type: ignore[arg-type]
         p_value = float(regress_result[3])  # type: ignore[arg-type]
@@ -339,6 +398,18 @@ def factor_quality_diagnostics(
         T_returns = ret_clean.shape[0]
         if T_returns > 50 and ret_clean.shape[1] >= 10:
             R_mat = ret_clean.values.astype(np.float64)
+            # Additional NaN handling: fill any remaining NaN with column mean
+            col_means = np.nanmean(R_mat, axis=0, keepdims=True)
+            nan_mask = ~np.isfinite(R_mat)
+            if nan_mask.any():
+                logger.warning(
+                    "factor_quality_diagnostics: %d NaN values in returns, "
+                    "filling with column means",
+                    int(nan_mask.sum()),
+                )
+                # Replace NaN with column mean (or 0 if entire column is NaN)
+                col_means = np.nan_to_num(col_means, nan=0.0)
+                R_mat = np.where(nan_mask, col_means, R_mat)
             returns_centered = R_mat - R_mat.mean(axis=0, keepdims=True)
 
     # Factor returns for persistence (if available)
@@ -346,19 +417,38 @@ def factor_quality_diagnostics(
     if z_hat.ndim == 2 and z_hat.shape[0] > 10:
         factor_returns = z_hat
 
-    # Compute factor quality dashboard
-    dashboard = compute_factor_quality_dashboard(
-        B_A=B_A,
-        eigenvalues=eigenvalues if eigenvalues.size > 0 else np.ones(AU),
-        factor_returns=factor_returns,
-        returns_centered=returns_centered,
-        stability_rho=stability_rho,
-    )
+    # Compute factor quality dashboard with error handling
+    try:
+        dashboard = compute_factor_quality_dashboard(
+            B_A=B_A,
+            eigenvalues=eigenvalues if eigenvalues.size > 0 else np.ones(AU),
+            factor_returns=factor_returns,
+            returns_centered=returns_centered,
+            stability_rho=stability_rho,
+        )
+    except np.linalg.LinAlgError as e:
+        logger.warning(
+            "factor_quality_diagnostics: compute_factor_quality_dashboard failed (%s) — "
+            "using empty dashboard",
+            e,
+        )
+        dashboard = {
+            "n_structural": 0, "n_style": 0, "n_episodic": 0,
+            "pct_structural": 0.0, "breadth": [], "half_lives": [],
+            "categories": [], "max_gap_index": 0, "eigenvalue_gaps": [],
+        }
 
     # Additional AU validation via direct Bai-Ng on returns
     k_bai_ng_direct: int | None = None
     if returns_centered is not None:
-        k_bai_ng_direct = bai_ng_ic2(returns_centered, k_max=min(50, AU + 20))
+        try:
+            k_bai_ng_direct = bai_ng_ic2(returns_centered, k_max=min(50, AU + 20))
+        except np.linalg.LinAlgError as e:
+            logger.warning(
+                "factor_quality_diagnostics: bai_ng_ic2 failed (%s) — skipping",
+                e,
+            )
+            k_bai_ng_direct = None
 
     # Onatski test on eigenvalues
     # Use T_returns (from filtered returns) for consistent dimensions
@@ -366,9 +456,17 @@ def factor_quality_diagnostics(
     onatski_ratio: float | None = None
     if eigenvalues.size >= 5:
         T_est = max(252, T_returns) if T_returns > 0 else max(252, returns.shape[0])
-        k_onatski, onatski_ratio = onatski_eigenvalue_ratio(
-            eigenvalues, n_stocks, T_est
-        )
+        try:
+            k_onatski, onatski_ratio = onatski_eigenvalue_ratio(
+                eigenvalues, n_stocks, T_est
+            )
+        except np.linalg.LinAlgError as e:
+            logger.warning(
+                "factor_quality_diagnostics: onatski_eigenvalue_ratio failed (%s) — skipping",
+                e,
+            )
+            k_onatski = None
+            onatski_ratio = None
 
     return {
         "available": True,
@@ -1644,48 +1742,103 @@ def collect_diagnostics(
     if "latent_stability_rho" not in state_bag and "latent_stability_rho" in vae_metrics:
         state_bag["latent_stability_rho"] = vae_metrics["latent_stability_rho"]
 
+    # All diagnostic functions are wrapped with _safe_diagnostic to prevent
+    # a single failure (e.g., SVD non-convergence) from crashing the entire
+    # diagnostic collection pipeline.
+
     logger.info("Collecting training diagnostics...")
-    training = training_diagnostics(state_bag.get("fit_result"))
+    training = _safe_diagnostic(
+        "training_diagnostics",
+        training_diagnostics,
+        state_bag.get("fit_result"),
+    )
 
     logger.info("Collecting latent space diagnostics...")
-    latent = latent_diagnostics(state_bag)
+    latent = _safe_diagnostic(
+        "latent_diagnostics",
+        latent_diagnostics,
+        state_bag,
+    )
 
     logger.info("Collecting factor quality diagnostics...")
-    factor_qual = factor_quality_diagnostics(state_bag, returns, inferred_stock_ids)
+    factor_qual = _safe_diagnostic(
+        "factor_quality_diagnostics",
+        factor_quality_diagnostics,
+        state_bag, returns, inferred_stock_ids,
+    )
 
     logger.info("Collecting risk model diagnostics...")
-    risk = risk_model_diagnostics(state_bag, returns_oos, w_vae, inferred_stock_ids)
+    risk = _safe_diagnostic(
+        "risk_model_diagnostics",
+        risk_model_diagnostics,
+        state_bag, returns_oos, w_vae, inferred_stock_ids,
+    )
 
     logger.info("Collecting portfolio diagnostics...")
-    portfolio = portfolio_diagnostics(state_bag, w_vae, vae_metrics)
+    portfolio = _safe_diagnostic(
+        "portfolio_diagnostics",
+        portfolio_diagnostics,
+        state_bag, w_vae, vae_metrics,
+    )
 
     logger.info("Collecting solver diagnostics...")
-    solver = solver_diagnostics(state_bag)
+    solver = _safe_diagnostic(
+        "solver_diagnostics",
+        solver_diagnostics,
+        state_bag,
+    )
 
     logger.info("Collecting constraint binding diagnostics...")
-    constraints = constraint_binding_diagnostics(state_bag)
+    constraints = _safe_diagnostic(
+        "constraint_binding_diagnostics",
+        constraint_binding_diagnostics,
+        state_bag,
+    )
 
     logger.info("Collecting benchmark comparison...")
-    bench_comp = benchmark_comparison(vae_metrics, benchmark_results)
+    bench_comp = _safe_diagnostic(
+        "benchmark_comparison",
+        benchmark_comparison,
+        vae_metrics, benchmark_results,
+    )
 
     logger.info("Collecting data quality diagnostics...")
-    data_qual = data_quality_diagnostics(stock_data, returns)
+    data_qual = _safe_diagnostic(
+        "data_quality_diagnostics",
+        data_quality_diagnostics,
+        stock_data, returns,
+    )
 
     # Compute VAE posterior diagnostics (new module integration)
     logger.info("Collecting VAE posterior diagnostics...")
-    vae_posterior = vae_posterior_diagnostics(
-        state_bag.get("fit_result"), state_bag
+    vae_posterior = _safe_diagnostic(
+        "vae_posterior_diagnostics",
+        vae_posterior_diagnostics,
+        state_bag.get("fit_result"), state_bag,
     )
 
     # Compute factor model extended diagnostics (new module integration)
     logger.info("Collecting extended factor model diagnostics...")
-    factor_extended = factor_model_extended_diagnostics(state_bag, returns)
+    factor_extended = _safe_diagnostic(
+        "factor_model_extended_diagnostics",
+        factor_model_extended_diagnostics,
+        state_bag, returns,
+    )
 
     logger.info("Running health checks...")
-    checks = run_health_checks(
-        training, latent, risk, portfolio, data_qual, bench_comp, factor_qual,
-        solver, constraints, vae_posterior, factor_extended,
-    )
+    try:
+        checks = run_health_checks(
+            training, latent, risk, portfolio, data_qual, bench_comp, factor_qual,
+            solver, constraints, vae_posterior, factor_extended,
+        )
+    except Exception as e:
+        logger.warning("Health checks failed: %s", e)
+        checks = [{
+            "category": "System",
+            "check": "Health checks",
+            "status": "WARNING",
+            "message": f"Health check execution failed: {e}",
+        }]
 
     n_critical = sum(1 for c in checks if c["status"] == "CRITICAL")
     n_warning = sum(1 for c in checks if c["status"] == "WARNING")
@@ -1697,21 +1850,30 @@ def collect_diagnostics(
 
     # Compute composite scores
     logger.info("Computing composite scores...")
-    n_active = portfolio.get("n_active_positions", 0)
-    composite_scores = compute_all_composite_scores(
-        solver_stats=solver if solver.get("available", False) else None,
-        constraints=constraints if constraints.get("available", False) else None,
-        risk_model=risk,
-        training=training if training.get("available", False) else None,
-        n_active=n_active,
-        vae_diagnostics=vae_posterior if vae_posterior.get("available", False) else None,
-        factor_diagnostics=factor_extended if factor_extended.get("available", False) else None,
-        latent=latent,
-        portfolio=portfolio,
-        factor_quality=factor_qual if factor_qual.get("available", False) else None,
-    )
-    overall_score = composite_scores.get("overall", {}).get("score", 0)
-    overall_grade = composite_scores.get("overall", {}).get("grade", "F")
+    try:
+        n_active = portfolio.get("n_active_positions", 0)
+        composite_scores = compute_all_composite_scores(
+            solver_stats=solver if solver.get("available", False) else None,
+            constraints=constraints if constraints.get("available", False) else None,
+            risk_model=risk,
+            training=training if training.get("available", False) else None,
+            n_active=n_active,
+            vae_diagnostics=vae_posterior if vae_posterior.get("available", False) else None,
+            factor_diagnostics=factor_extended if factor_extended.get("available", False) else None,
+            latent=latent,
+            portfolio=portfolio,
+            factor_quality=factor_qual if factor_qual.get("available", False) else None,
+        )
+        overall_score = composite_scores.get("overall", {}).get("score", 0)
+        overall_grade = composite_scores.get("overall", {}).get("grade", "F")
+    except Exception as e:
+        logger.warning("Composite scores failed: %s", e)
+        composite_scores = {
+            "overall": {"score": 0, "grade": "N/A", "error": str(e)},
+            "error": str(e),
+        }
+        overall_score = 0
+        overall_grade = "N/A"
     logger.info(
         "Composite scores computed: overall=%.1f (%s)",
         overall_score, overall_grade,

@@ -35,6 +35,8 @@ def determine_e_star(
 
     :return E_star (int): Number of epochs for deployment training
     """
+    assert e_star_config > 0, f"e_star_config must be > 0, got {e_star_config}"
+
     if is_holdout and all_e_stars:
         return int(np.median(all_e_stars))
 

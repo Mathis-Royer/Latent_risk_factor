@@ -134,10 +134,16 @@ def select_best_config(
     if not surviving:
         return None
 
+    assert len(surviving) > 0, "No surviving configs after elimination"
+
     best_score = -float("inf")
     best_config: dict[str, Any] | None = None
 
     for result in surviving:
+        au_val = result.get("AU", 1)
+        assert np.isfinite(au_val) and au_val > 0, (
+            f"Invalid AU={au_val} in surviving config"
+        )
         score = composite_score(
             H_oos=result.get("H_oos", 0.0),
             AU=result.get("AU", 1),

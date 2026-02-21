@@ -90,6 +90,11 @@ def infer_latent_trajectories(
 
     mu_all = np.concatenate(all_mu, axis=0)  # (N_windows, K)
 
+    # CRITICAL: Validate stock_id column exists (diagnostic fix)
+    assert "stock_id" in window_metadata.columns, (
+        "window_metadata must have 'stock_id' column"
+    )
+
     # Group by stock_id
     stock_ids_arr = np.asarray(window_metadata["stock_id"].values)
     trajectories: dict[int, np.ndarray] = {}

@@ -155,7 +155,11 @@ class CurriculumBatchSampler(Sampler[list[int]]):
                 batch_indices.extend(padded.tolist())
 
             if batch_indices:
-                batches.append(batch_indices[:self.batch_size])
+                final_batch = batch_indices[:self.batch_size]
+                assert all(idx < self.n_windows for idx in final_batch), (
+                    f"Batch index >= n_windows ({self.n_windows})"
+                )
+                batches.append(final_batch)
 
         return batches
 

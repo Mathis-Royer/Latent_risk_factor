@@ -16,6 +16,7 @@ Literature: Fama & MacBeth (1973), Barra USE4 (Menchero et al. 2011).
 import numpy as np
 import pandas as pd
 
+from src.validation import assert_finite_2d
 from src.risk_model.conditioning import safe_solve, safe_solve_wls
 
 # Type alias for pre-computed date data
@@ -70,6 +71,12 @@ def _prepare_regression_data(
         if len(col_indices) < B_t.shape[1]:
             continue
 
+        # BUG FIX: Slice B_t to match avail_stocks (subset of active_stocks)
+        # B_t rows correspond to active_stocks, but we only have returns for avail_stocks
+        active_to_idx = {sid: i for i, sid in enumerate(active_stocks)}
+        avail_rows = [active_to_idx[s] for s in avail_stocks]
+        B_t_avail = B_t[avail_rows]  # Now aligned with avail_stocks
+
         r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
         # Handle NaN in returns
@@ -78,7 +85,7 @@ def _prepare_regression_data(
             continue
 
         r_t_valid = r_t[valid_mask]
-        B_t_valid = B_t[valid_mask]
+        B_t_valid = B_t_avail[valid_mask]  # Use sliced B_t
         valid_sids = [avail_stocks[j] for j in range(len(avail_stocks))
                       if valid_mask[j]]
 
@@ -127,7 +134,9 @@ def estimate_factor_returns(
     # --- Pass 1: OLS ---
     z_hat_ols: list[np.ndarray] = []
     for _, B_t, r_t, _ in date_data:
-        z_hat_ols.append(safe_solve(B_t, r_t))
+        z_t = safe_solve(B_t, r_t)
+        assert_finite_2d(z_t.reshape(1, -1), "z_hat_t_ols")
+        z_hat_ols.append(z_t)
 
     if not use_wls:
         return np.stack(z_hat_ols, axis=0), [d[0] for d in date_data]
@@ -138,6 +147,7 @@ def estimate_factor_returns(
 
     for t_idx, (_, B_t, r_t, sids) in enumerate(date_data):
         eps_t = r_t - B_t @ z_hat_ols[t_idx]
+        assert np.isfinite(eps_t).all(), f"Residuals contain NaN/Inf at t={t_idx}"
         for i, sid in enumerate(sids):
             stock_ss[sid] = stock_ss.get(sid, 0.0) + float(eps_t[i] ** 2)
             stock_n[sid] = stock_n.get(sid, 0) + 1
@@ -159,7 +169,10 @@ def estimate_factor_returns(
             1.0 / max(stock_var.get(sid, var_floor), var_floor)
             for sid in sids
         ], dtype=np.float64)
-        z_hat_wls.append(safe_solve_wls(B_t, r_t, w))
+        assert np.all(w > 0) and np.isfinite(w).all(), "WLS weights must be positive and finite"
+        z_t_wls = safe_solve_wls(B_t, r_t, w)
+        assert_finite_2d(z_t_wls.reshape(1, -1), "z_hat_t_wls")
+        z_hat_wls.append(z_t_wls)
 
     return np.stack(z_hat_wls, axis=0), [d[0] for d in date_data]
 
@@ -214,15 +227,20 @@ def compute_residuals(
         if date_loc is None:
             continue
 
+        # BUG FIX: Slice B_t to match available_cols (subset of active_stocks)
+        active_to_idx = {sid: i for i, sid in enumerate(active_stocks)}
+        avail_rows = [active_to_idx[s] for s in available_cols]
+        B_t_avail = B_t[avail_rows]  # Now aligned with available_cols
+
         col_indices = [ret_col_to_idx[s] for s in available_cols]
         r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
         # eps_{i,t} = r_{i,t} - B_A_{i,t} z_hat_t
-        predicted = B_t[:len(available_cols)] @ z_hat[t_idx]
-        residuals = r_t[:len(predicted)] - predicted
+        predicted = B_t_avail @ z_hat[t_idx]
+        residuals = r_t - predicted
 
-        for i, sid in enumerate(available_cols[:len(residuals)]):
-            if not np.isnan(residuals[i]) and sid in residuals_by_stock:
+        for i, sid in enumerate(available_cols):
+            if i < len(residuals) and not np.isnan(residuals[i]) and sid in residuals_by_stock:
                 residuals_by_stock[sid].append(float(residuals[i]))
 
     return residuals_by_stock

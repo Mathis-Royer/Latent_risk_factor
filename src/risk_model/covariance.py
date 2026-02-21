@@ -19,9 +19,12 @@ Reference: ISD Section MOD-007 -- Sub-tasks 3-4.
 """
 
 import logging
+import warnings
 
 import numpy as np
 from sklearn.covariance import LedoitWolf
+
+from src.validation import assert_positive_semidefinite, assert_covariance_valid
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +229,9 @@ def estimate_sigma_z(
     :return shrinkage_intensity (float | None): Ledoit-Wolf shrinkage coefficient
         alpha in [0, 1] when using "truncation" method. None for other methods.
     """
+    # CRITICAL: Validate z_hat is 2D (diagnostic fix)
+    assert z_hat.ndim == 2, f"z_hat must be 2D, got {z_hat.ndim}D"
+
     n_samples, p_dims = z_hat.shape
 
     # Effective sample size: when EWMA is active, n_eff < n_samples
@@ -254,10 +260,14 @@ def estimate_sigma_z(
         lw.fit(z_input)
         Sigma_z_lw: np.ndarray = lw.covariance_  # type: ignore[assignment]
         shrinkage_intensity: float | None = float(lw.shrinkage_)  # type: ignore[arg-type]
+        assert 0.0 <= shrinkage_intensity <= 1.0, (
+            f"Shrinkage intensity out of [0,1]: {shrinkage_intensity}"
+        )
         logger.info(
             "  Ledoit-Wolf shrinkage intensity: alpha=%.4f",
             shrinkage_intensity,
         )
+        assert_positive_semidefinite(Sigma_z_lw, "Sigma_z_lw")
         Sigma_z_trunc = _truncation_shrinkage(Sigma_z_lw, eigenvalue_pct)
         n_signal = _estimate_n_signal_from_gap(Sigma_z_trunc)
         return Sigma_z_trunc, n_signal, shrinkage_intensity
@@ -373,6 +383,19 @@ def _spiked_shrinkage_matrix(
     # Reconstruct: V diag(shrunk) V^T
     Sigma_shrunk = (V * shrunk_eigs[np.newaxis, :]) @ V.T
     Sigma_shrunk = 0.5 * (Sigma_shrunk + Sigma_shrunk.T)
+    assert_covariance_valid(Sigma_shrunk, "Sigma_z_shrunk")
+
+    # Warn if poorly conditioned
+    eig_vals = np.linalg.eigvalsh(Sigma_shrunk)
+    eig_min = float(np.abs(eig_vals[eig_vals > 0]).min()) if np.any(eig_vals > 0) else 1e-15
+    eig_max = float(np.max(np.abs(eig_vals)))
+    cond_number = eig_max / max(eig_min, 1e-15)
+    if cond_number > 1e6:
+        warnings.warn(
+            f"Sigma_z_shrunk condition number {cond_number:.2e} > 1e6",
+            stacklevel=2,
+        )
+
     return Sigma_shrunk, n_signal
 
 
@@ -594,6 +617,7 @@ def assemble_risk_model(
 
     # INV-007: eigenvalues >= 0 (PSD)
     eigenvalues = np.maximum(eigenvalues, 0.0)
+    assert np.sum(eigenvalues) > 0, "All eigenvalues of Sigma_z are zero"
 
     # Rotated exposures in principal factor basis
     B_prime_port = B_A_port @ V

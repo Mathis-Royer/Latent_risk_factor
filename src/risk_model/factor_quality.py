@@ -149,8 +149,32 @@ def bai_ng_ic2(
     if k_max_eff < 1:
         return 1
 
-    # SVD once
-    U, S, Vt = np.linalg.svd(returns_centered, full_matrices=False)
+    # Validate input: check for NaN/Inf values
+    if not np.isfinite(returns_centered).all():
+        nan_count = np.sum(~np.isfinite(returns_centered))
+        logger.warning(
+            "bai_ng_ic2: returns_centered has %d non-finite values — "
+            "replacing with 0 for SVD stability",
+            nan_count,
+        )
+        returns_centered = np.nan_to_num(returns_centered, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Check for degenerate matrix (all zeros or near-zero variance)
+    total_var = np.var(returns_centered)
+    if total_var < 1e-15:
+        logger.warning(
+            "bai_ng_ic2: returns_centered has near-zero variance (%.2e) — "
+            "returning k=1 as fallback",
+            total_var,
+        )
+        return 1
+
+    # SVD once with try/except for numerical stability
+    try:
+        U, S, Vt = np.linalg.svd(returns_centered, full_matrices=False)
+    except np.linalg.LinAlgError as e:
+        logger.warning("bai_ng_ic2: SVD failed (%s) — returning k=1 as fallback", e)
+        return 1
 
     penalty_coeff = ((n + T) / (n * T)) * np.log(min(n, T))
 
@@ -305,6 +329,14 @@ def compute_factor_quality_dashboard(
     n_structural = sum(1 for c in categories if c == "Structural")
     n_style = sum(1 for c in categories if c == "Style")
     n_episodic = sum(1 for c in categories if c == "Episodic")
+
+    # BUG FIX: Warn if no signal eigenvalues (degenerate spectrum)
+    if n_structural == 0 and n_style == 0:
+        logger.warning(
+            "No Structural or Style factors detected — all %d factors are Episodic. "
+            "This may indicate collapsed eigenvalue spectrum or insufficient data.",
+            AU,
+        )
 
     # Bai-Ng IC2 for comparison (if returns provided)
     k_bai_ng: int | None = None

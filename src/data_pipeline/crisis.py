@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.validation import assert_bounds, assert_crisis_fraction_bounds
+
 
 def load_vix_data(
     start_date: str = "1990-01-01",
@@ -99,6 +101,11 @@ def generate_synthetic_vix(
             vix_values[t] = vix_values[t] * rng.uniform(1.5, 3.0)
 
     vix = pd.Series(vix_values, index=dates, name="VIX")
+
+    # Note: Synthetic VIX can have extreme spikes (up to 3x × multiple days)
+    # for stress-testing purposes. Production VIX data should be validated
+    # separately with realistic bounds like [5, 100].
+
     return vix
 
 
@@ -137,6 +144,10 @@ def compute_crisis_threshold(
         raise ValueError(
             f"No VIX data available up to {training_end_date}"
         )
+
+    assert 0 < percentile < 100, (
+        f"percentile must be in (0, 100), got {percentile}"
+    )
 
     threshold = float(np.percentile(np.asarray(vix_training), percentile))
     return threshold
@@ -182,4 +193,13 @@ def compute_crisis_labels(
         else:
             fractions[i] = (window_vix > threshold).mean()
 
-    return torch.from_numpy(fractions)
+    crisis_fractions = torch.from_numpy(fractions)
+    assert crisis_fractions.shape[0] == len(window_metadata), (
+        f"crisis_fractions length {crisis_fractions.shape[0]} != "
+        f"metadata length {len(window_metadata)}"
+    )
+
+    # Validate crisis fractions are in [0, 1]
+    assert_crisis_fraction_bounds(crisis_fractions, "crisis_fractions")
+
+    return crisis_fractions

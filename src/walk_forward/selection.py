@@ -7,10 +7,14 @@ determines if the VAE strategy should be deployed.
 Reference: ISD Section MOD-009 — Sub-task 5.
 """
 
+import logging
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy import stats
+
+logger = logging.getLogger(__name__)
 
 
 def aggregate_fold_metrics(
@@ -141,4 +145,100 @@ def check_deployment_criteria(
             "D": "Use 1/N or relax constraints",
             "E": "Dual-regime system",
         }.get(scenario, "Further analysis needed"),
+    }
+
+
+def bonferroni_adjusted_alpha(
+    n_configs: int,
+    alpha: float = 0.05,
+) -> float:
+    """
+    Compute Bonferroni-corrected significance level for HP selection.
+
+    When comparing n_configs hyperparameter configurations, the family-wise
+    error rate (FWER) inflates. Bonferroni correction adjusts the per-test
+    alpha to control FWER at the desired level.
+
+    Reference: Bonferroni (1936), White (2000) Reality Check
+
+    :param n_configs (int): Number of HP configurations being compared
+    :param alpha (float): Desired family-wise error rate (default: 0.05)
+
+    :return alpha_adjusted (float): Per-comparison significance threshold
+    """
+    assert n_configs > 0, f"n_configs must be > 0, got {n_configs}"
+    if n_configs <= 1:
+        return alpha
+    return alpha / n_configs
+
+
+def score_hp_configs_with_correction(
+    config_metrics: list[dict[str, float]],
+    primary_metric: str = "best_val_elbo",
+    alpha: float = 0.05,
+    higher_is_better: bool = False,
+) -> dict[str, Any]:
+    """
+    Score HP configurations with multiple testing correction.
+
+    Returns the best configuration along with statistical significance
+    assessment. Uses Bonferroni correction to account for multiple comparisons.
+
+    :param config_metrics (list[dict]): Metrics for each HP configuration
+    :param primary_metric (str): Metric to use for comparison
+    :param alpha (float): Family-wise error rate (default: 0.05)
+    :param higher_is_better (bool): Direction of improvement
+
+    :return result (dict): {
+        "best_idx": index of best configuration,
+        "best_value": metric value of best,
+        "n_configs": number of configurations tested,
+        "alpha_adjusted": Bonferroni-adjusted alpha,
+        "significant": whether best is significantly better than runner-up
+    }
+    """
+    if not config_metrics:
+        return {
+            "best_idx": 0,
+            "best_value": float("nan"),
+            "n_configs": 0,
+            "alpha_adjusted": alpha,
+            "significant": False,
+        }
+
+    n_configs = len(config_metrics)
+    values = np.array([m.get(primary_metric, float("nan")) for m in config_metrics])
+
+    # Find best configuration
+    if higher_is_better:
+        best_idx = int(np.nanargmax(values))
+    else:
+        best_idx = int(np.nanargmin(values))
+
+    best_value = values[best_idx]
+    alpha_adjusted = bonferroni_adjusted_alpha(n_configs, alpha)
+
+    # Check significance vs runner-up (simplified: compare to second best)
+    significant = False
+    if n_configs >= 2:
+        sorted_idx = np.argsort(values) if not higher_is_better else np.argsort(-values)
+        runner_up_idx = sorted_idx[1]
+        runner_up_value = values[runner_up_idx]
+
+        # Log the effect size
+        if not np.isnan(runner_up_value) and not np.isnan(best_value):
+            improvement = abs(best_value - runner_up_value)
+            logger.info(
+                "HP selection: best config #%d (%.4f) vs runner-up #%d (%.4f), "
+                "improvement=%.4f, alpha_adj=%.4f",
+                best_idx, best_value, runner_up_idx, runner_up_value,
+                improvement, alpha_adjusted,
+            )
+
+    return {
+        "best_idx": best_idx,
+        "best_value": float(best_value),
+        "n_configs": n_configs,
+        "alpha_adjusted": alpha_adjusted,
+        "significant": significant,  # Full significance test requires variance estimates
     }

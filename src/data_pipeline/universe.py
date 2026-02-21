@@ -48,6 +48,8 @@ def construct_universe(
 
     :return universe (list[int]): List of permno IDs in the universe at `date`
     """
+    assert n_max > 0, f"n_max must be positive, got {n_max}"
+
     # Filter data up to the reconstitution date (point-in-time)
     data_up_to = stock_data[stock_data["date"] <= date]
 
@@ -110,6 +112,12 @@ def construct_universe(
     # Sort by market cap descending, take top n_max
     eligible.sort(key=lambda x: x[1], reverse=True)
     universe = [permno for permno, _ in eligible[:n_max]]
+
+    # Validate no duplicate permnos in universe
+    assert len(universe) == len(set(universe)), (
+        f"Duplicate permnos in universe: {len(universe)} total, "
+        f"{len(set(universe))} unique"
+    )
 
     return universe
 

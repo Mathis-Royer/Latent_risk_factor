@@ -12,6 +12,13 @@ import pandas as pd
 import torch
 from numpy.lib.stride_tricks import sliding_window_view
 
+from src.validation import (
+    assert_finite_2d,
+    assert_no_nan_tensor,
+    assert_z_score_normalized,
+    assert_tensor_bounds,
+)
+
 
 def _vectorized_ffill_bfill(arr_2d: np.ndarray) -> np.ndarray:
     """
@@ -72,6 +79,11 @@ def create_windows(
     :return raw_returns (torch.Tensor): Shape (N, T), NaN-cleaned raw returns
         (before z-scoring) for co-movement loss Spearman computation
     """
+    # CRITICAL: Validate returns and vol DataFrames have same shape (diagnostic fix)
+    assert returns_df.shape == vol_df.shape, (
+        f"returns_df shape {returns_df.shape} != vol_df shape {vol_df.shape}"
+    )
+
     all_windows: list[np.ndarray] = []
     all_raw_returns: list[np.ndarray] = []
     metadata_records: list[dict[str, object]] = []
@@ -142,6 +154,17 @@ def create_windows(
         vol_sigma = np.maximum(vol_sigma, sigma_min)
         vol_zscore = (vol_clean - vol_mu) / vol_sigma
 
+        # Validate z-scored returns are finite
+        assert_finite_2d(ret_zscore, "z_scored_returns")
+
+        # Validate z-score normalization (mean≈0, std≈1)
+        # Only validate if original data had variance (skip constant data)
+        # Check on flattened array (all windows concatenated)
+        if float(ret_sigma.mean()) > sigma_min * 10:
+            assert_z_score_normalized(ret_zscore.flatten(), "z_scored_returns")
+        if float(vol_sigma.mean()) > sigma_min * 10:
+            assert_z_score_normalized(vol_zscore.flatten(), "z_scored_volatility")
+
         # Store raw returns before z-scoring (for co-movement Spearman)
         all_raw_returns.append(ret_clean.astype(np.float32))
 
@@ -169,5 +192,11 @@ def create_windows(
     windows = torch.from_numpy(np.concatenate(all_windows, axis=0))
     raw_returns = torch.from_numpy(np.concatenate(all_raw_returns, axis=0))
     metadata = pd.DataFrame(metadata_records)
+
+    # Final tensor validation
+    assert_no_nan_tensor(windows, "windows")
+    assert metadata.shape[0] == windows.shape[0], (
+        f"metadata rows {metadata.shape[0]} != windows batch {windows.shape[0]}"
+    )
 
     return windows, metadata, raw_returns

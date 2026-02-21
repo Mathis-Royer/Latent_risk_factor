@@ -6,8 +6,22 @@ CONV-01: Log returns r_t = ln(P^adj_t / P^adj_{t-1}), NEVER arithmetic.
 Reference: ISD Section MOD-001 — Sub-task 2.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
+from scipy.stats import mstats
+
+from src.validation import (
+    assert_column_exists,
+    assert_finite_2d,
+    assert_log_input_positive,
+    assert_returns_valid,
+    warn_if_nan_fraction_exceeds,
+    warn_if_price_discontinuity,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Shumway (1997) delisting return imputation
@@ -41,6 +55,13 @@ def compute_log_returns(
     :return returns_df (pd.DataFrame): Log-returns indexed by date,
         columns are permno (int). Shape (n_dates, n_stocks).
     """
+    # Validate required columns
+    assert_column_exists(stock_data, "adj_price", "stock_data")
+    assert_column_exists(stock_data, "permno", "stock_data")
+    assert_column_exists(stock_data, "date", "stock_data")
+    assert_column_exists(stock_data, "exchange_code", "stock_data")
+    assert_column_exists(stock_data, "delisting_return", "stock_data")
+
     # Pivot to wide format: rows=dates, cols=permnos, values=adj_price
     price_wide = stock_data.pivot_table(
         index="date", columns="permno", values="adj_price", aggfunc="first"
@@ -58,6 +79,9 @@ def compute_log_returns(
     # Forward-fill small gaps (≤ max_gap_fill consecutive NaNs)
     price_filled = _forward_fill_small_gaps(price_wide, max_gap_fill)
 
+    # Validate prices are positive before log (guards against log(0) or log(negative))
+    assert_log_input_positive(price_filled, "prices_before_log")
+
     # Compute log-returns: r_t = ln(P_t / P_{t-1})
     returns_df = np.log(price_filled / price_filled.shift(1))
 
@@ -65,6 +89,28 @@ def compute_log_returns(
     returns_df = _apply_delisting_returns(
         returns_df, delisting_info, stock_info
     )
+
+    # Winsorize extreme returns caused by Tiingo API data corruption
+    # (inverted split adjustments can create 1000x+ price changes)
+    # Clip to |r| <= 2.0 (≈638% move) which is extreme but plausible
+    MAX_ABS_RETURN = 2.0
+    extreme_mask = np.abs(returns_df.values) > MAX_ABS_RETURN
+    n_extreme = int(np.sum(extreme_mask & np.isfinite(returns_df.values)))
+    if n_extreme > 0:
+        logger.warning(
+            "Winsorizing %d extreme returns (|r| > %.1f) caused by data errors",
+            n_extreme, MAX_ABS_RETURN,
+        )
+        returns_df = returns_df.clip(lower=-MAX_ABS_RETURN, upper=MAX_ABS_RETURN)
+
+    # Warn if excessive NaN fraction in returns
+    warn_if_nan_fraction_exceeds(returns_df, 0.3, "returns")
+
+    # Validate returns are bounded (max 200% single-day return is suspicious)
+    assert_returns_valid(returns_df, "log_returns", max_abs_return=2.0)
+
+    # Warn about potential data errors (price discontinuities)
+    warn_if_price_discontinuity(returns_df, 0.5, "log_returns")
 
     return returns_df
 
@@ -183,6 +229,78 @@ def _apply_delisting_returns(
             # Convert arithmetic return to log-return
             log_ret = np.log(1.0 + delist_ret)
 
+        # Validate delisting log-return is within reasonable bounds
+        assert -2.0 <= log_ret <= 0.5, (
+            f"Delisting log-return {log_ret:.4f} out of bounds [-2.0, 0.5] "
+            f"for permno {permno}"
+        )
         returns_df.at[last_date, permno] = log_ret
 
     return returns_df
+
+
+def winsorize_returns(
+    returns_df: pd.DataFrame,
+    lower_pct: float = 0.01,
+    upper_pct: float = 0.99,
+) -> pd.DataFrame:
+    """
+    Winsorize returns at specified percentiles (cross-sectional per date).
+
+    Optional preprocessing step to reduce impact of extreme outliers.
+    Applied per-date to avoid look-ahead bias and maintain cross-sectional
+    comparability.
+
+    :param returns_df (pd.DataFrame): Log-returns (dates × stocks)
+    :param lower_pct (float): Lower percentile (default: 1%)
+    :param upper_pct (float): Upper percentile (default: 99%)
+
+    :return winsorized_df (pd.DataFrame): Winsorized returns
+    """
+    def winsorize_row(row: pd.Series) -> pd.Series:
+        valid = row.dropna()
+        if len(valid) < 10:
+            # Too few observations for reliable percentile estimation
+            return row
+        limits = [lower_pct, 1 - upper_pct]
+        winsorized = mstats.winsorize(valid.values, limits=limits)
+        result = row.copy()
+        result.loc[valid.index] = winsorized
+        return result
+
+    result: pd.DataFrame = returns_df.apply(winsorize_row, axis=1)  # type: ignore[assignment]
+    return result
+
+
+def warn_price_discontinuities(
+    returns_df: pd.DataFrame,
+    threshold: float = 0.15,
+) -> int:
+    """
+    Log warning for suspicious single-day returns exceeding threshold.
+
+    Helps detect data quality issues like stock splits not adjusted,
+    corporate actions, or data errors.
+
+    :param returns_df (pd.DataFrame): Log-returns (dates × stocks)
+    :param threshold (float): Threshold for extreme returns (default: 15%)
+
+    :return n_extreme (int): Number of extreme return observations
+    """
+    log_threshold = np.log(1 + threshold)
+    extreme_mask = np.abs(returns_df) > log_threshold
+    n_extreme = int(extreme_mask.sum().sum())
+
+    if n_extreme > 0:
+        # Calculate what percentage of observations are extreme
+        total_obs = int(returns_df.notna().sum().sum())
+        pct_extreme = 100 * n_extreme / max(total_obs, 1)
+        logger.warning(
+            "Found %d single-day returns >%.0f%% (%.2f%% of observations). "
+            "Check data quality for stock splits, corporate actions, or errors.",
+            n_extreme,
+            threshold * 100,
+            pct_extreme,
+        )
+
+    return n_extreme

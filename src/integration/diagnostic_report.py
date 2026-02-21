@@ -976,17 +976,41 @@ def generate_diagnostic_json(diagnostics: dict[str, Any]) -> dict[str, Any]:
 def save_diagnostic_report(
     diagnostics: dict[str, Any],
     output_dir: str = "results/diagnostic",
+    weights: np.ndarray | None = None,
+    stock_ids: list[int] | None = None,
 ) -> list[str]:
     """
     Save diagnostic report in all formats (Markdown, JSON, CSV).
 
+    Also saves portfolio weights and stock IDs for notebook loading.
+
     :param diagnostics (dict): Full diagnostics from collect_diagnostics()
     :param output_dir (str): Output directory
+    :param weights (np.ndarray | None): Portfolio weights to save
+    :param stock_ids (list[int] | None): Stock IDs matching weights
 
     :return files (list[str]): List of written file paths
     """
     os.makedirs(output_dir, exist_ok=True)
     written: list[str] = []
+
+    # Save weights and stock_ids for notebook loading (extended checkpointing)
+    if weights is not None:
+        arrays_dir = os.path.join(output_dir, "arrays", "portfolio_done")
+        os.makedirs(arrays_dir, exist_ok=True)
+        weights_path = os.path.join(arrays_dir, "w_vae.npy")
+        np.save(weights_path, weights)
+        written.append(weights_path)
+        logger.info("Portfolio weights saved: %s", weights_path)
+
+    if stock_ids is not None:
+        json_dir = os.path.join(output_dir, "json")
+        os.makedirs(json_dir, exist_ok=True)
+        ids_path = os.path.join(json_dir, "inferred_stock_ids.json")
+        with open(ids_path, "w") as f:
+            json.dump(stock_ids, f)
+        written.append(ids_path)
+        logger.info("Stock IDs saved: %s", ids_path)
 
     # Markdown report
     md_path = os.path.join(output_dir, "diagnostic_report.md")

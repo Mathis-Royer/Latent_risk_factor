@@ -884,6 +884,19 @@ def phase_merge(
                 min_price, n_penny,
             )
 
+    # Filter 2b: Remove rows with extreme prices (Tiingo API bug)
+    # Berkshire-A (~$600K) is the highest legitimate stock price
+    MAX_REASONABLE_PRICE = 1_000_000.0
+    n_before_extreme = len(merged)
+    merged = pd.DataFrame(merged[merged["adj_price"] <= MAX_REASONABLE_PRICE])
+    n_extreme = n_before_extreme - len(merged)
+    if n_extreme > 0:
+        logger.warning(
+            "Extreme price filter (adj_price > $%.0f): removed %d rows "
+            "(likely Tiingo API split adjustment bug)",
+            MAX_REASONABLE_PRICE, n_extreme,
+        )
+
     # Filter 3: Remove stocks with too few trading days
     if min_history_days > 0:
         days_per_stock: pd.Series = merged.groupby("permno")["date"].transform("count")  # type: ignore[assignment]

@@ -41,11 +41,13 @@ class InverseVolatility(BenchmarkModel):
             if not isinstance(lookup, float):  # not NaT
                 self.sigma = vol_df.loc[lookup, available].values.astype(np.float64)  # type: ignore[union-attr]
             else:
-                R = returns[universe].dropna()
+                # Fallback: compute from returns with NaN handling
+                # fillna(0) preserves rows; std() ignores 0s less than dropna() losing all rows
+                R = returns[universe].fillna(0.0)
                 self.sigma = np.asarray(R.std(axis=0)) * np.sqrt(252)
         else:
-            # Fallback: compute from returns
-            R = returns[universe].dropna()
+            # Fallback: compute from returns with NaN handling
+            R = returns[universe].fillna(0.0)
             self.sigma = np.asarray(R.std(axis=0)) * np.sqrt(252)
 
         # Replace NaN with median of valid values (stocks missing 252-day

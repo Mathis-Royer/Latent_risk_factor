@@ -41,7 +41,7 @@ import os
 import sys
 import tempfile
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import Any
 
 import numpy as np
@@ -65,7 +65,8 @@ from src.integration.diagnostics import collect_diagnostics
 from src.integration.diagnostic_report import save_diagnostic_report
 from src.integration.diagnostic_plots import save_all_plots
 from src.integration.pipeline import FullPipeline
-from src.integration.reporting import export_results, serialize_for_json
+from src.integration.pipeline_state import DiagnosticRunManager
+from src.integration.reporting import export_results
 
 
 logging.basicConfig(
@@ -194,6 +195,28 @@ def parse_args() -> argparse.Namespace:
         "--holdout-start", type=str, default=None,
         help="Explicit train/test split date (YYYY-MM-DD). Overrides holdout_fraction.",
     )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from last checkpoint if available",
+    )
+    parser.add_argument(
+        "--force-stage", type=str, default=None,
+        help="Force restart from a specific pipeline stage "
+             "(e.g., INFERENCE_DONE, COVARIANCE_DONE, PORTFOLIO_DONE)",
+    )
+    parser.add_argument(
+        "--run-dir", type=str, default=None,
+        help="Existing run folder to resume from (e.g., results/diagnostic_runs/2026-02-21_143052). "
+             "If not specified, creates a new timestamped folder.",
+    )
+    parser.add_argument(
+        "--vae-checkpoint", type=str, default=None,
+        help="Override VAE checkpoint path (takes priority over run folder checkpoint)",
+    )
+    parser.add_argument(
+        "--base-dir", type=str, default="results/diagnostic_runs",
+        help="Base directory for new diagnostic runs (default: results/diagnostic_runs)",
+    )
     return parser.parse_args()
 
 
@@ -297,6 +320,11 @@ def run_diagnostic(
     data_source_label: str = "unknown",
     seed: int = 42,
     pretrained_model: str | None = None,
+    resume: bool = False,
+    force_stage: str | None = None,
+    run_dir: str | None = None,
+    vae_checkpoint_override: str | None = None,
+    base_dir: str = "results/diagnostic_runs",
 ) -> dict[str, Any]:
     """
     Run comprehensive pipeline diagnostic.
@@ -321,8 +349,14 @@ def run_diagnostic(
     :param seed (int): Random seed
     :param pretrained_model (str | None): Path to checkpoint file.
         When provided, skips VAE training and loads the encoder from disk.
+    :param resume (bool): If True, resume from last checkpoint if available.
+    :param force_stage (str | None): Force restart from a specific pipeline stage.
+    :param run_dir (str | None): Existing run folder for resume/load.
+        If None, creates new timestamped folder under base_dir.
+    :param vae_checkpoint_override (str | None): Override VAE checkpoint path.
+    :param base_dir (str): Base directory for new runs.
 
-    :return diagnostics (dict): Full diagnostic results dict
+    :return results (dict): Full diagnostic results including run_dir path
     """
     t_start = time.monotonic()
     np.random.seed(seed)
@@ -337,12 +371,55 @@ def run_diagnostic(
         n_stocks_actual, n_dates_actual, date_start, date_end,
     )
 
+    # ---- Step 0: Initialize run manager ----
+    # Use timestamped folder structure for extended checkpointing.
+    # If base_dir is default but output_dir is custom, use output_dir as base.
+    effective_base = base_dir
+    if base_dir == "results/diagnostic_runs" and output_dir != "results/diagnostic":
+        # User specified custom output_dir but not base_dir — use output_dir
+        effective_base = output_dir
+
+    run_manager = DiagnosticRunManager(
+        base_dir=effective_base,
+        run_dir=run_dir,
+    )
+    active_output_dir = run_manager.get_output_dir()
+    active_checkpoint_dir = run_manager.get_checkpoint_dir()
+
+    # Save run configuration
+    cli_args = {
+        "device": device,
+        "holdout_fraction": holdout_fraction,
+        "holdout_start": holdout_start,
+        "loss_mode": loss_mode,
+        "run_benchmarks": run_benchmarks,
+        "generate_plots": generate_plots,
+        "profile_name": profile_name,
+        "data_source_label": data_source_label,
+        "seed": seed,
+        "resume": resume,
+        "force_stage": force_stage,
+    }
+    run_manager.save_run_config(asdict(config), cli_args)
+
+    # Determine VAE checkpoint to use
+    effective_pretrained = pretrained_model
+    if vae_checkpoint_override is not None:
+        effective_pretrained = vae_checkpoint_override
+        logger.info("Using VAE checkpoint override: %s", effective_pretrained)
+    elif effective_pretrained is None and resume:
+        # Try to find checkpoint in run folder
+        found_ckpt = run_manager.get_vae_checkpoint_path()
+        if found_ckpt:
+            effective_pretrained = found_ckpt
+            logger.info("Found VAE checkpoint in run folder: %s", effective_pretrained)
+
     # ---- Step 1: Configure pipeline ----
     logger.info("Step 1/4: Configuring pipeline...")
 
     pipeline = FullPipeline(
         config, tensorboard_dir=tensorboard_dir,
-        checkpoint_dir=os.path.join(output_dir, "checkpoints"),
+        checkpoint_dir=active_checkpoint_dir,
     )
 
     hp_config = [{"mode": loss_mode, "learning_rate": config.training.learning_rate, "alpha": 1.0}]
@@ -371,7 +448,9 @@ def run_diagnostic(
         holdout_start=holdout_start,
         holdout_fraction=holdout_fraction,
         run_benchmarks=run_benchmarks,
-        pretrained_model=pretrained_model,
+        pretrained_model=effective_pretrained,
+        resume=resume,
+        force_stage=force_stage,
     )
 
     t_pipeline = time.monotonic() - t_run
@@ -419,23 +498,31 @@ def run_diagnostic(
 
     # ---- Step 4: Generate reports ----
     logger.info("Step 4/4: Generating reports...")
-    os.makedirs(output_dir, exist_ok=True)
+
+    # Use active_output_dir (from run manager) for all outputs
+    os.makedirs(active_output_dir, exist_ok=True)
 
     # Save standard pipeline results too
-    export_results(results, config_dict, output_dir=output_dir)
+    export_results(results, config_dict, output_dir=active_output_dir)
 
-    # Save diagnostic report (MD + JSON + CSVs)
-    report_files = save_diagnostic_report(diagnostics, output_dir=output_dir)
+    # Save diagnostic report (MD + JSON + CSVs) with weights and stock_ids
+    inferred_stock_ids = state_bag.get("inferred_stock_ids", [])
+    report_files = save_diagnostic_report(
+        diagnostics,
+        output_dir=active_output_dir,
+        weights=w_vae,
+        stock_ids=inferred_stock_ids,
+    )
 
     # Save plots
     if generate_plots:
-        plots_dir = os.path.join(output_dir, "plots")
+        plots_dir = run_manager.get_plots_dir()
         plot_files = save_all_plots(
             diagnostics, w_vae, output_dir=plots_dir,
             returns_oos=returns_oos,
             benchmark_weights=results.get("benchmark_weights", {}),
             benchmark_results=results.get("benchmark_results", {}),
-            inferred_stock_ids=state_bag.get("inferred_stock_ids", []),
+            inferred_stock_ids=inferred_stock_ids,
             train_end=results.get("train_end", ""),
             oos_start=oos_start,
         )
@@ -451,7 +538,7 @@ def run_diagnostic(
     logger.info("=" * 70)
     logger.info("Total time: %.1f seconds (%.1f min)", t_total, t_total / 60)
     logger.info("Files generated: %d", len(report_files))
-    logger.info("Output directory: %s", output_dir)
+    logger.info("Run directory: %s", run_manager.run_dir_str)
     logger.info("")
 
     # Print health check summary
@@ -492,9 +579,16 @@ def run_diagnostic(
     logger.info("  E* = %s", vae_metrics.get("e_star", "?"))
 
     logger.info("")
-    logger.info("Report: %s", os.path.join(output_dir, "diagnostic_report.md"))
+    logger.info("Report: %s", os.path.join(active_output_dir, "diagnostic_report.md"))
 
-    return diagnostics
+    # Return dict with diagnostics and run folder info
+    return {
+        "diagnostics": diagnostics,
+        "run_dir": run_manager.run_dir_str,
+        "weights": w_vae,
+        "stock_ids": inferred_stock_ids,
+        "pipeline_results": results,
+    }
 
 
 def main() -> int:
@@ -570,6 +664,11 @@ def main() -> int:
             profile_name=args.profile,
             data_source_label=data_source_label,
             seed=args.seed,
+            resume=args.resume,
+            force_stage=args.force_stage,
+            run_dir=args.run_dir,
+            vae_checkpoint_override=args.vae_checkpoint,
+            base_dir=args.base_dir,
         )
 
         return 0

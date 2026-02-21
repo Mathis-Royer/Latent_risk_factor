@@ -20,7 +20,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+
+from src.integration.pipeline_state import (
+    PipelineStage,
+    PipelineStateManager,
+    StageStatus,
+)
 from src.benchmarks.equal_weight import EqualWeight
+from src.validation import (
+    assert_fold_consistency,
+    assert_no_lookahead,
+    assert_weights_sum_to_one,
+)
 from src.benchmarks.erc import EqualRiskContribution
 from src.benchmarks.inverse_vol import InverseVolatility
 from src.benchmarks.min_variance import MinimumVariance
@@ -427,6 +438,14 @@ class FullPipeline:
             val_years=self.config.walk_forward.val_years,
         )
 
+        # Validate all generated folds
+        for fold in self.fold_schedule:
+            assert_fold_consistency(fold, f"fold_{fold['fold_id']}")  # type: ignore[arg-type]
+            assert_no_lookahead(
+                str(fold["train_end"]), str(fold["oos_start"]),
+                f"fold_{fold['fold_id']}",
+            )
+
     def get_walk_forward_folds(self) -> list[dict[str, object]]:
         """
         Get non-holdout folds.
@@ -795,6 +814,8 @@ class FullPipeline:
         holdout_fraction: float = 0.1,
         run_benchmarks: bool = True,
         pretrained_model: str | None = None,
+        resume: bool = False,
+        force_stage: str | None = None,
     ) -> dict[str, Any]:
         """
         Direct training mode: single train/holdout split, no walk-forward.
@@ -806,6 +827,10 @@ class FullPipeline:
         When pretrained_model is a checkpoint path (str), the saved encoder is
         loaded and training is skipped entirely. Only the portfolio optimization
         head (inference → risk model → portfolio) is re-run.
+
+        Supports incremental checkpointing: state is saved after each major stage
+        (training, inference, covariance, portfolio, benchmarks). If the pipeline
+        crashes, it can be resumed from the last checkpoint using resume=True.
 
         :param stock_data (pd.DataFrame): Raw stock data (long format)
         :param returns (pd.DataFrame): Log-returns (dates x stocks)
@@ -821,6 +846,9 @@ class FullPipeline:
         :param run_benchmarks (bool): Run 6 benchmarks on the same split
         :param pretrained_model (str | None): Path to checkpoint file.
             If None, trains from scratch. If str, loads encoder and skips training.
+        :param resume (bool): If True, resume from last checkpoint if available.
+        :param force_stage (str | None): Force restart from a specific stage name
+            (e.g., "INFERENCE_DONE" to recompute from inference).
 
         :return results (dict): Results dict compatible with run() output
         """
@@ -832,6 +860,27 @@ class FullPipeline:
         # Ensure TensorBoard log directory exists
         if self.tensorboard_dir is not None:
             os.makedirs(self.tensorboard_dir, exist_ok=True)
+
+        # Initialize state manager for incremental checkpointing
+        ckpt_dir = self.checkpoint_dir or "checkpoints"
+        state_manager = PipelineStateManager(ckpt_dir, fold_id=0)
+
+        # Check for resume capability
+        resume_stage = PipelineStage.NOT_STARTED
+        if resume and state_manager.can_resume():
+            resume_stage = state_manager.get_resume_stage()
+            logger.info(
+                "Resuming from checkpoint: last completed stage = %s",
+                resume_stage.name,
+            )
+        elif force_stage is not None:
+            try:
+                resume_stage = PipelineStage[force_stage]
+                logger.info("Forcing restart from stage: %s", resume_stage.name)
+            except KeyError:
+                logger.warning("Unknown stage %s, starting from scratch", force_stage)
+        elif resume:
+            logger.info("No checkpoint found, starting from scratch")
 
         # Reset accumulated state from any previous run
         self.vae_results = []
@@ -935,13 +984,72 @@ class FullPipeline:
                 e_star = int(ckpt_fit.get("best_epoch", 0))
 
         state_bag: dict[str, Any] = {}
-        vae_metrics, w_vae, _, B_A_direct = self._run_single_fold(
-            fold, returns, trailing_vol, rolling_vol, stock_data,
-            vix_data, hp_config, e_star, torch_device,
-            use_early_stopping=True,
-            _state_bag=state_bag,
-            pretrained_model=loaded_model,
-        )
+
+        # Check if we can skip VAE training (resume from checkpoint)
+        skip_vae = resume_stage.value >= PipelineStage.VAE_TRAINED.value
+
+        if skip_vae and state_manager.state.model_checkpoint_path:
+            # Load from checkpoint
+            logger.info("Resuming: loading VAE from checkpoint")
+            ckpt_path = state_manager.state.model_checkpoint_path
+            if os.path.exists(ckpt_path):
+                ckpt = self.load_checkpoint(ckpt_path, device=str(torch_device))
+                loaded_model = ckpt.get("model")
+                state_bag.update({
+                    "build_params": ckpt.get("build_params", {}),
+                    "vae_info": ckpt.get("vae_info", {}),
+                    "fit_result": ckpt.get("fit_result"),
+                })
+
+                # Load state_bag data from all completed stages (extended checkpointing)
+                # VAE_TRAINED stage data
+                vae_data = state_manager.load_state_bag_for_stage(PipelineStage.VAE_TRAINED)
+                for k, v in vae_data.items():
+                    state_bag.setdefault(k, v)
+
+                # INFERENCE_DONE stage data (if completed)
+                if resume_stage.value >= PipelineStage.INFERENCE_DONE.value:
+                    infer_data = state_manager.load_state_bag_for_stage(PipelineStage.INFERENCE_DONE)
+                    for k, v in infer_data.items():
+                        state_bag.setdefault(k, v)
+
+                # COVARIANCE_DONE stage data (if completed)
+                if resume_stage.value >= PipelineStage.COVARIANCE_DONE.value:
+                    cov_data = state_manager.load_state_bag_for_stage(PipelineStage.COVARIANCE_DONE)
+                    for k, v in cov_data.items():
+                        state_bag.setdefault(k, v)
+
+                # PORTFOLIO_DONE stage data (if completed)
+                if resume_stage.value >= PipelineStage.PORTFOLIO_DONE.value:
+                    port_data = state_manager.load_state_bag_for_stage(PipelineStage.PORTFOLIO_DONE)
+                    for k, v in port_data.items():
+                        state_bag.setdefault(k, v)
+
+                logger.info(
+                    "Resumed state_bag from stage %s: %d keys loaded",
+                    resume_stage.name, len(state_bag),
+                )
+            else:
+                logger.warning("Checkpoint not found at %s, retraining", ckpt_path)
+                skip_vae = False
+
+        # Mark VAE stage as in progress
+        state_manager.mark_stage_start(PipelineStage.VAE_TRAINED)
+
+        try:
+            vae_metrics, w_vae, _, B_A_direct = self._run_single_fold(
+                fold, returns, trailing_vol, rolling_vol, stock_data,
+                vix_data, hp_config, e_star, torch_device,
+                use_early_stopping=True,
+                _state_bag=state_bag,
+                pretrained_model=loaded_model,
+            )
+            state_manager.mark_stage_success(PipelineStage.VAE_TRAINED)
+        except Exception as e:
+            state_manager.mark_stage_failed(PipelineStage.VAE_TRAINED, str(e), e)
+            logger.error("VAE pipeline failed: %s", e)
+            raise
+
         # Store B_A in state_bag for diagnostic access
         if B_A_direct.size > 0:
             state_bag["B_A"] = B_A_direct
@@ -959,25 +1067,91 @@ class FullPipeline:
 
         self.record_vae_result(0, vae_metrics, e_star)
 
+        # ---- Save comprehensive state_bag for each stage ----
+        # VAE_TRAINED: fit_result, build_params, vae_info
+        state_manager.save_state_bag_for_stage(PipelineStage.VAE_TRAINED, state_bag)
+
+        # INFERENCE_DONE: B_A, kl_per_dim, AU, active_dims, inferred_stock_ids
+        state_manager.save_state_bag_for_stage(PipelineStage.INFERENCE_DONE, state_bag)
+        state_manager.mark_stage_success(PipelineStage.INFERENCE_DONE)
+
+        # COVARIANCE_DONE: Sigma_assets, z_hat, eigenvalues, VT scales
+        if "risk_model" in state_bag:
+            state_manager.save_state_bag_for_stage(PipelineStage.COVARIANCE_DONE, state_bag)
+            state_manager.mark_stage_success(PipelineStage.COVARIANCE_DONE)
+
+        # PORTFOLIO_DONE: w_vae, frontier, solver_stats, binding_status, alpha_opt
+        state_bag["w_vae"] = w_vae
+        state_manager.save_state_bag_for_stage(PipelineStage.PORTFOLIO_DONE, state_bag)
+        state_manager.mark_stage_success(PipelineStage.PORTFOLIO_DONE)
+
         # --- Step 6: Benchmarks (optional) ---
+        # Each benchmark is isolated with its own try/except to prevent
+        # a single benchmark failure from crashing the entire pipeline.
         benchmark_weights: dict[str, dict[str, Any]] = {}
         if run_benchmarks:
+            state_manager.mark_stage_start(PipelineStage.BENCHMARKS_DONE)
+            n_success = 0
+            n_fallback = 0
+            n_failed = 0
+
             for bench_name, bench_cls in BENCHMARK_CLASSES.items():
-                bench_metrics = self._run_benchmark_fold(
-                    bench_name, bench_cls, fold, returns, trailing_vol,
-                    None, True,
-                    store_weights=True,
+                state_manager.mark_benchmark_start(bench_name)
+                try:
+                    bench_metrics = self._run_benchmark_fold(
+                        bench_name, bench_cls, fold, returns, trailing_vol,
+                        None, True,
+                        store_weights=True,
+                    )
+                    # Extract weight/return data before recording metrics
+                    bw_entry: dict[str, Any] = {}
+                    if "_weights" in bench_metrics:
+                        bw_entry["weights"] = bench_metrics.pop("_weights")
+                    if "_universe" in bench_metrics:
+                        bw_entry["universe"] = bench_metrics.pop("_universe")
+                    if "_daily_returns" in bench_metrics:
+                        bw_entry["daily_returns"] = bench_metrics.pop("_daily_returns")
+                    benchmark_weights[bench_name] = bw_entry
+                    self.record_benchmark_result(bench_name, 0, bench_metrics)
+
+                    # Check if benchmark used fallback (equal-weight due to error)
+                    if bench_metrics.get("_used_fallback", False):
+                        state_manager.mark_benchmark_fallback(
+                            bench_name, "Optimization failed, used equal-weight"
+                        )
+                        n_fallback += 1
+                    else:
+                        state_manager.mark_benchmark_success(bench_name)
+                        n_success += 1
+
+                except Exception as e:
+                    # Critical failure - benchmark couldn't even produce fallback
+                    logger.error("Benchmark %s critical failure: %s", bench_name, e)
+                    state_manager.mark_benchmark_failed(bench_name, str(e))
+                    n_failed += 1
+                    # Record empty metrics (error already logged above)
+                    self.record_benchmark_result(
+                        bench_name, 0,
+                        {"sharpe": float("nan"), "ann_vol_oos": float("nan")},
+                    )
+
+            if n_failed == len(BENCHMARK_CLASSES):
+                state_manager.mark_stage_failed(
+                    PipelineStage.BENCHMARKS_DONE,
+                    "All benchmarks failed"
                 )
-                # Extract weight/return data before recording metrics
-                bw_entry: dict[str, Any] = {}
-                if "_weights" in bench_metrics:
-                    bw_entry["weights"] = bench_metrics.pop("_weights")
-                if "_universe" in bench_metrics:
-                    bw_entry["universe"] = bench_metrics.pop("_universe")
-                if "_daily_returns" in bench_metrics:
-                    bw_entry["daily_returns"] = bench_metrics.pop("_daily_returns")
-                benchmark_weights[bench_name] = bw_entry
-                self.record_benchmark_result(bench_name, 0, bench_metrics)
+            elif n_failed > 0 or n_fallback > 0:
+                state_manager.mark_stage_fallback(
+                    PipelineStage.BENCHMARKS_DONE,
+                    f"{n_success} success, {n_fallback} fallback, {n_failed} failed"
+                )
+            else:
+                state_manager.mark_stage_success(PipelineStage.BENCHMARKS_DONE)
+
+            logger.info(
+                "Benchmarks complete: %d success, %d fallback, %d failed",
+                n_success, n_fallback, n_failed,
+            )
 
         # --- Step 7: Generate report ---
         vae_df = aggregate_fold_metrics(self.vae_results)
@@ -990,10 +1164,19 @@ class FullPipeline:
             fold_crisis_fractions=None,
         )
 
+        # Mark pipeline complete and export status
+        state_manager.mark_stage_success(PipelineStage.METRICS_DONE)
+        state_manager.mark_complete()
+
+        # Export status JSON for debugging/reporting
+        status_path = os.path.join(ckpt_dir, "fold_00_status.json")
+        pipeline_status = state_manager.export_status_json(status_path)
+
         logger.info(
-            "Direct training complete. Sharpe=%.3f, AU=%s",
+            "Direct training complete. Sharpe=%.3f, AU=%s, status=%s",
             vae_metrics.get("sharpe", 0.0),
             vae_metrics.get("AU", "?"),
+            pipeline_status.get("overall_status", "unknown"),
         )
 
         # --- Step 7b: Return results (same keys as run() + extras) ---
@@ -1013,6 +1196,8 @@ class FullPipeline:
             "train_end": train_end,
             "oos_start": oos_start,
             "oos_end": oos_end,
+            # Pipeline status for debugging
+            "pipeline_status": pipeline_status,
         }
 
     # -------------------------------------------------------------------
@@ -1249,6 +1434,10 @@ class FullPipeline:
         trainer.close()
 
         # Measure AU (fused into a single encode pass on val_windows)
+        # KNOWN LIMITATION: metadata.iloc[:len(val_windows)] assumes positional
+        # alignment between windows and metadata. This holds when windows are
+        # constructed in order from windowing.py, but would break if windows
+        # were reordered. A more robust approach would pass explicit indices.
         _, kl_per_dim = infer_latent_trajectories(
             model, val_windows,
             window_metadata=metadata.iloc[:len(val_windows)],
@@ -1569,17 +1758,24 @@ class FullPipeline:
             stride=self.config.data.training_stride,
         )
 
+        assert len(train_returns) > 0, (
+            f"Fold {fold_id}: empty training returns [{train_start}, {train_end}]"
+        )
+
         if windows.shape[0] < 10:
             return self._empty_metrics(fold_id), np.ones(len(stock_ids)) / len(stock_ids), stock_ids, np.array([[]])
 
+        # Count actual stocks with valid windows (vs input stock_ids)
+        n_unique_train_stocks = len(np.unique(np.asarray(metadata["stock_id"])))
         logger.info(
-            "  [Fold %d] Windowing: %d train windows (stride=%d) from %d stocks, %d days",
+            "  [Fold %d] Windowing: %d train windows (stride=%d) from %d/%d stocks, %d days",
             fold_id, windows.shape[0], self.config.data.training_stride,
-            len(stock_ids), len(train_returns),
+            n_unique_train_stocks, len(stock_ids), len(train_returns),
         )
 
         # 2. Build and train VAE (or use pretrained model)
-        n_stocks = len(stock_ids)
+        # Use actual stock count (after windowing filters), not input count
+        n_stocks = n_unique_train_stocks
         T = self.config.data.window_length
         F = self.config.data.n_features
         train_days = len(train_returns)
@@ -1661,6 +1857,9 @@ class FullPipeline:
                 val_w = train_w[-10:]
 
             # Split co-movement data to training portion
+            # KNOWN LIMITATION: Assumes positional alignment between windows and
+            # metadata. Windows are constructed sequentially from windowing.py so
+            # this holds, but would break if windows were reordered or filtered.
             train_raw = raw_ret[:n_train]
             train_metadata = metadata.iloc[:n_train].reset_index(drop=True)
             train_strata = window_strata[:n_train]
@@ -1729,9 +1928,10 @@ class FullPipeline:
             T=self.config.data.window_length,
             stride=1,
         )
+        n_unique_infer_stocks = len(np.unique(np.asarray(infer_metadata["stock_id"])))
         logger.info(
-            "  [Fold %d] Inference: %d windows (stride=1). AU measurement...",
-            fold_id, infer_windows.shape[0],
+            "  [Fold %d] Inference: %d windows (stride=1) from %d/%d stocks. AU measurement...",
+            fold_id, infer_windows.shape[0], n_unique_infer_stocks, len(stock_ids),
         )
         trajectories, kl_per_dim = infer_latent_trajectories(
             model, infer_windows, infer_metadata,
@@ -1767,10 +1967,20 @@ class FullPipeline:
         AU, active_dims = truncate_active_dims(AU, kl_per_dim, active_dims, au_max)
 
         if AU == 0:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids, np.array([[]])
+            n_input = len(stock_ids)
+            return self._empty_metrics(fold_id), np.ones(n_input) / n_input, stock_ids, np.array([[]])
 
         B_A = filter_exposure_matrix(B, active_dims)
-        logger.info("  [Fold %d] AU=%d active units (max=%d)", fold_id, AU, au_max)
+        assert B_A is not None and B_A.size > 0, (
+            f"Fold {fold_id}: B_A is empty after AU filtering (AU={AU})"
+        )
+        assert np.isfinite(B_A).all(), (
+            f"Fold {fold_id}: B_A contains NaN/Inf after AU filtering"
+        )
+        logger.info(
+            "  [Fold %d] AU=%d active units (max=%d), B_A shape=(%d, %d)",
+            fold_id, AU, au_max, B_A.shape[0], B_A.shape[1],
+        )
 
         # B_A per-factor z-score normalization (Barra USE4 standard):
         # each column of B_A (factor) is standardized to mean=0, std=1
@@ -1924,7 +2134,8 @@ class FullPipeline:
 
         n_factors = z_hat.shape[1] if z_hat.shape[0] > 0 else AU
         if z_hat.shape[0] < n_factors:
-            return self._empty_metrics(fold_id), np.ones(n_stocks) / n_stocks, stock_ids, B_A
+            n_input = len(stock_ids)
+            return self._empty_metrics(fold_id), np.ones(n_input) / n_input, stock_ids, B_A
 
         # Split z_hat into estimation (80%) / holdout (20%) for unbiased VT.
         # Sigma_z and D_eps are estimated from estimation period only, so the
@@ -2350,6 +2561,11 @@ class FullPipeline:
                 "n_starts": pc.n_starts,
                 "entropy_idio_weight": pc.entropy_idio_weight,
                 "alpha_opt": alpha_opt,
+                # OOS Quality Settings — differentiated by trigger type in oos_rebalancing
+                "oos_n_starts_scheduled": pc.oos_n_starts_scheduled,
+                "oos_n_starts_exceptional": pc.oos_n_starts_exceptional,
+                "oos_sca_max_iter_scheduled": pc.oos_sca_max_iter_scheduled,
+                "oos_sca_max_iter_exceptional": pc.oos_sca_max_iter_exceptional,
             }
 
             oos_result = simulate_oos_rebalancing(
@@ -2428,7 +2644,9 @@ class FullPipeline:
                             var_ratio = realized_var / predicted_var
                             metrics["var_ratio_oos"] = var_ratio
 
-                    oos_df = returns_oos.reindex(columns=active_ids).dropna(how="any")
+                    # Use fillna(0) instead of dropna(how="any") to avoid losing all rows
+                    # when scattered NaN exist across stocks
+                    oos_df = returns_oos.reindex(columns=active_ids).fillna(0.0)
                     if len(oos_df) > 10:
                         corr_rank = realized_vs_predicted_correlation(Sigma_active, oos_df.values)
                         metrics["corr_rank_oos"] = corr_rank
@@ -2566,6 +2784,7 @@ class FullPipeline:
                 data_dir=str(self.config.data.data_dir),  # For SP500 cache
             )
             w = benchmark.optimize(w_old=w_old, is_first=is_first)
+            assert_weights_sum_to_one(w, f"benchmark_{bench_name}_weights")
         except Exception as e:
             logger.warning("Benchmark %s failed: %s", bench_name, e)
             n = len(stock_ids_str)

@@ -98,4 +98,7 @@ class EarlyStopping:
         :param model (nn.Module): Model to restore
         """
         if self.best_state is not None:
+            assert set(self.best_state.keys()) == set(model.state_dict().keys()), (
+                "Checkpoint keys mismatch: model architecture changed since best checkpoint"
+            )
             model.load_state_dict(self.best_state)

@@ -15,6 +15,8 @@ import logging
 
 import numpy as np
 
+from src.validation import assert_finite_2d
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +55,7 @@ def safe_solve(
             "safe_solve: rank deficient — rank=%d < p=%d, cond=%.1e",
             rank, p, cond,
         )
+    assert np.isfinite(z_hat).all(), "safe_solve: z_hat contains NaN/Inf"
     return z_hat
 
 
@@ -91,4 +94,5 @@ def safe_solve_wls(
             "safe_solve_wls: rank deficient — rank=%d < p=%d, cond=%.1e",
             rank, p, cond,
         )
+    assert np.isfinite(z_hat).all(), "safe_solve_wls: z_hat contains NaN/Inf"
     return z_hat

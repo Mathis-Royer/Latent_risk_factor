@@ -9,6 +9,8 @@ Reference: ISD Section MOD-009 — Sub-task 1.
 
 import pandas as pd
 
+from src.validation import assert_fold_consistency, assert_no_lookahead
+
 
 def generate_fold_schedule(
     start_date: str,
@@ -71,7 +73,7 @@ def generate_fold_schedule(
         if oos_end > holdout_start:
             oos_end = holdout_start
 
-        folds.append({
+        fold_dict: dict[str, object] = {
             "fold_id": fold_id,
             "train_start": str(train_start.date()),
             "train_end": str(train_end.date()),
@@ -82,13 +84,21 @@ def generate_fold_schedule(
             "oos_start": str(oos_start.date()),
             "oos_end": str(oos_end.date()),
             "is_holdout": False,
-        })
+        }
+
+        # Validate fold consistency and no look-ahead bias
+        assert_fold_consistency(fold_dict, f"fold_{fold_id}")  # type: ignore[arg-type]
+        assert_no_lookahead(
+            str(train_end.date()), str(oos_start.date()), f"fold_{fold_id}",
+        )
+
+        folds.append(fold_dict)
 
         fold_id += 1
         current_train_end += pd.DateOffset(months=oos_months)
 
     # Holdout fold
-    folds.append({
+    holdout_fold: dict[str, object] = {
         "fold_id": fold_id,
         "train_start": str(data_start.date()),
         "train_end": str(holdout_start.date()),
@@ -99,7 +109,14 @@ def generate_fold_schedule(
         "oos_start": str((holdout_start + pd.offsets.BDay(embargo_days) + pd.DateOffset(days=1)).date()),
         "oos_end": str(data_end.date()),
         "is_holdout": True,
-    })
+    }
+    assert_fold_consistency(holdout_fold, f"fold_{fold_id}_holdout")  # type: ignore[arg-type]
+    assert_no_lookahead(
+        str(holdout_start.date()),
+        str((holdout_start + pd.offsets.BDay(embargo_days) + pd.DateOffset(days=1)).date()),
+        f"fold_{fold_id}_holdout",
+    )
+    folds.append(holdout_fold)
 
     return folds
 

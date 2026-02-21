@@ -268,6 +268,24 @@ class TestBaiNgIC2:
         k_est = bai_ng_ic2(R, k_max=2)
         assert k_est >= 1
 
+    def test_handles_nan_values(self) -> None:
+        """Should handle NaN values gracefully."""
+        np.random.seed(42)
+        R = np.random.randn(100, 20)
+        # Introduce NaN values
+        R[10:15, 5:8] = np.nan
+        R[50, 12] = np.inf
+        R_centered = R - np.nanmean(R, axis=0)
+        # Should not raise, should return valid k
+        k_est = bai_ng_ic2(R_centered, k_max=10)
+        assert k_est >= 1
+
+    def test_handles_degenerate_matrix(self) -> None:
+        """Should handle degenerate (near-zero variance) matrices."""
+        R = np.zeros((100, 20)) + 1e-20  # Near-zero matrix
+        k_est = bai_ng_ic2(R, k_max=10)
+        assert k_est == 1  # Fallback value
+
 
 # ---------------------------------------------------------------------------
 # Test: onatski_eigenvalue_ratio

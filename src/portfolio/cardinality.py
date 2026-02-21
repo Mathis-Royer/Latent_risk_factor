@@ -13,11 +13,13 @@ Reference: ISD Section MOD-008 — Sub-task 3, DVT Section 4.7 line 846.
 """
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
 import cvxpy as cp
 
+from src.validation import assert_weights_sum_to_one, assert_weights_valid
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
 from src.portfolio.sca_solver import (
     _MI_SOLVER_CHAIN,
@@ -74,6 +76,11 @@ def _prescreen_active_stocks(
     active_set = set(candidate_idx.tolist())
     active_idx = np.array(sorted(active_set), dtype=np.intp)
     fixed_idx = np.array([i for i in range(n) if i not in active_set], dtype=np.intp)
+
+    # BUG FIX: Validate no duplicate indices (diagnostic fix)
+    assert len(active_idx) == len(set(active_idx)), (
+        "Duplicate indices in active_set — pre-screening logic error"
+    )
 
     pct_reduction = 100.0 * (1 - len(active_idx) / max(n, 1))
     logger.info(
@@ -155,6 +162,7 @@ def _sca_reoptimize(
         w_opt_reduced, _, _, _ = sca_solver_fn(
             w_init=w_init_reduced, **reduced_kwargs,
         )
+        assert_weights_sum_to_one(w_opt_reduced, "w_reopt")
 
         w_new = np.zeros(n)
         w_new[active_indices] = w_opt_reduced
@@ -689,6 +697,15 @@ def _enforce_two_stage(
                         result, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
                         idio_weight=idio_weight,
                     )
+                    H_sca = compute_entropy_only(
+                        w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+                        idio_weight=idio_weight,
+                    )
+                    if H_result < H_sca - 1e-6:
+                        warnings.warn(
+                            f"Two-stage entropy {H_result:.4f} < SCA entropy {H_sca:.4f}",
+                            stacklevel=2,
+                        )
                     logger.info(
                         "    [two_stage] Stage 2 solved via %s "
                         "(MI=%s): %d active, H=%.4f",

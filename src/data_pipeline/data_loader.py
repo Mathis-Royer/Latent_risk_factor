@@ -15,6 +15,15 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+from src.validation import (
+    assert_bounds,
+    assert_monotonic_dates,
+    assert_no_duplicate_ids,
+    assert_positive_prices,
+    assert_volume_non_negative,
+    warn_if_nan_fraction_exceeds,
+)
+
 
 # ---------------------------------------------------------------------------
 # Core schema columns
@@ -248,6 +257,11 @@ def load_stock_data(
     # Ensure date is Timestamp
     df["date"] = pd.to_datetime(df["date"])
 
+    # CRITICAL: Validate no NaT values after date parsing (diagnostic fix)
+    assert not bool(df["date"].isna().any()), (
+        "NaT values found after date parsing - check date format in source data"
+    )
+
     # Date filtering
     if start_date is not None:
         df = pd.DataFrame(df[df["date"] >= pd.Timestamp(start_date)])
@@ -262,6 +276,18 @@ def load_stock_data(
     # Sort by (permno, date)
     df = df.sort_values(["permno", "date"]).reset_index(drop=True)
 
+    # Validate dates are monotonic per stock (sample a few stocks for speed)
+    sample_permnos = df["permno"].unique()[:5]
+    for p in sample_permnos:
+        stock_dates = df.loc[df["permno"] == p, "date"]
+        assert_monotonic_dates(stock_dates, f"stock {p} dates")
+
+    # Validate no duplicate (permno, date) combinations
+    dup_keys = df[["permno", "date"]].duplicated()
+    assert not dup_keys.any(), (
+        f"Duplicate (permno, date) rows found: {int(dup_keys.sum())} duplicates"
+    )
+
     # Ensure correct types
     df["permno"] = df["permno"].astype(int)
     df["adj_price"] = df["adj_price"].astype(float)
@@ -271,6 +297,16 @@ def load_stock_data(
     df["share_code"] = df["share_code"].astype(int)
     df["market_cap"] = df["market_cap"].astype(float)
     df["delisting_return"] = df["delisting_return"].astype(float)
+
+    # Price bounds validation
+    assert_bounds(np.asarray(df["adj_price"].dropna()), 0, 1e9, "adj_price")
+    # Positive prices required before log-return computation
+    assert_positive_prices(df["adj_price"], "adj_price")
+    # Volume non-negative validation
+    assert_volume_non_negative(df["volume"], "volume")
+
+    # NaN fraction warning for market_cap
+    warn_if_nan_fraction_exceeds(np.asarray(df["market_cap"]), 0.1, "market_cap")
 
     return df
 

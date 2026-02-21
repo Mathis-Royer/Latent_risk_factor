@@ -15,6 +15,7 @@ Reference: ISD Section MOD-005 — Sub-task 2.
 import copy
 import logging
 import math
+import warnings
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,12 @@ from tqdm.auto import tqdm
 logger = logging.getLogger(__name__)
 
 from src.utils import get_optimal_device, get_dataloader_kwargs, get_amp_config, configure_backend
+from src.validation import (
+    assert_active_units_valid,
+    warn_if_au_collapsed,
+    warn_if_loss_component_imbalance,
+    warn_loss_explosion,
+)
 from src.vae.loss import (
     compute_co_movement_loss,
     compute_loss,
@@ -249,6 +256,9 @@ class VAETrainer:
                 batch_indices = None
                 raw_ret = None
 
+            # Validate batch is non-empty
+            assert x.shape[0] > 0, "Empty batch received in train_epoch"
+
             # Get crisis fractions for this batch (already on device if pre-moved)
             if crisis_fractions is not None and batch_indices is not None:
                 cf = crisis_fractions[batch_indices]
@@ -354,6 +364,14 @@ class VAETrainer:
                     curriculum_phase2_frac=self.curriculum_phase2_frac,
                 )
 
+            # Loss explosion warning
+            if loss.item() > 1e6:
+                warnings.warn(
+                    f"Loss explosion detected: {loss.item():.2e} at epoch {epoch}, "
+                    f"step {step_in_epoch}. Check learning rate or data quality.",
+                    stacklevel=2,
+                )
+
             # Backward pass with gradient accumulation
             if torch.isnan(loss) or torch.isinf(loss):
                 # Skip backward pass for NaN/Inf loss to prevent corrupting model weights
@@ -379,7 +397,10 @@ class VAETrainer:
                 # Gradient clipping to prevent NaN from gradient explosion
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                # Log pre-clip gradient norm for diagnostics
+                pre_clip_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                if self._tb_writer is not None and self._logging_steps > 0 and self._global_step % self._logging_steps == 0:
+                    self._tb_writer.add_scalar("Step/grad_norm_pre_clip", float(pre_clip_norm), self._global_step)
 
                 if self.scaler is not None:
                     self.scaler.step(self.optimizer)
@@ -463,6 +484,9 @@ class VAETrainer:
 
         # Compute AU on the last batch (approximate monitoring)
         au_count = self._compute_batch_au(mu, log_var)
+
+        # VALIDATION: AU must be within valid range [0, K]
+        assert_active_units_valid(au_count, self.model.K, f"train_epoch_{epoch}")
 
         # Single sync point: convert GPU accumulators to Python floats
         metrics: dict[str, Any] = {
@@ -731,6 +755,15 @@ class VAETrainer:
 
             au = int(train_metrics.get("AU", 0))
             lr_val = train_metrics.get("learning_rate", 0)
+
+            # Warn if AU ratio is outside normal range (collapsed or no regularization)
+            K = self.model.K if hasattr(self.model, 'K') else 200
+            warn_if_au_collapsed(au, K, min_ratio=0.05, max_ratio=0.80, name="AU")
+
+            # Warn if loss components are severely imbalanced
+            kl_loss = float(train_metrics.get("kl_loss", 0))
+            recon_loss = float(train_metrics.get("recon_loss", 0))
+            warn_if_loss_component_imbalance(kl_loss, recon_loss, max_ratio=100.0, name="loss")
 
             if progress_bar is not None:
                 progress_bar.set_postfix(

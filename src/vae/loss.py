@@ -18,6 +18,12 @@ from typing import Any
 import torch
 import torch.nn.functional as F_torch
 
+from src.validation import (
+    assert_finite_tensor,
+    assert_kl_non_negative,
+    assert_reconstruction_bounded,
+)
+
 
 # ---------------------------------------------------------------------------
 # Sub-task 1: Crisis-weighted reconstruction loss
@@ -191,8 +197,18 @@ def compute_loss(
     # KL loss
     L_kl = compute_kl_loss(mu, log_var)
 
+    # Validate reconstruction loss
+    assert not torch.isnan(L_recon), "L_recon is NaN after compute_reconstruction_loss"
+    assert_reconstruction_bounded(L_recon, 1e6, "L_recon")
+
+    # Validate KL divergence is non-negative (theory guarantee)
+    assert_kl_non_negative(L_kl, "L_kl")
+
     # σ² = clamp(exp(log_sigma_sq), sigma_sq_min, sigma_sq_max)
     sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)
+    assert sigma_sq_min <= float(sigma_sq.item()) <= sigma_sq_max, (
+        f"sigma_sq={sigma_sq.item():.6g} outside [{sigma_sq_min}, {sigma_sq_max}]"
+    )
 
     # Curriculum λ_co
     lambda_co = get_lambda_co(
@@ -251,6 +267,8 @@ def compute_loss(
     if mode == "F":
         components["beta_t"] = get_beta_t(epoch, total_epochs, warmup_fraction)
 
+    assert_finite_tensor(total_loss, "total_loss")
+
     return total_loss, components
 
 
@@ -302,6 +320,10 @@ def compute_co_movement_loss(
         idx_j = idx_j[perm]
 
     # Spearman rank correlation on raw returns (no gradient needed)
+    # CRITICAL: Check for NaN in raw_returns before Spearman (diagnostic fix)
+    assert not torch.isnan(raw_returns).any(), (
+        "NaN in raw_returns before Spearman correlation"
+    )
     with torch.no_grad():
         spearman_corr = _batch_spearman(
             raw_returns[idx_i], raw_returns[idx_j],
@@ -350,7 +372,11 @@ def _batch_spearman(
 
     # Clamp denominator to avoid division by zero
     rho = num / torch.clamp(denom, min=1e-8)
-    return torch.clamp(rho, -1.0, 1.0)
+    rho = torch.clamp(rho, -1.0, 1.0)
+    assert rho.min() >= -1.0 and rho.max() <= 1.0, (
+        f"Spearman rho out of [-1, 1]: min={rho.min().item()}, max={rho.max().item()}"
+    )
+    return rho
 
 
 def _to_ranks(x: torch.Tensor) -> torch.Tensor:

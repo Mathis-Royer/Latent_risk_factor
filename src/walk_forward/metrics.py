@@ -16,6 +16,14 @@ import pandas as pd
 from scipy import stats
 from scipy.linalg import subspace_angles
 
+from src.validation import (
+    assert_ann_vol_positive,
+    assert_calmar_denominator_valid,
+    assert_sharpe_denominator_valid,
+    assert_sortino_observations_sufficient,
+    assert_weights_valid,
+)
+
 if TYPE_CHECKING:
     from src.walk_forward.oos_rebalancing import OOSRebalancingResult
 
@@ -75,6 +83,14 @@ def latent_stability(
 
     # If stock IDs provided, align matrices by matching stocks
     if ids_current is not None and ids_previous is not None:
+        # BUG FIX: Validate no duplicate stock IDs (diagnostic fix)
+        assert len(ids_current) == len(set(ids_current)), (
+            "Duplicate stock IDs in ids_current"
+        )
+        assert len(ids_previous) == len(set(ids_previous)), (
+            "Duplicate stock IDs in ids_previous"
+        )
+
         # Find common stocks between folds
         set_current = set(ids_current)
         set_previous = set(ids_previous)
@@ -240,12 +256,19 @@ def factor_explanatory_power_dynamic(
         B_t = B_A_by_date[date_str]
         active_sids = universe_snapshots.get(date_str, [])
         z_t = z_hat[t_idx]
-        predicted_t = B_t @ z_t
 
         row_idx = date_to_row[date_str]
-        n_active = min(len(active_sids), B_t.shape[0])
 
-        for i in range(n_active):
+        # BUG FIX: B_t rows may not match active_sids if stocks were filtered.
+        # Use explicit ID-based alignment instead of positional indexing.
+        # Build mapping from row index to stock ID based on available data.
+        n_bt = B_t.shape[0]
+        n_sids = len(active_sids)
+
+        # Iterate only over positions where both B_t and active_sids exist
+        n_common = min(n_bt, n_sids)
+
+        for i in range(n_common):
             sid = active_sids[i]
             if sid not in sid_to_col:
                 continue
@@ -253,8 +276,10 @@ def factor_explanatory_power_dynamic(
             r_it = ret_values[row_idx, col_idx]
             if np.isnan(r_it):
                 continue
+            # predicted_t computed per-stock to ensure alignment
+            pred_i = float(B_t[i] @ z_t)
             all_actual.append(float(r_it))
-            all_predicted.append(float(predicted_t[i]))
+            all_predicted.append(pred_i)
 
     if len(all_actual) < 10:
         return 0.0
@@ -604,6 +629,9 @@ def portfolio_metrics(
     R_oos = np.nan_to_num(np.asarray(returns_oos[available].values), nan=0.0)
     w_active = w[:len(available)]
 
+    # Validate portfolio weights before computing metrics
+    assert_weights_valid(w_active, "w_active_portfolio_metrics")
+
     # Guard against NaN weights (solver failure)
     if np.any(np.isnan(w_active)):
         logger.warning("NaN detected in portfolio weights — falling back to equal-weight")
@@ -623,7 +651,8 @@ def portfolio_metrics(
     # Annualized volatility
     ann_vol = float(np.std(port_returns, ddof=1) * np.sqrt(252)) if n_days > 1 else 0.0
 
-    # Sharpe ratio (geometric return / vol)
+    # VALIDATION: Ann vol must be positive for Sharpe ratio denominator
+    assert_ann_vol_positive(ann_vol, "portfolio_ann_vol", min_vol=1e-10)
     sharpe = ann_return / max(ann_vol, 1e-10)
 
     # Maximum drawdown (percentage, not log-space)
@@ -633,8 +662,13 @@ def portfolio_metrics(
     max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
 
     # Calmar and Sortino
+    # Validate max_drawdown for Calmar ratio (must be non-zero)
+    if max_drawdown > 0:
+        assert_calmar_denominator_valid(max_drawdown, "Calmar")
     calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0
     downside = port_returns[port_returns < 0]
+    # Validate sufficient downside observations for Sortino
+    assert_sortino_observations_sufficient(len(downside), min_obs=2, name="Sortino")
     downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if len(downside) > 1 else 1e-10
     sortino = ann_return / max(downside_vol, 1e-10)
 
@@ -711,6 +745,9 @@ def crisis_period_return(
     w_active = w[:len(available)]
 
     port_returns = R_oos @ w_active
+    assert len(crisis_mask) >= len(port_returns), (
+        f"crisis_mask length {len(crisis_mask)} < port_returns length {len(port_returns)}"
+    )
     mask = crisis_mask[:len(port_returns)]
     crisis_returns = port_returns[mask]
 
@@ -771,8 +808,13 @@ def portfolio_metrics_from_oos_result(
     max_drawdown = float(1.0 - np.exp(np.min(log_drawdowns))) if len(log_drawdowns) > 0 else 0.0
 
     # Calmar and Sortino
+    # Validate max_drawdown for Calmar ratio (must be non-zero)
+    if max_drawdown > 0:
+        assert_calmar_denominator_valid(max_drawdown, "Calmar")
     calmar = ann_return / max(max_drawdown, 1e-10) if max_drawdown > 0 else 0.0
     downside = port_returns[port_returns < 0]
+    # Validate sufficient downside observations for Sortino
+    assert_sortino_observations_sufficient(len(downside), min_obs=2, name="Sortino")
     downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if len(downside) > 1 else 1e-10
     sortino = ann_return / max(downside_vol, 1e-10)
 

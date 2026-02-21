@@ -31,6 +31,8 @@ diversification.  Two-layer approach avoids dimensional imbalance between
 systematic (AU terms) and idiosyncratic (n terms) populations.
 """
 
+import warnings
+
 import numpy as np
 
 
@@ -117,11 +119,31 @@ def compute_entropy_and_gradient(
     :return H (float): Combined entropy value
     :return grad_H (np.ndarray): Gradient (n,)
     """
+    # Validate idio_weight in [0, 1]
+    assert 0.0 <= idio_weight <= 1.0, (
+        f"idio_weight must be in [0, 1], got {idio_weight}"
+    )
+
+    # Shape validation: B_prime rows must match w length
+    assert B_prime.shape[0] == len(w), (
+        f"B_prime rows {B_prime.shape[0]} != w length {len(w)}"
+    )
+
+    # Shape validation: eigenvalues must match B_prime columns
+    assert len(eigenvalues) == B_prime.shape[1], (
+        f"eigenvalues length {len(eigenvalues)} != B_prime cols {B_prime.shape[1]}"
+    )
+
     # Shape validation
     if D_eps is not None:
         assert len(D_eps) == len(w), (
             f"D_eps length {len(D_eps)} != w length {len(w)}"
         )
+
+    # CRITICAL: Validate eigenvalues are non-negative (diagnostic fix)
+    assert np.all(eigenvalues >= -1e-10), (
+        f"Negative eigenvalues detected: min={eigenvalues.min():.2e}"
+    )
 
     # Portfolio exposure in principal factor basis
     beta_prime = B_prime.T @ w  # (AU,)
@@ -143,6 +165,8 @@ def compute_entropy_and_gradient(
     else:
         grad_factor = np.zeros_like(w)
 
+    assert np.isfinite(grad_factor).all(), "grad_factor contains NaN/Inf"
+
     grad_H = w_factor * grad_factor
 
     # Idiosyncratic entropy (separate layer)
@@ -160,6 +184,14 @@ def compute_entropy_and_gradient(
         H = w_factor * H_factor + idio_weight * H_idio
     else:
         H = H_factor
+
+    # Note: Tilted entropy (with budget) can legitimately be negative
+    # because H_tilted = -KL(ĉ||b). Only standard entropy (budget=None) is ≥ 0.
+    # Reference: Roncalli (2013, Ch. 7, Prop 7.3)
+    if budget is None:
+        # Standard entropy must be non-negative
+        assert H >= -1e-10, f"Standard entropy is negative: {H}"
+        H = max(H, 0.0)
 
     return float(H), grad_H
 

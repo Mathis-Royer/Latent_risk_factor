@@ -17,11 +17,19 @@ Reference: ISD Section MOD-008 — Sub-task 2.
 """
 
 import logging
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import cvxpy as cp
 
+from src.validation import (
+    assert_armijo_params_valid,
+    assert_cholesky_condition,
+    assert_covariance_valid,
+    assert_gradient_finite,
+    assert_weights_valid,
+)
 from src.portfolio.entropy import compute_entropy_and_gradient, compute_entropy_only
 from src.portfolio.constraints import (
     concentration_penalty,
@@ -102,11 +110,19 @@ def _safe_cholesky(Sigma: np.ndarray) -> np.ndarray:
     :return L (np.ndarray): Lower-triangular factor, Sigma ≈ L @ L.T
     """
     try:
-        return np.linalg.cholesky(Sigma)
+        L = np.linalg.cholesky(Sigma)
     except np.linalg.LinAlgError:
         n = Sigma.shape[0]
         ridge = 1e-8 * np.trace(Sigma) / n
-        return np.linalg.cholesky(Sigma + ridge * np.eye(n))
+        L = np.linalg.cholesky(Sigma + ridge * np.eye(n))
+
+    # CRITICAL: Validate Cholesky output is finite (diagnostic fix)
+    assert np.isfinite(L).all(), "Cholesky produced non-finite values"
+
+    # Validate Cholesky factor is well-conditioned
+    assert_cholesky_condition(L, 1e10, "Sigma_Cholesky")
+
+    return L
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +595,15 @@ def sca_optimize(
     """
     n = len(w_init)
 
+    # CRITICAL: Validate w_init sums to approximately 1 (diagnostic fix)
+    w_init_sum = float(np.sum(w_init))
+    assert abs(w_init_sum - 1.0) < 1e-3, (
+        f"w_init does not sum to 1: sum={w_init_sum:.6f}"
+    )
+
+    # Validate Armijo backtracking parameters
+    assert_armijo_params_valid(armijo_c, armijo_rho, "SCA_Armijo")
+
     # Pre-compute Cholesky once (or reuse from caller)
     L_sigma = _L_sigma if _L_sigma is not None else _safe_cholesky(Sigma_assets)
 
@@ -600,6 +625,7 @@ def sca_optimize(
         )
 
     f_current = obj_fn(w)
+    assert np.isfinite(f_current), f"Initial objective is not finite: {f_current}"
 
     # Convergence tracking
     step_sizes: list[float] = []
@@ -620,6 +646,9 @@ def sca_optimize(
             w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
             idio_weight=idio_weight, budget=budget,
         )
+
+        # Validate gradient is finite (prevents NaN propagation in SCA)
+        assert_gradient_finite(grad_H, "entropy_gradient")
 
         # Solve SCA sub-problem (fresh CVXPY problem per iteration)
         w_star, shadow_prices = subproblem.solve(grad_H)
@@ -656,6 +685,7 @@ def sca_optimize(
 
         # Update
         w_new = w + eta * (w_star - w)
+        assert np.isfinite(w_new).all(), "w_new contains NaN/Inf after update"
 
         # Ensure feasibility: clip-renormalize loop to prevent cap
         # violation from renormalization of a clipped vector.
@@ -685,6 +715,14 @@ def sca_optimize(
 
     H_final = compute_entropy_only(w, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
                                     idio_weight=idio_weight, budget=budget)
+    assert np.isfinite(H_final), f"H_final is not finite: {H_final}"
+    assert_weights_valid(w, "sca_final_weights")
+
+    if final_grad_norm > 1e-4:
+        warnings.warn(
+            f"SCA final gradient norm {final_grad_norm:.2e} > 1e-4",
+            stacklevel=2,
+        )
 
     convergence_info: dict[str, object] = {
         "converged": converged,
@@ -749,6 +787,9 @@ def multi_start_optimize(
     w_max = float(w_max_val) if w_max_val is not None else 0.05
     w_min_val = kwargs.get("w_min", 0.001)
     w_min = float(w_min_val) if w_min_val is not None else 0.001
+
+    # VALIDATION: Verify covariance matrix is valid before optimization
+    assert_covariance_valid(Sigma_assets, "Sigma_assets_multi_start")
 
     # Extract normalization flag (not forwarded to sca_optimize)
     _nflag = kwargs.pop("normalize_entropy_gradient", None)
