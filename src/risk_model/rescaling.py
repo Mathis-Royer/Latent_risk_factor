@@ -12,8 +12,11 @@ WARNING: Use estimation rescaling for historical factor regression (MOD-007.2),
 Reference: ISD Section MOD-007 — Sub-task 1.
 """
 
+import logging
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def _compute_winsorized_ratios(
@@ -88,15 +91,21 @@ def rescale_estimation(
             vol_date_to_loc[str(d)] = i
 
     B_A_by_date: dict[str, np.ndarray] = {}
+    n_total = len(universe_snapshots)
+    n_skipped_no_stocks = 0
+    n_skipped_no_date = 0
+    n_skipped_low_vol = 0
 
     for date_str, active_stocks in universe_snapshots.items():
         active_indices = [sid_to_idx[s] for s in active_stocks if s in sid_to_idx]
         if not active_indices:
+            n_skipped_no_stocks += 1
             continue
 
         # Fast date lookup via dict
         date_loc = vol_date_to_loc.get(date_str)
         if date_loc is None:
+            n_skipped_no_date += 1
             continue
 
         # Vectorized vol extraction for all active stocks at this date
@@ -115,8 +124,11 @@ def rescale_estimation(
 
         # Impute NaN/zero vols with cross-sectional median
         valid_mask = ~np.isnan(vols) & (vols > 0)
-        assert np.sum(valid_mask) > 0, f"No valid vols for date {date_str}"
-        if valid_mask.sum() < 2:
+        n_valid = int(np.sum(valid_mask))
+        if n_valid < 2:
+            # Skip dates without enough valid vols (e.g., start of dataset
+            # before trailing vol can be computed)
+            n_skipped_low_vol += 1
             continue
 
         median_valid = float(np.median(vols[valid_mask]))
@@ -133,6 +145,16 @@ def rescale_estimation(
         assert np.isfinite(B_A_t).all(), f"B_A_t contains NaN/Inf at date {date_str}"
 
         B_A_by_date[date_str] = B_A_t
+
+    # Log summary if any dates were skipped
+    n_skipped_total = n_skipped_no_stocks + n_skipped_no_date + n_skipped_low_vol
+    if n_skipped_total > 0:
+        logger.info(
+            "Estimation rescaling: %d/%d dates processed, %d skipped "
+            "(no_stocks=%d, no_vol_date=%d, insufficient_vol=%d)",
+            len(B_A_by_date), n_total, n_skipped_total,
+            n_skipped_no_stocks, n_skipped_no_date, n_skipped_low_vol,
+        )
 
     return B_A_by_date
 

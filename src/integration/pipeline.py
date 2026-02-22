@@ -988,10 +988,19 @@ class FullPipeline:
         # Check if we can skip VAE training (resume from checkpoint)
         skip_vae = resume_stage.value >= PipelineStage.VAE_TRAINED.value
 
-        if skip_vae and state_manager.state.model_checkpoint_path:
+        # Fallback: even if stage "failed", check if checkpoint exists
+        # This handles crashes AFTER checkpoint was saved (e.g., during rescaling)
+        ckpt_path = state_manager.state.model_checkpoint_path
+        if not skip_vae and ckpt_path and os.path.exists(ckpt_path):
+            logger.info(
+                "Stage VAE_TRAINED failed but checkpoint exists at %s — loading",
+                ckpt_path,
+            )
+            skip_vae = True
+
+        if skip_vae and ckpt_path:
             # Load from checkpoint
             logger.info("Resuming: loading VAE from checkpoint")
-            ckpt_path = state_manager.state.model_checkpoint_path
             if os.path.exists(ckpt_path):
                 ckpt = self.load_checkpoint(ckpt_path, device=str(torch_device))
                 loaded_model = ckpt.get("model")
