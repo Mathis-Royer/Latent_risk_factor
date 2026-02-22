@@ -1073,3 +1073,155 @@ def save_diagnostic_report(
         logger.info("Strategy comparison CSV saved: %s", bench_path)
 
     return written
+
+
+# ---------------------------------------------------------------------------
+# Table generation for notebook display
+# ---------------------------------------------------------------------------
+
+
+def build_portfolio_holdings_table(
+    weights: np.ndarray,
+    stock_ids: list[int],
+    permno_to_ticker: dict[int, str] | None = None,
+    ticker_meta: dict[str, dict[str, Any]] | None = None,
+    latest_mcap: dict[int, float] | None = None,
+    min_weight: float = 1e-8,
+) -> pd.DataFrame:
+    """
+    Build holdings table with ticker, weight, cumulative weight.
+
+    :param weights (np.ndarray): Portfolio weights (n_stocks,)
+    :param stock_ids (list[int]): Stock identifiers (permno)
+    :param permno_to_ticker (dict | None): Mapping permno -> ticker symbol
+    :param ticker_meta (dict | None): Ticker metadata {ticker: {"exchange": ..., "is_sp500": ...}}
+    :param latest_mcap (dict | None): Latest market cap per permno
+    :param min_weight (float): Minimum weight to include in table
+
+    :return df (pd.DataFrame): Holdings table sorted by weight descending
+    """
+    if permno_to_ticker is None:
+        permno_to_ticker = {}
+    if ticker_meta is None:
+        ticker_meta = {}
+    if latest_mcap is None:
+        latest_mcap = {}
+
+    rows = []
+    for i, permno in enumerate(stock_ids):
+        w_i = float(weights[i])
+        if w_i < min_weight:
+            continue
+        ticker = permno_to_ticker.get(permno, f"ID_{permno}")
+        meta = ticker_meta.get(ticker, {})
+        mcap = latest_mcap.get(permno, float("nan"))
+        rows.append({
+            "Ticker": ticker,
+            "Weight (%)": round(w_i * 100, 2),
+            "Market Cap ($M)": round(mcap / 1e6, 0) if np.isfinite(mcap) else None,
+            "Exchange": meta.get("exchange", ""),
+            "S&P 500": "Yes" if meta.get("is_sp500", False) else "",
+            "Permno": permno,
+        })
+
+    df = pd.DataFrame(rows).sort_values("Weight (%)", ascending=False).reset_index(drop=True)
+    df.index = df.index + 1  # 1-based rank
+    return df
+
+
+def build_literature_comparison_table(
+    literature_comparison: dict[str, Any],
+) -> str:
+    """
+    Generate markdown table comparing AU vs Bai-Ng vs MP vs Onatski.
+
+    :param literature_comparison (dict): Comparison metrics from compute_literature_comparison()
+        Expected keys: vae_au, eigenvalues_above_mp, marchenko_pastur_edge, bai_ng_k, onatski_k
+
+    :return markdown (str): Formatted markdown table
+    """
+    au = literature_comparison.get("vae_au", "N/A")
+    mp = literature_comparison.get("eigenvalues_above_mp", "N/A")
+    mp_edge = literature_comparison.get("marchenko_pastur_edge", 0.0)
+    bn = literature_comparison.get("bai_ng_k", "N/A")
+    on = literature_comparison.get("onatski_k", "N/A")
+
+    table = f"""
+| Method | # Factors | Description |
+|--------|-----------|-------------|
+| **VAE Active Units (AU)** | {au} | KL > 0.01 nats threshold |
+| **Marchenko-Pastur** | {mp} | Eigenvalues above random matrix bulk edge ({mp_edge:.4f}) |
+| **Bai-Ng IC2** | {bn} | Information criterion for factor count |
+| **Onatski** | {on} | Eigenvalue ratio test |
+"""
+    return table.strip()
+
+
+def build_decision_rules_table(
+    matched_rules: list[dict[str, Any]],
+) -> str:
+    """
+    Generate markdown table of matched decision rules.
+
+    :param matched_rules (list[dict]): List of matched rules from get_root_cause_analysis()
+        Expected keys per rule: rule_id, diagnosis, confidence, severity, root_causes
+
+    :return markdown (str): Formatted markdown table
+    """
+    if not matched_rules:
+        return "No issues detected - all systems nominal"
+
+    lines = [
+        "| Rule ID | Diagnosis | Confidence | Severity | Root Causes |",
+        "|---------|-----------|------------|----------|-------------|",
+    ]
+
+    for rule in matched_rules:
+        rule_id = rule.get("rule_id", "")
+        diagnosis = rule.get("diagnosis", "")
+        confidence = f"{rule.get('confidence', 0) * 100:.0f}%"
+        severity = rule.get("severity", "").upper()
+        root_causes = ", ".join(rule.get("root_causes", [])[:2])
+        lines.append(f"| {rule_id} | {diagnosis} | {confidence} | {severity} | {root_causes} |")
+
+    return "\n".join(lines)
+
+
+def build_recommendations_table(
+    exec_actions: list[dict[str, Any]],
+) -> str:
+    """
+    Generate markdown table of config recommendations.
+
+    :param exec_actions (list[dict]): Executable actions from get_executable_actions()
+        Expected keys: recognized, component, config_key, suggested_value, rationale, original_action
+
+    :return markdown (str): Formatted markdown table
+    """
+    if not exec_actions:
+        return "No configuration changes recommended"
+
+    lines = [
+        "| Priority | Component | Config Key | Suggested Value | Rationale |",
+        "|----------|-----------|------------|-----------------|-----------|",
+    ]
+
+    for i, action in enumerate(exec_actions, 1):
+        if action.get("recognized", False):
+            suggested = action.get("suggested_value")
+            if suggested is None:
+                sv = action.get("suggested_values", ["N/A"])
+                suggested = sv[0] if sv else "N/A"
+            lines.append(
+                f"| {i} | {action.get('component', '')} | "
+                f"{action.get('config_key', '')} | {suggested} | "
+                f"{action.get('rationale', '')} |"
+            )
+        else:
+            lines.append(
+                f"| {i} | {action.get('component', '')} | "
+                f"(manual review) | - | "
+                f"{action.get('original_action', '')[:80]} |"
+            )
+
+    return "\n".join(lines)

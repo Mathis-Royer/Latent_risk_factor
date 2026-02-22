@@ -787,6 +787,74 @@ class TestLoadRunData:
         assert "diagnostics" not in data
         assert "weights" not in data
 
+    def test_load_kl_per_dim_history(self, temp_dir: str) -> None:
+        """Should load kl_per_dim_history from arrays/vae_trained/."""
+        manager = DiagnosticRunManager(base_dir=temp_dir)
+
+        # Create kl_per_dim_history file
+        arrays_dir = manager.run_dir / "arrays" / "vae_trained"
+        arrays_dir.mkdir(parents=True, exist_ok=True)
+        kl_hist = np.random.rand(100, 200).astype(np.float32)  # (E, K)
+        np.save(arrays_dir / "kl_per_dim_history.npy", kl_hist)
+
+        data = load_run_data(manager.run_dir_str)
+        assert "kl_per_dim_history" in data
+        np.testing.assert_array_almost_equal(data["kl_per_dim_history"], kl_hist)
+
+    def test_load_b_full(self, temp_dir: str) -> None:
+        """Should load B_full from arrays/inference_done/."""
+        manager = DiagnosticRunManager(base_dir=temp_dir)
+
+        # Create B_full file
+        arrays_dir = manager.run_dir / "arrays" / "inference_done"
+        arrays_dir.mkdir(parents=True, exist_ok=True)
+        B_full = np.random.randn(100, 200)  # (n, K)
+        np.save(arrays_dir / "B_full.npy", B_full)
+
+        data = load_run_data(manager.run_dir_str)
+        assert "B_full" in data
+        np.testing.assert_array_almost_equal(data["B_full"], B_full)
+
+    def test_load_pca_comparison_data(self, temp_dir: str) -> None:
+        """Should load PCA loadings and eigenvalues from arrays/covariance_done/."""
+        manager = DiagnosticRunManager(base_dir=temp_dir)
+
+        # Create PCA files
+        arrays_dir = manager.run_dir / "arrays" / "covariance_done"
+        arrays_dir.mkdir(parents=True, exist_ok=True)
+        pca_loadings = np.random.randn(100, 50)  # (n, K_pca)
+        pca_eigenvalues = np.sort(np.random.rand(50))[::-1]  # (K_pca,) descending
+        np.save(arrays_dir / "pca_loadings.npy", pca_loadings)
+        np.save(arrays_dir / "pca_eigenvalues.npy", pca_eigenvalues)
+
+        data = load_run_data(manager.run_dir_str)
+        assert "pca_loadings" in data
+        assert "pca_eigenvalues" in data
+        np.testing.assert_array_almost_equal(data["pca_loadings"], pca_loadings)
+        np.testing.assert_array_almost_equal(data["pca_eigenvalues"], pca_eigenvalues)
+
+    def test_load_literature_comparison(self, temp_dir: str) -> None:
+        """Should load literature_comparison from json/covariance_done/."""
+        manager = DiagnosticRunManager(base_dir=temp_dir)
+
+        # Create literature_comparison file
+        json_dir = manager.run_dir / "json" / "covariance_done"
+        json_dir.mkdir(parents=True, exist_ok=True)
+        lit_comp = {
+            "vae_au": 25,
+            "marchenko_pastur_edge": 0.0042,
+            "eigenvalues_above_mp": 30,
+            "bai_ng_k": 22,
+            "onatski_k": 20,
+        }
+        with open(json_dir / "literature_comparison.json", "w") as f:
+            json.dump(lit_comp, f)
+
+        data = load_run_data(manager.run_dir_str)
+        assert "literature_comparison" in data
+        assert data["literature_comparison"]["vae_au"] == 25
+        assert data["literature_comparison"]["eigenvalues_above_mp"] == 30
+
 
 class TestSerializeForJsonSizeGuard:
     """Test size guards in _serialize_for_json to prevent memory explosion."""

@@ -1264,6 +1264,35 @@ def load_run_data(run_dir: str) -> dict[str, Any]:
         if alt_ba.exists():
             data["B_A"] = np.load(alt_ba)
 
+    # NEW: VAE training diagnostics (kl_per_dim_history, log_var_bounds_history)
+    kl_history_path = run_path / "arrays" / "vae_trained" / "kl_per_dim_history.npy"
+    if kl_history_path.exists():
+        data["kl_per_dim_history"] = np.load(kl_history_path)
+
+    log_var_path = run_path / "arrays" / "vae_trained" / "log_var_bounds_history.npy"
+    if log_var_path.exists():
+        data["log_var_bounds_history"] = np.load(log_var_path)
+
+    # NEW: B_full (full exposure matrix before AU filtering)
+    b_full_path = run_path / "arrays" / "inference_done" / "B_full.npy"
+    if b_full_path.exists():
+        data["B_full"] = np.load(b_full_path)
+
+    # NEW: PCA comparison data (loadings, eigenvalues)
+    pca_loadings_path = run_path / "arrays" / "covariance_done" / "pca_loadings.npy"
+    if pca_loadings_path.exists():
+        data["pca_loadings"] = np.load(pca_loadings_path)
+
+    pca_eigenvalues_path = run_path / "arrays" / "covariance_done" / "pca_eigenvalues.npy"
+    if pca_eigenvalues_path.exists():
+        data["pca_eigenvalues"] = np.load(pca_eigenvalues_path)
+
+    # NEW: Literature comparison (Marchenko-Pastur, Bai-Ng, Onatski)
+    lit_comp_path = run_path / "json" / "covariance_done" / "literature_comparison.json"
+    if lit_comp_path.exists():
+        with open(lit_comp_path, "r") as f:
+            data["literature_comparison"] = json.load(f)
+
     # run_config.json
     config_path = run_path / "run_config.json"
     if config_path.exists():
