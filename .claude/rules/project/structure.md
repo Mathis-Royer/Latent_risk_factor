@@ -103,7 +103,8 @@ latent_risk_factor/
 │       ├── diagnostics.py            # E2E diagnostic collection (health checks)
 │       ├── diagnostic_report.py      # Markdown/JSON/CSV report generation
 │       ├── diagnostic_plots.py       # PNG diagnostic plot generation
-│       └── visualization.py          # Dashboard display helpers
+│       ├── visualization.py          # Dashboard display helpers
+│       └── colab_drive.py            # Google Drive persistence for Colab
 │
 ├── tests/                            # Test suite
 │   ├── __init__.py
@@ -118,7 +119,8 @@ latent_risk_factor/
 │   │   ├── test_portfolio_optimization.py
 │   │   ├── test_benchmarks.py
 │   │   ├── test_utils.py             # Hardware adaptation tests
-│   │   └── test_pipeline_state.py    # State management + checkpointing tests
+│   │   ├── test_pipeline_state.py    # State management + checkpointing tests
+│   │   └── test_colab_drive.py       # Google Drive persistence tests
 │   ├── integration/                  # Integration tests
 │   │   ├── __init__.py
 │   │   ├── test_vae_training.py
@@ -162,6 +164,7 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-22 | src/integration/, tests/unit/ | Added `colab_drive.py` (Google Drive persistence) and `test_colab_drive.py` |
 | 2026-02-21 | src/integration/, tests/unit/ | Added `pipeline_state.py` (state management + checkpointing) and `test_pipeline_state.py` |
 | 2026-02-10 | src/integration/, scripts/ | Added diagnostic pipeline: `diagnostics.py`, `diagnostic_report.py`, `diagnostic_plots.py`, `run_diagnostic.py` |
 | 2026-02-07 | src/, tests/ | Added `src/utils.py` (hardware adaptation) and `tests/unit/test_utils.py` |
