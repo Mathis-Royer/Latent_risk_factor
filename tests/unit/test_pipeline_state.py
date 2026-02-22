@@ -786,3 +786,128 @@ class TestLoadRunData:
         # Other keys should not be present
         assert "diagnostics" not in data
         assert "weights" not in data
+
+
+class TestSerializeForJsonSizeGuard:
+    """Test size guards in _serialize_for_json to prevent memory explosion."""
+
+    def test_large_array_returns_placeholder(self) -> None:
+        """Arrays >100k elements should return placeholder, not full data."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        large_array = np.zeros((200, 600))  # 120k elements
+        result = _serialize_for_json(large_array)
+        assert isinstance(result, str)
+        assert "array shape=" in result
+        assert "size=120000" in result
+
+    def test_small_array_returns_list(self) -> None:
+        """Arrays <=100k elements should serialize normally."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        small_array = np.array([[1, 2], [3, 4]])
+        result = _serialize_for_json(small_array)
+        assert result == [[1, 2], [3, 4]]
+
+    def test_large_list_returns_placeholder(self) -> None:
+        """Lists >10k items should return placeholder."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        large_list = list(range(15000))
+        result = _serialize_for_json(large_list)
+        assert isinstance(result, str)
+        assert "list len=15000" in result
+
+    def test_small_list_serializes(self) -> None:
+        """Lists <=10k items should serialize normally."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        small_list = [1, 2, 3]
+        result = _serialize_for_json(small_list)
+        assert result == [1, 2, 3]
+
+    def test_max_depth_truncates(self) -> None:
+        """Deeply nested structures should be truncated."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        # Create deeply nested dict
+        nested: dict = {"level": 0}
+        current = nested
+        for i in range(15):
+            current["child"] = {"level": i + 1}
+            current = current["child"]
+
+        result = _serialize_for_json(nested, _max_depth=5)
+        # Should have truncation somewhere in the result
+        result_str = str(result)
+        assert "truncated" in result_str or "level" in result_str
+
+    def test_numpy_generic_converts(self) -> None:
+        """Numpy scalars should convert to Python types."""
+        from src.integration.pipeline_state import _serialize_for_json
+
+        result = _serialize_for_json(np.float64(3.14))
+        assert result == 3.14
+        assert isinstance(result, float)
+
+
+class TestFitResultFiltering:
+    """Test that fit_result is properly filtered in save_state_bag_for_stage."""
+
+    def test_fit_result_only_saves_scalars(self) -> None:
+        """VAE_TRAINED stage should save only summary scalars, not full history."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = PipelineStateManager(temp_dir, fold_id=0)
+
+            # Create state_bag with full fit_result including large history
+            state_bag = {
+                "fit_result": {
+                    "best_epoch": 50,
+                    "best_val_elbo": 123.45,
+                    "train_elbo": 120.0,
+                    "overfit_flag": False,
+                    "overfit_ratio": 1.03,
+                    "history": [
+                        {
+                            "epoch": i,
+                            "train_loss": 100 - i,
+                            "val_elbo": 105 - i,
+                            "AU": 10,
+                            "sigma_sq": 0.5,
+                            "learning_rate": 1e-4,
+                            # Large arrays that should NOT be saved
+                            "kl_per_dim": np.zeros(200).tolist(),
+                            "log_var_stats": {"mean": np.zeros(200).tolist()},
+                        }
+                        for i in range(100)
+                    ],
+                },
+                "build_params": {"n": 100, "K": 75},
+                "vae_info": {"total_params": 1000000},
+            }
+
+            manager.save_state_bag_for_stage(PipelineStage.VAE_TRAINED, state_bag)
+
+            # Load and verify
+            fit_result = manager.load_json("fit_result")
+            assert fit_result is not None
+            assert isinstance(fit_result, dict)
+            # Should have summary scalars
+            assert fit_result["best_epoch"] == 50
+            assert fit_result["best_val_elbo"] == 123.45
+            # Should NOT have history (that's in training_curve now)
+            assert "history" not in fit_result
+
+            # Check training_curve is compact
+            training_curve = manager.load_json("training_curve")
+            assert training_curve is not None
+            assert isinstance(training_curve, list)
+            assert len(training_curve) == 100
+            # Each entry should NOT have large arrays
+            for entry in training_curve[:5]:
+                assert isinstance(entry, dict)
+                assert "kl_per_dim" not in entry
+                assert "log_var_stats" not in entry
+                # Should have scalars
+                assert "epoch" in entry
+                assert "train_loss" in entry

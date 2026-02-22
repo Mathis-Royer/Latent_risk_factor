@@ -12,6 +12,7 @@ Coordinates walk-forward validation:
 Reference: ISD Section MOD-016 — Sub-tasks 1, 3.
 """
 
+import gc
 import logging
 import os
 import time
@@ -1076,6 +1077,16 @@ class FullPipeline:
 
         self.record_vae_result(0, vae_metrics, e_star)
 
+        # ---- Clean state_bag before checkpoint saving ----
+        # Remove large objects not needed for VAE_TRAINED checkpoint to prevent
+        # memory explosion during JSON serialization. Objects needed for later
+        # stages (COVARIANCE_DONE etc.) are re-computed if needed.
+        for key in ["train_returns", "B_A_by_date", "universe_snapshots",
+                    "train_windows", "val_windows", "raw_returns"]:
+            if key in state_bag:
+                del state_bag[key]
+        gc.collect()
+
         # ---- Save comprehensive state_bag for each stage ----
         # VAE_TRAINED: fit_result, build_params, vae_info
         state_manager.save_state_bag_for_stage(PipelineStage.VAE_TRAINED, state_bag)
@@ -1930,6 +1941,21 @@ class FullPipeline:
                     checkpoint_dir=ckpt_dir, tag=tag,
                 )
 
+            # === MEMORY CLEANUP AFTER TRAINING ===
+            # Free training-specific resources before inference (which uses 21x more windows).
+            # Clears: TensorBoard writer, torch.compile cache, optimizer state, training windows.
+            trainer.cleanup()  # Clears ~0.5-2GB (torch.compile cache, optimizer, etc.)
+
+            # Delete training windows (separate from validation windows used in fit())
+            del train_w, val_w, train_raw
+            del metadata, train_metadata, train_strata
+            if crisis_fractions_b is not None:
+                del crisis_fractions_b
+
+            gc.collect()
+            clear_device_cache(device)
+            logger.info("  [Fold %d] Training cleanup completed", fold_id)
+
         # 3. Infer latent trajectories → B (+ KL per dim in same pass)
         #    Inference uses stride=1 for full-resolution exposure matrix (DVT Section 5)
         infer_windows, infer_metadata, _ = create_windows(
@@ -1952,6 +1978,18 @@ class FullPipeline:
             trajectories,
             method="mean",
             half_life=self.config.inference.aggregation_half_life,
+        )
+
+        # === CRITICAL: Free inference memory immediately (~32GB for stride=1) ===
+        # Inference uses stride=1 (vs training stride=21), creating 21x more windows.
+        # These large tensors must be deleted before checkpoint saving to prevent
+        # memory explosion (130GB+ RAM usage that crashes Colab).
+        del infer_windows, infer_metadata, trajectories
+        gc.collect()
+        clear_device_cache(device)
+        logger.info(
+            "  [Fold %d] Inference windows freed (gc.collect + device cache cleared)",
+            fold_id,
         )
 
         # 4. Derive AU from pre-computed KL (no extra forward pass)
@@ -2327,7 +2365,9 @@ class FullPipeline:
             _state_bag["B_A_by_date"] = B_A_by_date
             _state_bag["valid_dates"] = valid_dates
             _state_bag["universe_snapshots"] = universe_snapshots
-            _state_bag["train_returns"] = returns.loc[train_start:train_end]
+            # Memory optimization: Store date range instead of full DataFrame (~500MB savings)
+            # train_returns is reconstructed in diagnostics.py from returns parameter
+            _state_bag["train_date_range"] = {"start": train_start, "end": train_end}
             _state_bag["shrinkage_intensity"] = shrinkage_intensity
 
         logger.info(

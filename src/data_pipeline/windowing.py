@@ -47,6 +47,58 @@ def _vectorized_ffill_bfill(arr_2d: np.ndarray) -> np.ndarray:
     return out
 
 
+def _count_valid_windows_for_stock(
+    ret_series: np.ndarray,
+    vol_series: np.ndarray,
+    T: int,
+    stride: int,
+    max_zero_frac: float,
+) -> int:
+    """
+    Count how many valid windows a stock produces (pass 1 of two-pass algorithm).
+
+    This duplicates the filtering logic from create_windows but only counts,
+    avoiding memory allocation for intermediate arrays.
+
+    :param ret_series (np.ndarray): Returns for one stock (n_dates,)
+    :param vol_series (np.ndarray): Volatility for one stock (n_dates,)
+    :param T (int): Window length
+    :param stride (int): Step between windows
+    :param max_zero_frac (float): Maximum fraction of zero-return days
+
+    :return count (int): Number of valid windows
+    """
+    n_dates = len(ret_series)
+    if n_dates < T:
+        return 0
+
+    # Create all windows via stride tricks (no-copy view)
+    ret_all = sliding_window_view(ret_series, T)[::stride]
+    vol_all = sliding_window_view(vol_series, T)[::stride]
+    n_windows = ret_all.shape[0]
+
+    if n_windows == 0:
+        return 0
+
+    # Filter 1: NaN fraction (>5% NaN in ret OR vol → skip)
+    ret_nan_frac = np.isnan(ret_all).sum(axis=1) / T
+    vol_nan_frac = np.isnan(vol_all).sum(axis=1) / T
+    nan_ok = (ret_nan_frac <= 0.05) & (vol_nan_frac <= 0.05)
+
+    if not nan_ok.any():
+        return 0
+
+    # Apply NaN filter to get cleaned returns for zero-frac check
+    ret_wins = ret_all[nan_ok]
+    ret_clean = np.nan_to_num(ret_wins, nan=0.0)
+
+    # Filter 2: zero-return fraction (>max_zero_frac → skip)
+    zero_frac = (np.abs(ret_clean) < 1e-12).sum(axis=1) / T
+    zero_ok = zero_frac <= max_zero_frac
+
+    return int(zero_ok.sum())
+
+
 def create_windows(
     returns_df: pd.DataFrame,
     vol_df: pd.DataFrame,
@@ -66,6 +118,9 @@ def create_windows(
     4. Z-score volatility PER WINDOW: ṽ = (v - μ_v) / max(σ_v, σ_min)
     5. Stack → tensor (T, F=2): [r̃, ṽ]
 
+    Memory optimization: Uses two-pass algorithm to pre-allocate output arrays,
+    avoiding memory peak from list accumulation + concatenation (~16GB savings).
+
     :param returns_df (pd.DataFrame): Log-returns (n_dates × n_stocks)
     :param vol_df (pd.DataFrame): Rolling 21-day realized vol (n_dates × n_stocks)
     :param stock_ids (list[int]): List of permno IDs to create windows for
@@ -84,26 +139,63 @@ def create_windows(
         f"returns_df shape {returns_df.shape} != vol_df shape {vol_df.shape}"
     )
 
-    all_windows: list[np.ndarray] = []
-    all_raw_returns: list[np.ndarray] = []
-    metadata_records: list[dict[str, object]] = []
-
     dates = returns_df.index
+
+    # =========================================================================
+    # PASS 1: Count total valid windows per stock (memory-efficient)
+    # =========================================================================
+    window_counts: dict[int, int] = {}
+    total_windows = 0
 
     for permno in stock_ids:
         if permno not in returns_df.columns or permno not in vol_df.columns:
             continue
 
-        ret_series = np.asarray(returns_df[permno].values, dtype=np.float64)
-        vol_series = np.asarray(vol_df[permno].values, dtype=np.float64)
+        ret_series = np.asarray(returns_df[permno].values, dtype=np.float32)
+        vol_series = np.asarray(vol_df[permno].values, dtype=np.float32)
+
+        count = _count_valid_windows_for_stock(
+            ret_series, vol_series, T, stride, max_zero_frac,
+        )
+        if count > 0:
+            window_counts[permno] = count
+            total_windows += count
+
+    # Early exit if no valid windows
+    if total_windows == 0:
+        windows = torch.zeros(0, T, 2, dtype=torch.float32)
+        raw_returns = torch.zeros(0, T, dtype=torch.float32)
+        metadata = pd.DataFrame(columns=["stock_id", "start_date", "end_date"])
+        return windows, metadata, raw_returns
+
+    # =========================================================================
+    # PASS 2: Pre-allocate and fill arrays (no list accumulation)
+    # =========================================================================
+    windows_arr = np.empty((total_windows, T, 2), dtype=np.float32)
+    raw_returns_arr = np.empty((total_windows, T), dtype=np.float32)
+
+    # Pre-allocate metadata arrays (instead of list of dicts - ~2.1GB savings)
+    # Store indices into dates array, then lookup at the end
+    meta_stock_ids = np.empty(total_windows, dtype=np.int64)
+    meta_start_idx = np.empty(total_windows, dtype=np.int64)
+    meta_end_idx = np.empty(total_windows, dtype=np.int64)
+
+    current_idx = 0
+
+    for permno in stock_ids:
+        if permno not in window_counts:
+            continue
+
+        ret_series = np.asarray(returns_df[permno].values, dtype=np.float32)
+        vol_series = np.asarray(vol_df[permno].values, dtype=np.float32)
 
         n_dates = len(ret_series)
         if n_dates < T:
             continue
 
-        # Create all windows at once via stride tricks (no-copy view)
-        ret_all = sliding_window_view(ret_series, T)[::stride]  # (n_win, T)
-        vol_all = sliding_window_view(vol_series, T)[::stride]  # (n_win, T)
+        # Create all windows via stride tricks (no-copy view)
+        ret_all = sliding_window_view(ret_series, T)[::stride]
+        vol_all = sliding_window_view(vol_series, T)[::stride]
         n_windows = ret_all.shape[0]
 
         if n_windows == 0:
@@ -121,8 +213,9 @@ def create_windows(
         if not nan_ok.any():
             continue
 
-        ret_wins = ret_all[nan_ok].copy()
-        vol_wins = vol_all[nan_ok].copy()
+        # Boolean indexing already returns a copy - no explicit .copy() needed
+        ret_wins = ret_all[nan_ok]
+        vol_wins = vol_all[nan_ok]
         win_starts = start_indices[nan_ok]
         win_ends = end_indices[nan_ok]
 
@@ -142,6 +235,7 @@ def create_windows(
         vol_clean = vol_clean[zero_ok]
         win_starts = win_starts[zero_ok]
         win_ends = win_ends[zero_ok]
+        n_valid = len(win_starts)
 
         # --- Z-score per feature per window (CONV-02) ---
         ret_mu = ret_clean.mean(axis=1, keepdims=True)
@@ -159,39 +253,36 @@ def create_windows(
 
         # Validate z-score normalization (mean≈0, std≈1)
         # Only validate if original data had variance (skip constant data)
-        # Check on flattened array (all windows concatenated)
         if float(ret_sigma.mean()) > sigma_min * 10:
             assert_z_score_normalized(ret_zscore.flatten(), "z_scored_returns")
         if float(vol_sigma.mean()) > sigma_min * 10:
             assert_z_score_normalized(vol_zscore.flatten(), "z_scored_volatility")
 
-        # Store raw returns before z-scoring (for co-movement Spearman)
-        all_raw_returns.append(ret_clean.astype(np.float32))
+        # Fill pre-allocated arrays (no list accumulation)
+        # Note: ret_clean/ret_zscore/vol_zscore already float32 from lines 154-155
+        end_idx = current_idx + n_valid
+        raw_returns_arr[current_idx:end_idx, :] = ret_clean
+        windows_arr[current_idx:end_idx, :, 0] = ret_zscore
+        windows_arr[current_idx:end_idx, :, 1] = vol_zscore
 
-        # Stack features: (n_valid, T, F=2)
-        stacked = np.stack([ret_zscore, vol_zscore], axis=-1).astype(np.float32)
-        all_windows.append(stacked)
+        # Fill metadata arrays (instead of list append - ~2.1GB savings)
+        meta_stock_ids[current_idx:end_idx] = permno
+        meta_start_idx[current_idx:end_idx] = win_starts
+        meta_end_idx[current_idx:end_idx] = win_ends
 
-        # Build metadata for surviving windows
-        for i in range(len(win_starts)):
-            metadata_records.append({
-                "stock_id": permno,
-                "start_date": dates[win_starts[i]],
-                "end_date": dates[win_ends[i]],
-            })
+        current_idx = end_idx
 
-    if not all_windows:
-        windows = torch.zeros(0, T, 2, dtype=torch.float32)
-        raw_returns = torch.zeros(0, T, dtype=torch.float32)
-        metadata = pd.DataFrame(
-            columns=["stock_id", "start_date", "end_date"]
-        )
-        return windows, metadata, raw_returns
+    # Convert to tensors (no concatenation needed - arrays already contiguous)
+    windows = torch.from_numpy(windows_arr[:current_idx])
+    raw_returns = torch.from_numpy(raw_returns_arr[:current_idx])
 
-    # Concatenate all stocks: (N_total, T, F)
-    windows = torch.from_numpy(np.concatenate(all_windows, axis=0))
-    raw_returns = torch.from_numpy(np.concatenate(all_raw_returns, axis=0))
-    metadata = pd.DataFrame(metadata_records)
+    # Build metadata DataFrame from pre-allocated arrays (not list of dicts)
+    # Lookup dates using stored indices
+    metadata = pd.DataFrame({
+        "stock_id": meta_stock_ids[:current_idx],
+        "start_date": dates[meta_start_idx[:current_idx]],
+        "end_date": dates[meta_end_idx[:current_idx]],
+    })
 
     # Final tensor validation
     assert_no_nan_tensor(windows, "windows")

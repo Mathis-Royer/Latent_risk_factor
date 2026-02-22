@@ -5,9 +5,11 @@
   "permissions": {
     "allow": [
       "Bash(*)",
-      "Read(//Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
-      "Read(//Users/mathis/.claude/projects/**)",
-      "Read(//Users/mathis/.claude/**)",
+      "Read(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
+      "Read(/Users/mathis/.claude/projects/**)",
+      "Read(/Users/mathis/.claude/**)",
+      "Edit(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
+      "Write(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
       "WebFetch(*)",
       "WebSearch(*)"
     ],

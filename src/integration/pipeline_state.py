@@ -30,26 +30,70 @@ logger = logging.getLogger(__name__)
 # JSON serialization helpers
 # ---------------------------------------------------------------------------
 
-def _serialize_for_json(obj: Any) -> Any:
+def _serialize_for_json(
+    obj: Any,
+    _depth: int = 0,
+    _max_depth: int = 10,
+) -> Any:
     """
     Recursively convert numpy types and other non-JSON-serializable objects.
 
+    Includes size guards to prevent memory explosion when serializing large
+    structures (arrays with >100k elements, DataFrames with >10k cells, etc.).
+    Large objects are replaced with descriptive placeholders instead of
+    being fully serialized.
+
     :param obj (Any): Object to serialize
+    :param _depth (int): Current recursion depth (internal)
+    :param _max_depth (int): Maximum recursion depth before truncation
 
     :return serialized (Any): JSON-safe version
     """
+    # Depth guard: prevent infinite recursion and excessive nesting
+    if _depth > _max_depth:
+        return "<truncated: max depth exceeded>"
+
+    # Large array guard: >100k elements would create massive JSON
     if isinstance(obj, np.ndarray):
+        if obj.size > 100_000:
+            return f"<array shape={obj.shape} dtype={obj.dtype} size={obj.size}>"
         return obj.tolist()
+
     if isinstance(obj, np.generic):
         return obj.item()
-    if isinstance(obj, dict):
-        return {k: _serialize_for_json(v) for k, v in obj.items()}
+
+    # Large DataFrame guard: >10k cells would explode in JSON
+    try:
+        import pandas as pd
+        if isinstance(obj, pd.DataFrame):
+            if obj.size > 10_000:
+                return f"<DataFrame shape={obj.shape} columns={list(obj.columns)[:5]}...>"
+            return obj.to_dict("records")
+        if isinstance(obj, pd.Series):
+            if len(obj) > 10_000:
+                return f"<Series len={len(obj)} dtype={obj.dtype}>"
+            return obj.tolist()
+    except ImportError:
+        pass
+
+    # Large list guard: >10k items
     if isinstance(obj, (list, tuple)):
-        return [_serialize_for_json(v) for v in obj]
+        if len(obj) > 10_000:
+            return f"<list len={len(obj)}>"
+        return [_serialize_for_json(v, _depth + 1, _max_depth) for v in obj]
+
+    if isinstance(obj, dict):
+        return {
+            k: _serialize_for_json(v, _depth + 1, _max_depth)
+            for k, v in obj.items()
+        }
+
     if hasattr(obj, "isoformat"):  # datetime-like
         return obj.isoformat()
+
     if not isinstance(obj, (str, int, float, bool, type(None))):
         return str(obj)
+
     return obj
 
 
@@ -682,12 +726,36 @@ class PipelineStateManager:
         stage_scalars: dict[str, float | int | str] = {}
 
         if stage == PipelineStage.VAE_TRAINED:
-            # Training results
+            # Training results: keep only summary scalars to avoid memory explosion
+            # (full history contains per-dim KL arrays + log_var_stats for ~150 epochs)
             fit_result = state_bag.get("fit_result")
             if fit_result is not None:
-                # Filter out non-serializable model reference
-                fr_clean = {k: v for k, v in fit_result.items() if k != "model"}
-                stage_json["fit_result"] = fr_clean
+                # Summary scalars only - no large arrays
+                fr_summary = {
+                    "best_epoch": fit_result.get("best_epoch"),
+                    "best_val_elbo": fit_result.get("best_val_elbo"),
+                    "train_elbo": fit_result.get("train_elbo"),
+                    "overfit_flag": fit_result.get("overfit_flag"),
+                    "overfit_ratio": fit_result.get("overfit_ratio"),
+                }
+                stage_json["fit_result"] = fr_summary
+
+                # Save compact training curve (scalars only) for plotting
+                # Excludes kl_per_dim, log_var_stats which are arrays
+                history = fit_result.get("history", [])
+                if history:
+                    compact_history = [
+                        {
+                            "epoch": h.get("epoch"),
+                            "train_loss": h.get("train_loss"),
+                            "val_elbo": h.get("val_elbo"),
+                            "AU": h.get("AU"),
+                            "sigma_sq": h.get("sigma_sq"),
+                            "learning_rate": h.get("learning_rate"),
+                        }
+                        for h in history
+                    ]
+                    stage_json["training_curve"] = compact_history
 
             # Build params and VAE info
             if "build_params" in state_bag:

@@ -449,6 +449,8 @@ def factor_quality_diagnostics(
                 e,
             )
             k_bai_ng_direct = None
+        # Memory cleanup: R_mat and returns_centered no longer needed (~72MB savings)
+        del returns_centered
 
     # Onatski test on eigenvalues
     # Use T_returns (from filtered returns) for consistent dimensions
@@ -505,6 +507,7 @@ def risk_model_diagnostics(
     returns_oos: pd.DataFrame,
     w_vae: np.ndarray,
     inferred_stock_ids: list[int],
+    returns: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     Analyze risk model quality using realized vs predicted comparisons.
@@ -513,6 +516,7 @@ def risk_model_diagnostics(
     :param returns_oos (pd.DataFrame): Out-of-sample returns
     :param w_vae (np.ndarray): VAE portfolio weights
     :param inferred_stock_ids (list[int]): Stock IDs matching weight vector
+    :param returns (pd.DataFrame | None): Full returns for train_returns reconstruction
 
     :return diag (dict): Risk model diagnostic metrics
     """
@@ -607,7 +611,17 @@ def risk_model_diagnostics(
     z_hat: np.ndarray = state_bag.get("z_hat", np.array([]))
     valid_dates: list[str] = state_bag.get("valid_dates", [])
     universe_snapshots: dict[str, list[int]] = state_bag.get("universe_snapshots", {})
-    train_returns: pd.DataFrame | None = state_bag.get("train_returns")
+
+    # Memory optimization: train_returns is reconstructed from returns + date range
+    # instead of storing the full DataFrame in state_bag (~500MB savings)
+    train_returns: pd.DataFrame | None = None
+    train_date_range = state_bag.get("train_date_range", {})
+    if returns is not None and train_date_range:
+        train_start = train_date_range.get("start")
+        train_end = train_date_range.get("end")
+        if train_start is not None and train_end is not None:
+            train_returns = returns.loc[train_start:train_end]
+
     if (
         B_A_by_date
         and z_hat.ndim == 2
@@ -1771,7 +1785,7 @@ def collect_diagnostics(
     risk = _safe_diagnostic(
         "risk_model_diagnostics",
         risk_model_diagnostics,
-        state_bag, returns_oos, w_vae, inferred_stock_ids,
+        state_bag, returns_oos, w_vae, inferred_stock_ids, returns,
     )
 
     logger.info("Collecting portfolio diagnostics...")

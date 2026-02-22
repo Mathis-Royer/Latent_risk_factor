@@ -606,13 +606,17 @@ def phase_prices(
             to_download.append(ticker)
 
     total_work = len(to_download) + len(to_update)
+    total_tickers = len(tickers)
+    # "Downloaded" = tickers with data (already_done + to_update); "to download" = truly new
+    already_downloaded = already_done + len(to_update)
     logger.info(
-        "Tickers: %d to download, %d to update, %d already complete",
+        "Tickers: %d new to download, %d to update, %d up-to-date | %d/%d downloaded (%.1f%%)",
         len(to_download), len(to_update), already_done,
+        already_downloaded, total_tickers, 100.0 * already_downloaded / total_tickers,
     )
 
     if total_work == 0:
-        logger.info("All tickers up to date. Nothing to download.")
+        logger.info("All %d tickers up to date. Nothing to download.", total_tickers)
         return
 
     n_keys = key_rotator.active_count
@@ -625,7 +629,8 @@ def phase_prices(
     # Process: new downloads first, then updates
     all_work = [(t, "full") for t in to_download] + [(t, "update") for t in to_update]
 
-    processed = 0
+    n_downloaded = 0  # New tickers downloaded this session
+    n_updated = 0     # Existing tickers updated this session
     global_retries_used = 0
 
     for i, (ticker, mode) in enumerate(all_work):
@@ -640,9 +645,12 @@ def phase_prices(
             # All keys exhausted (rate-limited)
             if wait_on_rate_limit:
                 wait = BATCH_SLEEP_SECONDS
+                total_downloaded = already_downloaded + n_downloaded
                 logger.info(
-                    "All %d keys exhausted. Waiting %.0f minutes (%d/%d done)...",
-                    n_keys, wait / 60, i, total_work,
+                    "All %d keys exhausted. Waiting %.0f minutes "
+                    "(%d/%d downloaded, %.1f%% | +%d new, +%d updated)...",
+                    n_keys, wait / 60, total_downloaded, total_tickers,
+                    100.0 * total_downloaded / total_tickers, n_downloaded, n_updated,
                 )
                 time.sleep(wait)
                 key_rotator.reset_rate_limits()
@@ -651,10 +659,12 @@ def phase_prices(
                     logger.error("No keys available after cooldown. Stopping.")
                     break
             else:
+                total_downloaded = already_downloaded + n_downloaded
                 logger.info(
-                    "All %d keys exhausted (%d/%d done). "
-                    "Re-run to resume from where it stopped.",
-                    n_keys, i, total_work,
+                    "All %d keys exhausted (%d/%d downloaded, %.1f%% | +%d new, +%d updated). "
+                    "Re-run to resume.",
+                    n_keys, total_downloaded, total_tickers,
+                    100.0 * total_downloaded / total_tickers, n_downloaded, n_updated,
                 )
                 break
 
@@ -684,17 +694,23 @@ def phase_prices(
             if retry_key is None:
                 if wait_on_rate_limit:
                     wait = BATCH_SLEEP_SECONDS
+                    total_downloaded = already_downloaded + n_downloaded
                     logger.info(
-                        "All keys rate-limited. Waiting %.0f minutes (%d/%d done)...",
-                        wait / 60, i, total_work,
+                        "All keys rate-limited. Waiting %.0f minutes "
+                        "(%d/%d downloaded, %.1f%% | +%d new, +%d updated)...",
+                        wait / 60, total_downloaded, total_tickers,
+                        100.0 * total_downloaded / total_tickers, n_downloaded, n_updated,
                     )
                     time.sleep(wait)
                     key_rotator.reset_rate_limits()
                     retry_key = key_rotator.next_key()
                 if retry_key is None:
+                    total_downloaded = already_downloaded + n_downloaded
                     logger.info(
-                        "All keys exhausted (%d/%d done). Re-run to resume.",
-                        i, total_work,
+                        "All keys exhausted (%d/%d downloaded, %.1f%% | +%d new, +%d updated). "
+                        "Re-run to resume.",
+                        total_downloaded, total_tickers,
+                        100.0 * total_downloaded / total_tickers, n_downloaded, n_updated,
                     )
                     break
             if retry_key is not None:
@@ -722,7 +738,10 @@ def phase_prices(
         # Process result
         if df is None or df.empty:
             progress.mark_complete(ticker, today)
-            processed += 1
+            if mode == "update":
+                n_updated += 1
+            else:
+                n_downloaded += 1
             continue
 
         # Save/append to per-ticker Parquet
@@ -738,15 +757,25 @@ def phase_prices(
 
         last_date_str = str(df["date"].max().date())
         progress.mark_complete(ticker, last_date_str)
-        processed += 1
+        if mode == "update":
+            n_updated += 1
+        else:
+            n_downloaded += 1
 
         if (i + 1) % 10 == 0:
+            total_downloaded = already_downloaded + n_downloaded
             logger.info(
-                "Progress: %d/%d tickers processed (%s) [%d keys available]",
-                i + 1, total_work, ticker, key_rotator.available_count,
+                "Progress: %d/%d downloaded (%.1f%%) | +%d new, +%d updated | %s [%d keys]",
+                total_downloaded, total_tickers, 100.0 * total_downloaded / total_tickers,
+                n_downloaded, n_updated, ticker, key_rotator.available_count,
             )
 
-    logger.info("Price download complete: %d tickers processed", processed)
+    total_downloaded = already_downloaded + n_downloaded
+    logger.info(
+        "Price download complete: %d/%d downloaded (%.1f%%) | session: +%d new, +%d updated",
+        total_downloaded, total_tickers, 100.0 * total_downloaded / total_tickers,
+        n_downloaded, n_updated,
+    )
 
 
 def phase_merge(

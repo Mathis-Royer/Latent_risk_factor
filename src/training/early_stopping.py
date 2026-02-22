@@ -95,6 +95,8 @@ class EarlyStopping:
         """
         Restore best checkpoint weights to the model.
 
+        After restoring, the stored copy is cleared to free memory (~20MB).
+
         :param model (nn.Module): Model to restore
         """
         if self.best_state is not None:
@@ -102,3 +104,5 @@ class EarlyStopping:
                 "Checkpoint keys mismatch: model architecture changed since best checkpoint"
             )
             model.load_state_dict(self.best_state)
+            # Clear stored copy to free memory
+            self.best_state = None

@@ -631,3 +631,67 @@ class TestTrainerOutput:
                 f"best_val_elbo={result['best_val_elbo']:.6f} should be <= "
                 f"min(val_losses)={min(val_losses):.6f}"
             )
+
+
+class TestTrainerCleanup:
+    """Test the cleanup() method for memory management."""
+
+    def test_cleanup_clears_early_stopping_state(
+        self, small_model: tuple[VAEModel, dict], small_data: tuple[torch.Tensor, torch.Tensor]
+    ) -> None:
+        """cleanup() should clear early_stopping.best_state."""
+        model, _ = small_model
+        train_windows, val_windows = small_data
+
+        trainer = VAETrainer(model, loss_mode="A", device=torch.device("cpu"))
+
+        # Run fit to create a best_state checkpoint
+        trainer.fit(train_windows, val_windows, max_epochs=2, batch_size=10)
+
+        # best_state should already be None after restore_best is called in fit()
+        # but let's set it manually to test cleanup()
+        trainer.early_stopping.best_state = {"test": torch.zeros(1)}
+
+        # Cleanup should clear it
+        trainer.cleanup()
+
+        assert trainer.early_stopping.best_state is None
+
+    def test_cleanup_closes_tensorboard(
+        self, small_model: tuple[VAEModel, dict]
+    ) -> None:
+        """cleanup() should close TensorBoard writer."""
+        model, _ = small_model
+        trainer = VAETrainer(model, loss_mode="A", device=torch.device("cpu"))
+
+        trainer.cleanup()
+
+        # TensorBoard writer should be None after cleanup
+        assert trainer._tb_writer is None
+
+    def test_cleanup_clears_scaler(
+        self, small_model: tuple[VAEModel, dict]
+    ) -> None:
+        """cleanup() should set GradScaler to None."""
+        model, _ = small_model
+        trainer = VAETrainer(model, loss_mode="A", device=torch.device("cpu"))
+
+        trainer.cleanup()
+
+        # GradScaler should be None after cleanup
+        assert trainer.scaler is None
+
+    def test_cleanup_idempotent(
+        self, small_model: tuple[VAEModel, dict]
+    ) -> None:
+        """cleanup() should be safe to call multiple times."""
+        model, _ = small_model
+        trainer = VAETrainer(model, loss_mode="A", device=torch.device("cpu"))
+
+        # Call cleanup multiple times - should not raise
+        trainer.cleanup()
+        trainer.cleanup()
+        trainer.cleanup()
+
+        # Should still work
+        assert trainer.early_stopping.best_state is None
