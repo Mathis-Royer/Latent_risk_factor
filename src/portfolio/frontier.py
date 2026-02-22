@@ -7,7 +7,13 @@ determines the operating point.
 
 Supports optional expected return signal μ (e.g. cross-sectional momentum).
 
+Two-phase optimization with early stopping:
+- Phase 1: Coarse grid with early stopping when ENB target reached
+- Phase 2: Refinement around the elbow (conditional)
+
 Reference: ISD Section MOD-008 — Sub-task 5.
+           Meucci (2009), "Managing Diversification".
+           Satopaa et al. (2011), "Finding a 'Kneedle' in a Haystack".
 """
 
 import logging
@@ -39,21 +45,41 @@ def compute_variance_entropy_frontier(
     tau_max: float = 0.30,
     is_first: bool = True,
     n_starts: int = 5,
+    max_iter: int = 100,
     seed: int = 42,
     entropy_eps: float = 1e-30,
     mu: np.ndarray | None = None,
     idio_weight: float = 0.2,
     normalize_entropy_gradient: bool = True,
     budget: np.ndarray | None = None,
+    # Two-phase early stopping parameters
+    target_enb: float = 0.0,
+    coarse_grid: list[float] | None = None,
+    early_stop_patience: int = 2,
+    n_starts_after_target: int = 2,
+    max_iter_after_target: int = 50,
+    refine_enabled: bool = True,
+    refine_points: int = 3,
+    n_starts_refine: int = 3,
+    max_iter_refine: int = 75,
 ) -> tuple[pd.DataFrame, dict[float, np.ndarray]]:
     """
-    Compute variance-entropy frontier for a grid of α values.
+    Two-phase variance-entropy frontier computation with early stopping.
+
+    Phase 1: Coarse grid with early stopping
+        - Full solver quality until ENB target is reached
+        - Reduced quality (fewer starts/iterations) after target
+        - Stop if variance increases for `early_stop_patience` consecutive points
+
+    Phase 2: Refinement around the elbow (conditional)
+        - Only if target was reached and best point is not at grid boundary
+        - Adds intermediate points around the best alpha found
 
     :param Sigma_assets (np.ndarray): Asset covariance (n, n)
     :param B_prime (np.ndarray): Rotated exposures (n, AU)
     :param eigenvalues (np.ndarray): Principal eigenvalues (AU,)
     :param D_eps (np.ndarray): Idiosyncratic variances (n,)
-    :param alpha_grid (list[float] | None): Grid of α values
+    :param alpha_grid (list[float] | None): Legacy grid (used if coarse_grid empty)
     :param lambda_risk (float): Risk aversion
     :param w_max (float): Maximum weight
     :param w_min (float): Minimum active weight
@@ -65,40 +91,81 @@ def compute_variance_entropy_frontier(
     :param delta_bar (float): Turnover threshold
     :param tau_max (float): Maximum one-way turnover
     :param is_first (bool): First rebalancing flag
-    :param n_starts (int): Multi-start count
+    :param n_starts (int): Multi-start count for Phase 1 pre-target
+    :param max_iter (int): Max SCA iterations for Phase 1 pre-target
     :param seed (int): Random seed
     :param entropy_eps (float): Numerical stability
     :param mu (np.ndarray | None): Expected return signal (n,)
+    :param idio_weight (float): Idiosyncratic entropy weight
+    :param normalize_entropy_gradient (bool): Normalize entropy gradient
+    :param budget (np.ndarray | None): Factor risk budget
+    :param target_enb (float): Target ENB for early stopping (0 = disabled)
+    :param coarse_grid (list[float] | None): Phase 1 coarse grid
+    :param early_stop_patience (int): Stop after N variance increases
+    :param n_starts_after_target (int): Reduced starts post-target
+    :param max_iter_after_target (int): Reduced SCA iterations post-target
+    :param refine_enabled (bool): Enable Phase 2 refinement
+    :param refine_points (int): Number of refinement points
+    :param n_starts_refine (int): Starts for Phase 2
+    :param max_iter_refine (int): SCA iterations for Phase 2
 
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
     :return weights_by_alpha (dict[float, np.ndarray]): Optimal weights for each α
     """
-    if alpha_grid is None:
-        alpha_grid = [0.0, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+    # Determine grid to use: coarse_grid (new) or alpha_grid (legacy)
+    if coarse_grid is not None and len(coarse_grid) > 0:
+        working_grid = coarse_grid
+    elif alpha_grid is not None:
+        working_grid = alpha_grid
+    else:
+        working_grid = [0.001, 0.01, 0.1, 1.0, 5.0]
 
-    # Sort ascending so warm-start flows from low-alpha to high-alpha
-    sorted_grid = sorted(alpha_grid)
+    # Sort ascending for warm-start flow
+    sorted_grid = sorted(working_grid)
+    n_alphas = len(sorted_grid)
+
+    # Early stopping state
+    early_stop_enabled = target_enb > 0.0
+    target_reached = False
+    variance_increase_count = 0
+    min_variance_after_target = float("inf")
+    best_qualifying_idx = -1
+    early_stopped = False
 
     results: list[dict[str, float]] = []
     weights_by_alpha: dict[float, np.ndarray] = {}
-    n_alphas = len(sorted_grid)
     prev_w: np.ndarray | None = None
 
-    for idx, alpha in enumerate(sorted_grid):
-        logger.info("    Frontier alpha %d/%d (alpha=%.3f)...", idx + 1, n_alphas, alpha)
+    logger.info(
+        "Frontier Phase 1: %d coarse points (early_stop=%s, target_enb=%.2f)",
+        n_alphas, early_stop_enabled, target_enb,
+    )
 
-        # Warm-start: use previous alpha's solution as an additional starting
-        # point. Solutions at adjacent alpha values are typically close, so
-        # this reduces the number of SCA iterations needed.
+    # ======================= PHASE 1: Coarse grid =======================
+    for idx, alpha in enumerate(sorted_grid):
+        # Adaptive solver quality
+        if early_stop_enabled and target_reached:
+            current_n_starts = n_starts_after_target
+            current_max_iter = max_iter_after_target
+        else:
+            current_n_starts = n_starts
+            current_max_iter = max_iter
+
+        logger.info(
+            "    Frontier alpha %d/%d (α=%.4g, starts=%d, iter=%d)...",
+            idx + 1, n_alphas, alpha, current_n_starts, current_max_iter,
+        )
+
         warm_start_w = prev_w
 
-        w_opt, f_opt, H_opt, _ = multi_start_optimize(
+        w_opt, _f_opt, _H_opt, _ = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
             D_eps=D_eps,
             alpha=alpha,
-            n_starts=n_starts,
+            n_starts=current_n_starts,
+            max_iter=current_max_iter,
             seed=seed + idx,
             lambda_risk=lambda_risk,
             w_max=w_max,
@@ -123,18 +190,17 @@ def compute_variance_entropy_frontier(
         weights_by_alpha[alpha] = w_opt.copy()
 
         variance = float(w_opt @ Sigma_assets @ w_opt)
-        entropy = compute_entropy_only(w_opt, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
-                                       idio_weight=idio_weight)
-        # Factor-only entropy for alpha selection (Meucci 2009):
-        # ENB target must apply to H_factor alone, not the combined
-        # two-layer entropy.  The idiosyncratic layer (n >> AU terms)
-        # trivially inflates ENB, making the target too easy to reach
-        # and collapsing the portfolio to near min-variance.
+        entropy = compute_entropy_only(
+            w_opt, B_prime, eigenvalues, entropy_eps,
+            D_eps=D_eps, idio_weight=idio_weight,
+        )
+        # Factor-only entropy for ENB target (Meucci 2009)
         entropy_factor = compute_entropy_only(
             w_opt, B_prime, eigenvalues, entropy_eps,
             D_eps=None, idio_weight=0.0,
         )
         n_active = int(np.sum(w_opt > w_min))
+        enb_factor = np.exp(entropy_factor)
 
         results.append({
             "alpha": alpha,
@@ -144,7 +210,140 @@ def compute_variance_entropy_frontier(
             "n_active": float(n_active),
         })
 
-    return pd.DataFrame(results), weights_by_alpha
+        # Check if ENB target reached
+        if early_stop_enabled and enb_factor >= target_enb:
+            if not target_reached:
+                target_reached = True
+                min_variance_after_target = variance
+                best_qualifying_idx = idx
+                logger.info(
+                    "  Phase 1: ENB target %.2f reached at α=%.4g "
+                    "(ENB_factor=%.2f, Var=%.4e)",
+                    target_enb, alpha, enb_factor, variance,
+                )
+            elif variance < min_variance_after_target:
+                # Found a better point (lower variance, still qualifying)
+                min_variance_after_target = variance
+                best_qualifying_idx = idx
+
+        # Early stopping check (variance increasing after target reached)
+        if early_stop_enabled and target_reached:
+            # Use 0.1% tolerance to avoid stopping on numerical noise
+            if variance > min_variance_after_target * 1.001:
+                variance_increase_count += 1
+            else:
+                variance_increase_count = 0
+
+            if variance_increase_count >= early_stop_patience:
+                logger.info(
+                    "  Phase 1 early stop at α %d/%d: variance increased %d times "
+                    "(min_var=%.4e at idx=%d)",
+                    idx + 1, n_alphas, variance_increase_count,
+                    min_variance_after_target, best_qualifying_idx,
+                )
+                early_stopped = True
+                break
+
+    # ======================= PHASE 2: Refinement =======================
+    # Conditions for refinement:
+    # 1. refine_enabled is True
+    # 2. Target was reached (we have a best_qualifying_idx)
+    # 3. Best point is not at grid boundaries (can interpolate neighbors)
+    need_refinement = (
+        refine_enabled
+        and target_reached
+        and best_qualifying_idx > 0
+        and best_qualifying_idx < len(sorted_grid) - 1
+    )
+
+    if need_refinement:
+        alpha_low = sorted_grid[best_qualifying_idx - 1]
+        alpha_best = sorted_grid[best_qualifying_idx]
+        alpha_high = sorted_grid[best_qualifying_idx + 1] if best_qualifying_idx + 1 < len(sorted_grid) else alpha_best
+
+        # Generate refinement points (log-uniform between neighbors)
+        refine_grid = list(np.geomspace(alpha_low, alpha_high, refine_points + 2)[1:-1])
+        # Remove any duplicates with existing grid
+        refine_grid = [a for a in refine_grid if a not in weights_by_alpha]
+
+        if refine_grid:
+            logger.info(
+                "  Phase 2: Refining with %d points in [%.4g, %.4g]",
+                len(refine_grid), alpha_low, alpha_high,
+            )
+
+            for alpha in refine_grid:
+                logger.info(
+                    "    Refinement α=%.4g (starts=%d, iter=%d)...",
+                    alpha, n_starts_refine, max_iter_refine,
+                )
+
+                w_opt, _f_opt, _H_opt, _ = multi_start_optimize(
+                    Sigma_assets=Sigma_assets,
+                    B_prime=B_prime,
+                    eigenvalues=eigenvalues,
+                    D_eps=D_eps,
+                    alpha=alpha,
+                    n_starts=n_starts_refine,
+                    max_iter=max_iter_refine,
+                    seed=seed + len(sorted_grid) + len(refine_grid),
+                    lambda_risk=lambda_risk,
+                    w_max=w_max,
+                    w_min=w_min,
+                    w_bar=w_bar,
+                    phi=phi,
+                    w_old=w_old,
+                    kappa_1=kappa_1,
+                    kappa_2=kappa_2,
+                    delta_bar=delta_bar,
+                    tau_max=tau_max,
+                    is_first=is_first,
+                    entropy_eps=entropy_eps,
+                    mu=mu,
+                    warm_start_w=prev_w,
+                    idio_weight=idio_weight,
+                    normalize_entropy_gradient=normalize_entropy_gradient,
+                    budget=budget,
+                )
+
+                weights_by_alpha[alpha] = w_opt.copy()
+
+                variance = float(w_opt @ Sigma_assets @ w_opt)
+                entropy = compute_entropy_only(
+                    w_opt, B_prime, eigenvalues, entropy_eps,
+                    D_eps=D_eps, idio_weight=idio_weight,
+                )
+                entropy_factor = compute_entropy_only(
+                    w_opt, B_prime, eigenvalues, entropy_eps,
+                    D_eps=None, idio_weight=0.0,
+                )
+                n_active = int(np.sum(w_opt > w_min))
+
+                results.append({
+                    "alpha": alpha,
+                    "variance": variance,
+                    "entropy": entropy,
+                    "entropy_factor": entropy_factor,
+                    "n_active": float(n_active),
+                })
+
+    # Summary logging
+    n_computed = len(results)
+    n_full_grid = len(working_grid)
+    if early_stopped:
+        logger.info(
+            "Frontier complete: %d/%d points computed (early stopped), "
+            "saved %.0f%% solver time",
+            n_computed, n_full_grid,
+            100.0 * (1.0 - n_computed / n_full_grid) if n_full_grid > 0 else 0.0,
+        )
+    else:
+        logger.info("Frontier complete: %d points computed", n_computed)
+
+    # Sort results by alpha for consistent output
+    df = pd.DataFrame(results).sort_values("alpha").reset_index(drop=True)
+
+    return df, weights_by_alpha
 
 
 def select_operating_alpha(

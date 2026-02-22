@@ -581,6 +581,10 @@ def run_diagnostic(
     logger.info("")
     logger.info("Report: %s", os.path.join(active_output_dir, "diagnostic_report.md"))
 
+    # Create symlink from legacy path to this run for backwards compatibility
+    # This ensures `results/diagnostic/` always points to the latest run
+    run_manager.create_latest_symlink("results/diagnostic")
+
     # Return dict with diagnostics and run folder info
     return {
         "diagnostics": diagnostics,

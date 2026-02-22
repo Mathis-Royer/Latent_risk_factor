@@ -1173,6 +1173,10 @@ class FullPipeline:
                 n_success, n_fallback, n_failed,
             )
 
+            # Save benchmark weights for comparison analysis
+            if benchmark_weights:
+                state_manager.save_benchmark_weights(benchmark_weights)
+
         # --- Step 7: Generate report ---
         vae_df = aggregate_fold_metrics(self.vae_results)
         bench_dfs: dict[str, pd.DataFrame] = {
@@ -2370,6 +2374,57 @@ class FullPipeline:
             _state_bag["train_date_range"] = {"start": train_start, "end": train_end}
             _state_bag["shrinkage_intensity"] = shrinkage_intensity
 
+            # NEW: PCA loadings for direct comparison with VAE exposures
+            # Compute PCA on training returns (same data as VAE) for factor method comparison
+            try:
+                from sklearn.decomposition import PCA
+                train_returns_for_pca = returns.loc[train_start:train_end]
+                cols_available = [c for c in inferred_stock_ids if c in train_returns_for_pca.columns]
+                if len(cols_available) >= 10:
+                    ret_pca = train_returns_for_pca[cols_available].dropna(axis=0, how="all")
+                    ret_pca = ret_pca.fillna(0.0)  # Fill remaining NaN
+                    if ret_pca.shape[0] >= 50:
+                        n_pca_components = min(AU, 50, ret_pca.shape[1])
+                        pca = PCA(n_components=n_pca_components)
+                        pca.fit(ret_pca.values)
+                        # Loadings = eigenvectors scaled by sqrt(eigenvalues)
+                        _state_bag["pca_loadings"] = pca.components_.T  # (n_stocks, k_pca)
+                        _state_bag["pca_eigenvalues"] = pca.explained_variance_
+                        logger.info(
+                            "  [Fold %d] PCA computed: %d components, "
+                            "top-3 explained: %.1f%%",
+                            fold_id, n_pca_components,
+                            float(np.sum(pca.explained_variance_ratio_[:3]) * 100),
+                        )
+            except Exception as e:
+                logger.warning("  [Fold %d] PCA computation failed: %s", fold_id, e)
+
+            # NEW: Literature comparison (Marchenko-Pastur, Bai-Ng, Onatski)
+            try:
+                from src.integration.diagnostics import compute_literature_comparison
+                from src.risk_model.factor_quality import bai_ng_ic2
+
+                # Get Bai-Ng estimate from training returns
+                k_bai_ng = None
+                train_ret_lit = returns.loc[train_start:train_end]
+                cols_lit = [c for c in inferred_stock_ids if c in train_ret_lit.columns]
+                if len(cols_lit) >= 10:
+                    ret_lit = train_ret_lit[cols_lit].dropna(axis=0, how="all").fillna(0.0)
+                    if ret_lit.shape[0] >= 50 and ret_lit.shape[1] >= 10:
+                        ret_centered = ret_lit.values - ret_lit.values.mean(axis=0)
+                        k_bai_ng = bai_ng_ic2(ret_centered, k_max=min(50, AU + 20))
+
+                _state_bag["literature_comparison"] = compute_literature_comparison(
+                    eigenvalues=eigenvalues,
+                    n_samples=z_hat.shape[0],
+                    n_features=n_port,
+                    au=AU,
+                    bai_ng_k=k_bai_ng,
+                    k_onatski=None,  # Computed in factor_quality_diagnostics
+                )
+            except Exception as e:
+                logger.warning("  [Fold %d] Literature comparison failed: %s", fold_id, e)
+
         logger.info(
             "  [Fold %d] Risk model: AU=%d, n_signal=%d, B_A(%d×%d), Sigma(%d×%d), "
             "vt_sys=%.4f, vt_idio=%.4f, shrinkage=%s",
@@ -2416,33 +2471,9 @@ class FullPipeline:
                 )
                 w_old = None
 
-        logger.info(
-            "  [Fold %d] Frontier: %d alphas × %d starts...",
-            fold_id, len(pc.alpha_grid), pc.n_starts,
-        )
         t_port = time.monotonic()
-        # Compute factor risk budget for tilted entropy (Roncalli 2013, Ch. 7)
-        budget: np.ndarray | None = None
-        if pc.entropy_budget_mode == "proportional":
-            eig_sum = float(eigenvalues_signal.sum())
-            if eig_sum > 1e-30:
-                budget = eigenvalues_signal / eig_sum
-            else:
-                budget = None
-        frontier, frontier_weights = compute_variance_entropy_frontier(
-            Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
-            alpha_grid=pc.alpha_grid,
-            lambda_risk=pc.lambda_risk,
-            w_max=pc.w_max, w_min=pc.w_min,
-            w_bar=pc.w_bar, phi=pc.phi,
-            w_old=w_old, is_first=is_first,
-            n_starts=pc.n_starts, seed=self.config.seed,
-            entropy_eps=pc.entropy_eps,
-            mu=mu,
-            idio_weight=idio_weight,
-            normalize_entropy_gradient=pc.normalize_entropy_gradient,
-            budget=budget,
-        )
+
+        # Compute target_enb FIRST (cheap) to enable early stopping in frontier
         # Dynamic target_enb: when config is 0.0 (default), use
         # min(n_signal/2, ENB_spectrum * 0.7) for an achievable target.
         # ENB_spectrum = exp(H(eigenvalue_spectrum)) is the maximum ENB
@@ -2460,6 +2491,54 @@ class FullPipeline:
         elif pc.target_enb < 0.0:
             # Legacy Kneedle mode: pass 0.0 to select_operating_alpha
             effective_target_enb = 0.0
+
+        # Determine grid: use coarse grid (new) or alpha_grid (legacy)
+        use_coarse = len(pc.frontier_coarse_grid) > 0
+        grid_to_use = pc.frontier_coarse_grid if use_coarse else pc.alpha_grid
+        logger.info(
+            "  [Fold %d] Frontier: %d %s × %d starts (target_enb=%.2f)...",
+            fold_id, len(grid_to_use),
+            "coarse points" if use_coarse else "alphas",
+            pc.n_starts, effective_target_enb,
+        )
+
+        # Compute factor risk budget for tilted entropy (Roncalli 2013, Ch. 7)
+        budget: np.ndarray | None = None
+        if pc.entropy_budget_mode == "proportional":
+            eig_sum = float(eigenvalues_signal.sum())
+            if eig_sum > 1e-30:
+                budget = eigenvalues_signal / eig_sum
+            else:
+                budget = None
+
+        # Two-phase frontier with early stopping
+        frontier, frontier_weights = compute_variance_entropy_frontier(
+            Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
+            alpha_grid=pc.alpha_grid,  # legacy fallback
+            lambda_risk=pc.lambda_risk,
+            w_max=pc.w_max, w_min=pc.w_min,
+            w_bar=pc.w_bar, phi=pc.phi,
+            w_old=w_old, is_first=is_first,
+            n_starts=pc.n_starts,
+            max_iter=pc.sca_max_iter,
+            seed=self.config.seed,
+            entropy_eps=pc.entropy_eps,
+            mu=mu,
+            idio_weight=idio_weight,
+            normalize_entropy_gradient=pc.normalize_entropy_gradient,
+            budget=budget,
+            # Two-phase early stopping params
+            target_enb=effective_target_enb,
+            coarse_grid=pc.frontier_coarse_grid,
+            early_stop_patience=pc.frontier_early_stop_patience,
+            n_starts_after_target=pc.frontier_n_starts_after_target,
+            max_iter_after_target=pc.frontier_max_iter_after_target,
+            refine_enabled=pc.frontier_refine_enabled,
+            refine_points=pc.frontier_refine_points,
+            n_starts_refine=pc.frontier_n_starts_refine,
+            max_iter_refine=pc.frontier_max_iter_refine,
+        )
+
         alpha_opt = select_operating_alpha(frontier, target_enb=effective_target_enb)
 
         # Guard: alpha=0 means entropy had no effect (min-var under

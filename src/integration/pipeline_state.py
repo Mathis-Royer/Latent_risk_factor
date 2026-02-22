@@ -757,6 +757,47 @@ class PipelineStateManager:
                     ]
                     stage_json["training_curve"] = compact_history
 
+                    # NEW: Extract per-dimension KL history (E, K) for posterior collapse analysis
+                    # Each epoch's kl_per_dim is a list of K values
+                    kl_history_list = [
+                        h.get("kl_per_dim", []) for h in history
+                        if h.get("kl_per_dim") is not None
+                    ]
+                    if kl_history_list and len(kl_history_list[0]) > 0:
+                        # Stack into (E, K) array, cap at 500 epochs to limit memory
+                        kl_history_list = kl_history_list[:500]
+                        kl_per_dim_history = np.array(kl_history_list, dtype=np.float32)
+                        stage_arrays["kl_per_dim_history"] = kl_per_dim_history
+                        logger.debug(
+                            "Extracted kl_per_dim_history: shape=%s",
+                            kl_per_dim_history.shape,
+                        )
+
+                    # NEW: Extract log_var bounds history (E, 2, K) if available
+                    # log_var_stats contains min/max per dimension per epoch
+                    log_var_history_list = [
+                        h.get("log_var_stats") for h in history
+                        if h.get("log_var_stats") is not None
+                    ]
+                    if log_var_history_list and len(log_var_history_list) > 0:
+                        # Each log_var_stats is a dict with 'min' and 'max' lists
+                        log_var_bounds = []
+                        for lv_stats in log_var_history_list[:500]:
+                            if isinstance(lv_stats, dict):
+                                lv_min = lv_stats.get("min", [])
+                                lv_max = lv_stats.get("max", [])
+                                if lv_min and lv_max and len(lv_min) == len(lv_max):
+                                    log_var_bounds.append([lv_min, lv_max])
+                        if log_var_bounds:
+                            log_var_bounds_history = np.array(
+                                log_var_bounds, dtype=np.float32,
+                            )  # (E, 2, K)
+                            stage_arrays["log_var_bounds_history"] = log_var_bounds_history
+                            logger.debug(
+                                "Extracted log_var_bounds_history: shape=%s",
+                                log_var_bounds_history.shape,
+                            )
+
             # Build params and VAE info
             if "build_params" in state_bag:
                 stage_json["build_params"] = state_bag["build_params"]
@@ -764,7 +805,9 @@ class PipelineStateManager:
                 stage_json["vae_info"] = state_bag["vae_info"]
 
         elif stage == PipelineStage.INFERENCE_DONE:
-            # Exposure matrix and KL per dim
+            # Exposure matrices: full B (n, K) and filtered B_A (n, AU)
+            if "B" in state_bag:
+                stage_arrays["B_full"] = state_bag["B"]  # Full exposure before AU filtering
             if "B_A" in state_bag:
                 stage_arrays["B_A"] = state_bag["B_A"]
             if "kl_per_dim" in state_bag:
@@ -781,12 +824,25 @@ class PipelineStateManager:
             risk_model = state_bag.get("risk_model", {})
             if "Sigma_assets" in risk_model:
                 stage_arrays["Sigma_assets"] = risk_model["Sigma_assets"]
+            if "eigenvalues" in risk_model:
+                # Full eigenvalues (before signal/noise split)
+                stage_arrays["eigenvalues_full"] = risk_model["eigenvalues"]
             if "z_hat" in state_bag:
                 stage_arrays["z_hat"] = state_bag["z_hat"]
             if "eigenvalues_signal" in state_bag:
                 stage_arrays["eigenvalues_signal"] = state_bag["eigenvalues_signal"]
             if "B_prime_signal" in state_bag:
                 stage_arrays["B_prime_signal"] = state_bag["B_prime_signal"]
+
+            # NEW: PCA loadings for comparison with VAE exposures
+            if "pca_loadings" in state_bag:
+                stage_arrays["pca_loadings"] = state_bag["pca_loadings"]
+            if "pca_eigenvalues" in state_bag:
+                stage_arrays["pca_eigenvalues"] = state_bag["pca_eigenvalues"]
+
+            # NEW: Literature comparison (Marchenko-Pastur, Bai-Ng, Onatski)
+            if "literature_comparison" in state_bag:
+                stage_json["literature_comparison"] = state_bag["literature_comparison"]
 
             # Scalars
             for key in ["vt_scale_sys", "vt_scale_idio", "n_signal", "shrinkage_intensity"]:
@@ -836,6 +892,44 @@ class PipelineStateManager:
             "State bag saved for %s: %d arrays, %d JSON, %d scalars",
             stage.name, len(stage_arrays), len(stage_json), len(stage_scalars),
         )
+
+    def save_benchmark_weights(
+        self,
+        benchmark_weights: dict[str, dict[str, Any]],
+    ) -> dict[str, str]:
+        """
+        Save benchmark portfolio weights as NPY files.
+
+        Extracts weights array from each benchmark entry and saves to
+        arrays/benchmarks/{benchmark_name}.npy for comparison with VAE.
+
+        :param benchmark_weights (dict): benchmark_name -> {weights, universe, daily_returns}
+
+        :return paths (dict): benchmark_name -> saved path mapping
+        """
+        benchmarks_dir = self.checkpoint_dir / "arrays" / "benchmarks"
+        benchmarks_dir.mkdir(parents=True, exist_ok=True)
+
+        paths: dict[str, str] = {}
+        saved_count = 0
+        for bench_name, entry in benchmark_weights.items():
+            weights = entry.get("weights")
+            if weights is not None and isinstance(weights, np.ndarray):
+                path = benchmarks_dir / f"{bench_name}.npy"
+                np.save(path, weights)
+                paths[bench_name] = str(path)
+                saved_count += 1
+
+                # Also save universe (stock IDs) if available
+                universe = entry.get("universe")
+                if universe is not None:
+                    self.save_json(f"benchmark_{bench_name}_universe", universe)
+
+        logger.info(
+            "Benchmark weights saved: %d/%d benchmarks",
+            saved_count, len(benchmark_weights),
+        )
+        return paths
 
     def load_state_bag_for_stage(self, stage: PipelineStage) -> dict[str, Any]:
         """
@@ -1083,6 +1177,45 @@ class DiagnosticRunManager:
     def get_output_dir(self) -> str:
         """Get run directory as output_dir (for report saving)."""
         return str(self.run_dir)
+
+    def create_latest_symlink(self, symlink_path: str = "results/diagnostic") -> str | None:
+        """
+        Create/update symlink at symlink_path pointing to current run directory.
+
+        Enables backwards compatibility: code using the legacy path
+        `results/diagnostic/` will transparently access the latest timestamped run.
+
+        :param symlink_path (str): Path for the symlink (default: results/diagnostic)
+
+        :return target (str | None): Symlink target path, or None on failure
+        """
+        symlink = Path(symlink_path)
+        target = self.run_dir.resolve()
+
+        try:
+            # Remove existing symlink or directory
+            if symlink.is_symlink():
+                symlink.unlink()
+            elif symlink.exists():
+                # If it's a real directory, log warning but don't delete
+                logger.warning(
+                    "Cannot create symlink %s: path exists and is not a symlink. "
+                    "Skipping symlink creation.",
+                    symlink,
+                )
+                return None
+
+            # Ensure parent directory exists
+            symlink.parent.mkdir(parents=True, exist_ok=True)
+
+            # Create symlink
+            symlink.symlink_to(target)
+            logger.info("Created symlink: %s -> %s", symlink, target)
+            return str(target)
+
+        except OSError as e:
+            logger.warning("Failed to create symlink %s: %s", symlink, e)
+            return None
 
 
 def load_run_data(run_dir: str) -> dict[str, Any]:

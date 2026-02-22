@@ -605,6 +605,25 @@ class PortfolioConfig:
     oos_n_starts_exceptional: int = 5  # Full quality for H degradation (exceptional triggers)
     oos_sca_max_iter_scheduled: int = 50  # Usually converges in ~30-40 for scheduled
     oos_sca_max_iter_exceptional: int = 100  # Full iterations for exceptional rebalancing
+    # Frontier optimization — two-phase adaptive grid with early stopping
+    # Phase 1: coarse log-uniform grid (5 points) with early stopping when ENB target reached
+    # Phase 2: refinement around the elbow (conditional, only if needed)
+    # Reference: Meucci (2009), Satopaa et al. (2011) Kneedle
+    frontier_coarse_grid: list[float] = field(
+        default_factory=lambda: [0.001, 0.01, 0.1, 1.0, 5.0]
+    )  # Phase 1: coarse grid; empty = use alpha_grid (legacy)
+    frontier_early_stop_patience: int = 2  # Stop after N points with increasing variance
+    frontier_n_starts_after_target: int = 2  # Reduced starts after ENB target reached
+    frontier_max_iter_after_target: int = 50  # Reduced SCA iterations after ENB target
+    frontier_refine_enabled: bool = True  # Enable Phase 2 refinement if needed
+    frontier_refine_points: int = 3  # Number of refinement points in Phase 2
+    frontier_n_starts_refine: int = 3  # Starts for refinement phase
+    frontier_max_iter_refine: int = 75  # SCA iterations for refinement phase
+    # Fast sub-problem solver (replaces CVXPY interior-point with projected gradient)
+    # Reference: Michelot (1986), Condat (2016), Palomar et al. (2007)
+    use_fast_subproblem: bool = True  # True = PGD (10-50× faster), False = CVXPY (legacy)
+    fast_subproblem_max_iter: int = 50  # Max PGD iterations per SCA iteration
+    fast_subproblem_tol: float = 1e-7  # PGD convergence tolerance
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,
@@ -674,6 +693,19 @@ class PortfolioConfig:
                         default=50, lo=1)
         _validate_range("oos_sca_max_iter_exceptional", self.oos_sca_max_iter_exceptional,
                         default=100, lo=1)
+        # Frontier optimization validation
+        _validate_range("frontier_early_stop_patience", self.frontier_early_stop_patience,
+                        default=2, lo=1)
+        _validate_range("frontier_n_starts_after_target", self.frontier_n_starts_after_target,
+                        default=2, lo=1)
+        _validate_range("frontier_max_iter_after_target", self.frontier_max_iter_after_target,
+                        default=50, lo=1)
+        _validate_range("frontier_refine_points", self.frontier_refine_points,
+                        default=3, lo=1, hi=10)
+        _validate_range("frontier_n_starts_refine", self.frontier_n_starts_refine,
+                        default=3, lo=1)
+        _validate_range("frontier_max_iter_refine", self.frontier_max_iter_refine,
+                        default=75, lo=1)
         if self.momentum_enabled and self.momentum_lookback <= self.momentum_skip:
             raise ValueError(
                 f"Invalid parameter pair:\n"

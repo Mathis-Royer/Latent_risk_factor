@@ -911,3 +911,289 @@ class TestFitResultFiltering:
                 # Should have scalars
                 assert "epoch" in entry
                 assert "train_loss" in entry
+
+
+# ---------------------------------------------------------------------------
+# New persistence features tests
+# ---------------------------------------------------------------------------
+
+class TestKLPerDimHistorySaved:
+    """Test KL per dimension history array extraction and saving."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_kl_per_dim_history_extracted(self, temp_dir: str) -> None:
+        """kl_per_dim_history should be extracted from training history."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        # Create state bag with training history containing kl_per_dim
+        n_epochs = 50
+        K = 30
+        state_bag = {
+            "fit_result": {
+                "best_epoch": 40,
+                "best_val_elbo": 100.0,
+                "history": [
+                    {
+                        "epoch": i,
+                        "train_loss": 100 - i,
+                        "kl_per_dim": np.random.rand(K).tolist(),
+                    }
+                    for i in range(n_epochs)
+                ],
+            },
+        }
+
+        manager.save_state_bag_for_stage(PipelineStage.VAE_TRAINED, state_bag)
+
+        # Load and verify kl_per_dim_history
+        arrays = manager.load_stage_arrays(PipelineStage.VAE_TRAINED)
+        assert "kl_per_dim_history" in arrays
+        kl_history = arrays["kl_per_dim_history"]
+        assert kl_history.shape == (n_epochs, K)
+
+    def test_log_var_bounds_history_extracted(self, temp_dir: str) -> None:
+        """log_var_bounds_history should be extracted if present."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        n_epochs = 25
+        K = 20
+        state_bag = {
+            "fit_result": {
+                "best_epoch": 20,
+                "best_val_elbo": 50.0,
+                "history": [
+                    {
+                        "epoch": i,
+                        "train_loss": 50 - i,
+                        "kl_per_dim": np.random.rand(K).tolist(),
+                        "log_var_stats": {
+                            "min": np.random.rand(K).tolist(),
+                            "max": np.random.rand(K).tolist(),
+                        },
+                    }
+                    for i in range(n_epochs)
+                ],
+            },
+        }
+
+        manager.save_state_bag_for_stage(PipelineStage.VAE_TRAINED, state_bag)
+
+        arrays = manager.load_stage_arrays(PipelineStage.VAE_TRAINED)
+        assert "log_var_bounds_history" in arrays
+        lv_history = arrays["log_var_bounds_history"]
+        assert lv_history.shape == (n_epochs, 2, K)
+
+
+class TestBFullMatrixSaved:
+    """Test full exposure matrix B is saved before filtering."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_b_full_saved_alongside_b_a(self, temp_dir: str) -> None:
+        """Both B_full and B_A should be saved in INFERENCE_DONE."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        n_stocks = 100
+        K = 50
+        AU = 20
+        B_full = np.random.randn(n_stocks, K)
+        B_A = np.random.randn(n_stocks, AU)
+
+        state_bag = {
+            "B": B_full,
+            "B_A": B_A,
+            "kl_per_dim": np.random.rand(K),
+            "AU": AU,
+            "active_dims": list(range(AU)),
+            "inferred_stock_ids": list(range(n_stocks)),
+        }
+
+        manager.save_state_bag_for_stage(PipelineStage.INFERENCE_DONE, state_bag)
+
+        arrays = manager.load_stage_arrays(PipelineStage.INFERENCE_DONE)
+        assert "B_full" in arrays
+        assert "B_A" in arrays
+        np.testing.assert_array_almost_equal(B_full, arrays["B_full"])
+        np.testing.assert_array_almost_equal(B_A, arrays["B_A"])
+
+
+class TestBenchmarkWeightsSaved:
+    """Test benchmark weights saving."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_save_benchmark_weights(self, temp_dir: str) -> None:
+        """Benchmark weights should be saved as NPY files."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        n_stocks = 50
+        benchmark_weights = {
+            "equal_weight": {"weights": np.ones(n_stocks) / n_stocks},
+            "inverse_vol": {"weights": np.random.rand(n_stocks)},
+            "min_variance": {"weights": np.random.rand(n_stocks)},
+        }
+
+        paths = manager.save_benchmark_weights(benchmark_weights)
+
+        assert len(paths) == 3
+        for bench_name in benchmark_weights:
+            assert bench_name in paths
+            assert Path(paths[bench_name]).exists()
+            loaded = np.load(paths[bench_name])
+            np.testing.assert_array_almost_equal(
+                benchmark_weights[bench_name]["weights"],
+                loaded,
+            )
+
+    def test_save_benchmark_with_universe(self, temp_dir: str) -> None:
+        """Universe should be saved as JSON alongside weights."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        universe = [100, 200, 300, 400, 500]
+        benchmark_weights = {
+            "test_bench": {
+                "weights": np.ones(5) / 5,
+                "universe": universe,
+            },
+        }
+
+        manager.save_benchmark_weights(benchmark_weights)
+
+        # Universe should be saved as JSON
+        loaded_universe = manager.load_json("benchmark_test_bench_universe")
+        assert loaded_universe == universe
+
+
+class TestLatestSymlink:
+    """Test create_latest_symlink functionality."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_create_symlink(self, temp_dir: str) -> None:
+        """Should create symlink pointing to run directory."""
+        run_manager = DiagnosticRunManager(base_dir=temp_dir)
+        symlink_path = os.path.join(temp_dir, "latest")
+
+        target = run_manager.create_latest_symlink(symlink_path)
+
+        assert target is not None
+        assert Path(symlink_path).is_symlink()
+        assert Path(symlink_path).resolve() == run_manager.run_dir.resolve()
+
+    def test_update_existing_symlink(self, temp_dir: str) -> None:
+        """Should update existing symlink to new run directory."""
+        symlink_path = os.path.join(temp_dir, "latest")
+
+        # Create first run directory manually to ensure different names
+        run_dir1_path = os.path.join(temp_dir, "run_001")
+        os.makedirs(run_dir1_path)
+        run_manager1 = DiagnosticRunManager(base_dir=temp_dir, run_dir=run_dir1_path)
+        run_manager1.create_latest_symlink(symlink_path)
+        run_dir1 = run_manager1.run_dir
+
+        # Create second run directory
+        run_dir2_path = os.path.join(temp_dir, "run_002")
+        os.makedirs(run_dir2_path)
+        run_manager2 = DiagnosticRunManager(base_dir=temp_dir, run_dir=run_dir2_path)
+        run_manager2.create_latest_symlink(symlink_path)
+        run_dir2 = run_manager2.run_dir
+
+        # Symlink should point to second run
+        assert run_dir1 != run_dir2
+        assert Path(symlink_path).resolve() == run_dir2.resolve()
+
+
+class TestLiteratureComparisonSaved:
+    """Test literature comparison JSON is saved."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_literature_comparison_saved(self, temp_dir: str) -> None:
+        """Literature comparison should be saved in COVARIANCE_DONE."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        lit_comparison = {
+            "marchenko_pastur": {
+                "upper_edge": 2.5,
+                "n_above_edge": 15,
+            },
+            "au_comparison": {
+                "au": 20,
+                "bai_ng_k": 18,
+                "mp_signal": 15,
+            },
+        }
+
+        state_bag = {
+            "risk_model": {"Sigma_assets": np.eye(10)},
+            "z_hat": np.random.randn(100, 10),
+            "literature_comparison": lit_comparison,
+            "vt_scale_sys": 1.0,
+            "vt_scale_idio": 1.0,
+            "n_signal": 10,
+        }
+
+        manager.save_state_bag_for_stage(PipelineStage.COVARIANCE_DONE, state_bag)
+
+        loaded = manager.load_json("literature_comparison")
+        assert loaded is not None
+        assert isinstance(loaded, dict)
+        assert loaded["marchenko_pastur"]["upper_edge"] == 2.5
+        assert loaded["au_comparison"]["au"] == 20
+
+
+class TestPCALoadingsSaved:
+    """Test PCA loadings are saved in covariance stage."""
+
+    @pytest.fixture
+    def temp_dir(self):  # type: ignore[misc]
+        """Create temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as d:
+            yield d
+
+    def test_pca_loadings_saved(self, temp_dir: str) -> None:
+        """PCA loadings and eigenvalues should be saved."""
+        manager = PipelineStateManager(temp_dir, fold_id=0)
+
+        n_stocks = 50
+        k_pca = 15
+        pca_loadings = np.random.randn(n_stocks, k_pca)
+        pca_eigenvalues = np.sort(np.random.rand(k_pca))[::-1]
+
+        state_bag = {
+            "risk_model": {"Sigma_assets": np.eye(n_stocks)},
+            "pca_loadings": pca_loadings,
+            "pca_eigenvalues": pca_eigenvalues,
+            "vt_scale_sys": 1.0,
+            "vt_scale_idio": 1.0,
+            "n_signal": 10,
+        }
+
+        manager.save_state_bag_for_stage(PipelineStage.COVARIANCE_DONE, state_bag)
+
+        arrays = manager.load_stage_arrays(PipelineStage.COVARIANCE_DONE)
+        assert "pca_loadings" in arrays
+        assert "pca_eigenvalues" in arrays
+        np.testing.assert_array_almost_equal(pca_loadings, arrays["pca_loadings"])
+        np.testing.assert_array_almost_equal(pca_eigenvalues, arrays["pca_eigenvalues"])

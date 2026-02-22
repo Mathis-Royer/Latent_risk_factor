@@ -498,6 +498,129 @@ def factor_quality_diagnostics(
     }
 
 
+def compute_literature_comparison(
+    eigenvalues: np.ndarray,
+    n_samples: int,
+    n_features: int,
+    au: int,
+    bai_ng_k: int | None,
+    k_onatski: int | None = None,
+) -> dict[str, Any]:
+    """
+    Compare eigenvalue spectrum to random matrix theory benchmarks.
+
+    Computes Marchenko-Pastur edge (random matrix bulk) and compares
+    with empirical eigenvalues to identify signal vs noise dimensions.
+
+    :param eigenvalues (np.ndarray): Sample eigenvalues (sorted descending)
+    :param n_samples (int): Number of observations (T)
+    :param n_features (int): Number of features (n_stocks)
+    :param au (int): Active units from VAE KL threshold
+    :param bai_ng_k (int | None): Number of factors from Bai-Ng IC2
+    :param k_onatski (int | None): Number of factors from Onatski test
+
+    :return comparison (dict): Literature comparison metrics
+    """
+    if eigenvalues.size == 0:
+        return {"available": False, "reason": "no eigenvalues"}
+
+    # Marchenko-Pastur distribution bounds (random matrix theory)
+    # For N features, T samples with aspect ratio q = T/N
+    # Bulk eigenvalues lie in [(1 - sqrt(q))^2, (1 + sqrt(q))^2] * sigma^2
+    # We use the normalized version assuming unit variance
+    aspect_ratio = n_samples / max(n_features, 1)
+    sqrt_q = np.sqrt(aspect_ratio)
+
+    mp_upper = (1.0 + sqrt_q) ** 2
+    mp_lower = (1.0 - sqrt_q) ** 2 if aspect_ratio >= 1.0 else 0.0
+
+    # Normalize eigenvalues to compare with MP (mean = 1 under null)
+    eig_normalized = eigenvalues / max(float(np.mean(eigenvalues)), 1e-10)
+
+    # Count eigenvalues above MP upper edge (signal dimensions)
+    n_above_mp = int(np.sum(eig_normalized > mp_upper))
+    eigenvalues_above = eigenvalues[eig_normalized > mp_upper].tolist()
+
+    # Tracy-Widom critical value (approximate) for spike detection
+    # TW_1 distribution: P(lambda_max < x) where x ~ (1 + sqrt(q))^2 + TW scaling
+    # For 5% significance, TW quantile ~ 0.98
+    tw_scaling = n_features ** (-2/3) * 1.0  # simplified scaling
+    tw_edge = mp_upper + tw_scaling
+
+    return {
+        "available": True,
+        "marchenko_pastur": {
+            "upper_edge": float(mp_upper),
+            "lower_edge": float(mp_lower),
+            "n_above_edge": n_above_mp,
+            "eigenvalues_above_normalized": (
+                eig_normalized[eig_normalized > mp_upper].tolist()
+            ),
+            "eigenvalues_above_raw": eigenvalues_above[:10],  # Top 10 only
+            "aspect_ratio": float(aspect_ratio),
+            "tw_edge": float(tw_edge),
+        },
+        "bai_ng_ic2": {
+            "k_selected": bai_ng_k,
+        },
+        "onatski": {
+            "k_selected": k_onatski,
+        },
+        "au_comparison": {
+            "au": au,
+            "bai_ng_k": bai_ng_k,
+            "mp_signal": n_above_mp,
+            "onatski_k": k_onatski,
+            "au_vs_bai_ng_diff": au - bai_ng_k if bai_ng_k is not None else None,
+            "au_vs_mp_diff": au - n_above_mp,
+        },
+        "interpretation": _interpret_au_comparison(au, bai_ng_k, n_above_mp, k_onatski),
+    }
+
+
+def _interpret_au_comparison(
+    au: int,
+    bai_ng_k: int | None,
+    mp_signal: int,
+    k_onatski: int | None,
+) -> str:
+    """
+    Generate human-readable interpretation of AU vs literature methods.
+
+    :param au (int): VAE active units
+    :param bai_ng_k (int | None): Bai-Ng IC2 estimate
+    :param mp_signal (int): Eigenvalues above MP edge
+    :param k_onatski (int | None): Onatski estimate
+
+    :return interpretation (str): Human-readable interpretation
+    """
+    parts = []
+
+    if bai_ng_k is not None:
+        diff = au - bai_ng_k
+        if abs(diff) <= 5:
+            parts.append(f"AU={au} closely matches Bai-Ng IC2 k={bai_ng_k}")
+        elif diff > 5:
+            parts.append(f"AU={au} > Bai-Ng IC2 k={bai_ng_k}: VAE may capture nonlinear structure")
+        else:
+            parts.append(f"AU={au} < Bai-Ng IC2 k={bai_ng_k}: VAE posterior collapse suspected")
+
+    if mp_signal > 0:
+        diff = au - mp_signal
+        if abs(diff) <= 3:
+            parts.append(f"Matches RMT: {mp_signal} eigenvalues above MP edge")
+        elif diff > 3:
+            parts.append(f"AU exceeds RMT signal ({mp_signal}): capturing weak factors")
+        else:
+            parts.append(f"AU below RMT signal ({mp_signal}): KL threshold may be too strict")
+
+    if k_onatski is not None:
+        if abs(au - k_onatski) <= 3:
+            parts.append(f"Consistent with Onatski test (k={k_onatski})")
+
+    return "; ".join(parts) if parts else "Comparison not available"
+
+
 # ---------------------------------------------------------------------------
 # Risk model diagnostics
 # ---------------------------------------------------------------------------
