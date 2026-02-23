@@ -449,6 +449,36 @@ def load_existing_run(
     if "stock_ids" in run_data:
         diagnostics["_raw_stock_ids"] = run_data["stock_ids"]
 
+    # Reconstruct state_bag from loaded arrays/scalars if not already present
+    # This enables Section 9c-ter and Section 10 to work after reload
+    if "state_bag" not in diagnostics:
+        diagnostics["state_bag"] = {}
+    state_bag = diagnostics["state_bag"]
+
+    # Populate from run_data if not already in state_bag
+    if "B_A" in run_data and state_bag.get("B_A") is None:
+        state_bag["B_A"] = run_data["B_A"]
+    if "AU" in run_data and state_bag.get("AU") is None:
+        state_bag["AU"] = run_data["AU"]
+    if "active_dims" in run_data and state_bag.get("active_dims") is None:
+        state_bag["active_dims"] = run_data["active_dims"]
+    if "stock_ids" in run_data and state_bag.get("inferred_stock_ids") is None:
+        state_bag["inferred_stock_ids"] = run_data["stock_ids"]
+
+    # Populate from other diagnostic sub-dicts as fallback
+    factor_qual = diagnostics.get("factor_quality", {})
+    risk_model_diag = diagnostics.get("risk_model", {})
+    latent_diag = diagnostics.get("latent", {})
+
+    if state_bag.get("latent_stability_rho") is None:
+        state_bag["latent_stability_rho"] = factor_qual.get("latent_stability_rho")
+    if state_bag.get("shrinkage_intensity") is None:
+        state_bag["shrinkage_intensity"] = risk_model_diag.get("shrinkage_intensity")
+    if state_bag.get("k_bai_ng") is None:
+        state_bag["k_bai_ng"] = factor_qual.get("k_bai_ng")
+    if state_bag.get("AU") is None:
+        state_bag["AU"] = latent_diag.get("AU") or factor_qual.get("AU")
+
     return {
         "diagnostics": diagnostics,
         "run_dir": str(run_dir),
@@ -596,9 +626,13 @@ def display_diagnostic_results(
     # --- 9c-ter: Factor exposure heatmap ---
     if show_exposures:
         state = diagnostics.get("state_bag", {})
-        B_A = state.get("B_A")
+        # B_A: prefer run_data (NPY file) over state_bag (may not serialize to JSON)
+        B_A = run_data.get("B_A") if run_data.get("B_A") is not None else state.get("B_A")
         w = diagnostics.get("_raw_weights")
+        # AU: from state_bag or infer from B_A shape
         AU = state.get("AU", 0)
+        if AU == 0 and B_A is not None:
+            AU = B_A.shape[1] if len(B_A.shape) > 1 else 0
 
         if B_A is not None and w is not None:
             w = np.asarray(w)
@@ -809,14 +843,37 @@ def run_decision_synthesis(
     }
 
     # Extract raw metrics for pattern detection
+    # Sources: state_bag (if available), factor_quality, risk_model, latent, training
     state_bag = diagnostics.get("state_bag", {})
+    factor_qual = diagnostics.get("factor_quality", {})
+    risk_model_diag = diagnostics.get("risk_model", {})
+    latent_diag = diagnostics.get("latent", {})
+    training_diag = diagnostics.get("training", {})
+
     raw_metrics = {
-        "latent_stability_rho": state_bag.get("latent_stability_rho"),
-        "shrinkage_intensity": state_bag.get("shrinkage_intensity"),
-        "AU": state_bag.get("AU"),
-        "k_bai_ng": state_bag.get("k_bai_ng"),
+        # Prefer state_bag, fallback to diagnostic sub-dicts
+        "latent_stability_rho": (
+            state_bag.get("latent_stability_rho")
+            or factor_qual.get("latent_stability_rho")
+        ),
+        "shrinkage_intensity": (
+            state_bag.get("shrinkage_intensity")
+            or risk_model_diag.get("shrinkage_intensity")
+        ),
+        "AU": (
+            state_bag.get("AU")
+            or latent_diag.get("AU")
+            or factor_qual.get("AU")
+        ),
+        "k_bai_ng": (
+            state_bag.get("k_bai_ng")
+            or factor_qual.get("k_bai_ng")
+        ),
         "condition_number": comp_scores.get("covariance", {}).get("details", {}).get("condition_number"),
-        "overfit_ratio": diagnostics.get("training_summary", {}).get("overfit_ratio"),
+        "overfit_ratio": (
+            diagnostics.get("training_summary", {}).get("overfit_ratio")
+            or training_diag.get("overfit_ratio")
+        ),
         "explanatory_power": comp_scores.get("covariance", {}).get("details", {}).get("explanatory_power"),
     }
 

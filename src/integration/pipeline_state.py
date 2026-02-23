@@ -741,13 +741,17 @@ class PipelineStateManager:
                 stage_json["fit_result"] = fr_summary
 
                 # Save compact training curve (scalars only) for plotting
-                # Excludes kl_per_dim, log_var_stats which are arrays
+                # Excludes kl_per_dim, log_var_stats which are large arrays
+                # Includes train_recon, train_kl, train_co for loss component plots
                 history = fit_result.get("history", [])
                 if history:
                     compact_history = [
                         {
                             "epoch": h.get("epoch"),
                             "train_loss": h.get("train_loss"),
+                            "train_recon": h.get("train_recon"),
+                            "train_kl": h.get("train_kl"),
+                            "train_co": h.get("train_co"),
                             "val_elbo": h.get("val_elbo"),
                             "AU": h.get("AU"),
                             "sigma_sq": h.get("sigma_sq"),
@@ -1264,6 +1268,20 @@ def load_run_data(run_dir: str) -> dict[str, Any]:
         if alt_ba.exists():
             data["B_A"] = np.load(alt_ba)
 
+    # AU from scalars.json
+    scalars_path = run_path / "json" / "scalars.json"
+    if scalars_path.exists():
+        with open(scalars_path, "r") as f:
+            scalars = json.load(f)
+            if "AU" in scalars:
+                data["AU"] = scalars["AU"]
+
+    # active_dims from JSON
+    active_dims_path = run_path / "json" / "active_dims.json"
+    if active_dims_path.exists():
+        with open(active_dims_path, "r") as f:
+            data["active_dims"] = json.load(f)
+
     # NEW: VAE training diagnostics (kl_per_dim_history, log_var_bounds_history)
     kl_history_path = run_path / "arrays" / "vae_trained" / "kl_per_dim_history.npy"
     if kl_history_path.exists():
@@ -1288,7 +1306,8 @@ def load_run_data(run_dir: str) -> dict[str, Any]:
         data["pca_eigenvalues"] = np.load(pca_eigenvalues_path)
 
     # NEW: Literature comparison (Marchenko-Pastur, Bai-Ng, Onatski)
-    lit_comp_path = run_path / "json" / "covariance_done" / "literature_comparison.json"
+    # JSON files are saved to json/{name}.json (not per-stage subfolders)
+    lit_comp_path = run_path / "json" / "literature_comparison.json"
     if lit_comp_path.exists():
         with open(lit_comp_path, "r") as f:
             data["literature_comparison"] = json.load(f)
@@ -1304,6 +1323,55 @@ def load_run_data(run_dir: str) -> dict[str, Any]:
     if state_path.exists():
         with open(state_path, "r") as f:
             data["pipeline_state"] = json.load(f)
+
+    # training_curve from stage checkpoint (fallback for mid-run crash recovery)
+    # Only used if diagnostic_data.json doesn't have training data
+    diagnostics = data.get("diagnostics", {})
+    training_in_diag = diagnostics.get("training", {})
+    if not training_in_diag.get("train_recon"):
+        # Try to load from stage checkpoint JSON files
+        # Stage JSON files are saved as json/{key}.json (not per-stage subfolders)
+        training_curve_path = run_path / "json" / "training_curve.json"
+        fit_result_path = run_path / "json" / "fit_result.json"
+
+        training_curve: list[dict] = []
+        fit_result: dict = {}
+
+        if training_curve_path.exists():
+            with open(training_curve_path, "r") as f:
+                training_curve = json.load(f)
+
+        if fit_result_path.exists():
+            with open(fit_result_path, "r") as f:
+                fit_result = json.load(f)
+
+        if training_curve:
+            # Reconstruct training dict from compact history
+            data["training_curve_fallback"] = training_curve
+            # Also populate diagnostics["training"] for compatibility
+            if "diagnostics" not in data:
+                data["diagnostics"] = {}
+            if "training" not in data["diagnostics"]:
+                data["diagnostics"]["training"] = {"available": True}
+            training_dict = data["diagnostics"]["training"]
+            training_dict["train_loss"] = [h.get("train_loss") for h in training_curve]
+            training_dict["train_recon"] = [h.get("train_recon") for h in training_curve]
+            training_dict["train_kl"] = [h.get("train_kl") for h in training_curve]
+            training_dict["train_co"] = [h.get("train_co") for h in training_curve]
+            training_dict["val_elbo"] = [h.get("val_elbo") for h in training_curve]
+            training_dict["sigma_sq_series"] = [h.get("sigma_sq") for h in training_curve]
+            training_dict["au_series"] = [h.get("AU") for h in training_curve]
+            training_dict["lr_series"] = [h.get("learning_rate") for h in training_curve]
+            training_dict["n_epochs"] = len(training_curve)
+            # Best epoch from fit_result if available
+            training_dict["best_epoch"] = fit_result.get("best_epoch", len(training_curve))
+            training_dict["best_val_elbo"] = fit_result.get("best_val_elbo")
+            training_dict["overfit_flag"] = fit_result.get("overfit_flag", False)
+            training_dict["overfit_ratio"] = fit_result.get("overfit_ratio", 1.0)
+            logger.info(
+                "Loaded training_curve fallback: %d epochs",
+                len(training_curve),
+            )
 
     logger.info(
         "Loaded run data from %s: %s",

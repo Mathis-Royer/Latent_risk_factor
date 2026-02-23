@@ -2621,7 +2621,7 @@ class FullPipeline:
         )
 
         # Capture solver diagnostics: run one final evaluation to get convergence info
-        # We use n_starts=1 since we already have the optimal solution, we just need stats
+        # Use same n_starts as actual optimization to accurately report what was used
         if _state_bag is not None:
             _, _, _, solver_stats = multi_start_optimize(
                 Sigma_assets=Sigma_assets,
@@ -2629,7 +2629,7 @@ class FullPipeline:
                 eigenvalues=eigenvalues_signal,
                 D_eps=D_eps_port,
                 alpha=alpha_opt,
-                n_starts=1,
+                n_starts=pc.n_starts,
                 seed=self.config.seed,
                 lambda_risk=pc.lambda_risk,
                 w_max=pc.w_max,

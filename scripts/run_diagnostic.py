@@ -496,6 +496,17 @@ def run_diagnostic(
     diagnostics["_raw_weights"] = w_vae
     diagnostics["_raw_stock_ids"] = state_bag.get("inferred_stock_ids", [])
 
+    # Expose essential state_bag fields for sections 9 and 10 (decision synthesis)
+    # These are needed after reload but not included in collect_diagnostics()
+    diagnostics["state_bag"] = {
+        "AU": state_bag.get("AU"),
+        "B_A": state_bag.get("B_A"),  # Exposure matrix (n, AU)
+        "latent_stability_rho": state_bag.get("latent_stability_rho"),
+        "shrinkage_intensity": state_bag.get("shrinkage_intensity"),
+        "k_bai_ng": state_bag.get("k_bai_ng"),
+        "inferred_stock_ids": state_bag.get("inferred_stock_ids", []),
+    }
+
     # ---- Step 4: Generate reports ----
     logger.info("Step 4/4: Generating reports...")
 

@@ -318,7 +318,9 @@ def solve_sca_subproblem_fast(
 
         # ============ Convergence check ============
         w_change = float(np.linalg.norm(w_new - w))
-        if w_change < tol:
+        # Projected gradient norm: measures stationarity for constrained problems
+        proj_grad_norm = float(np.linalg.norm(w_new - (y if not nesterov else w)))
+        if w_change < tol and proj_grad_norm < np.sqrt(tol):
             w = w_new
             converged = True
             final_iter = it + 1
@@ -957,9 +959,6 @@ def sca_optimize(
         direction = w_star - w
         delta_surr = max(float(grad_f_smooth @ direction), 0.0)
 
-        # Track gradient norm for convergence diagnostics
-        final_grad_norm = float(np.linalg.norm(grad_f_smooth))
-
         # Armijo backtracking
         eta = armijo_backtracking(
             w, w_star, f_current, delta_surr,
@@ -982,11 +981,27 @@ def sca_optimize(
             if np.all(w_new <= w_max + 1e-10):
                 break
 
+        # Track gradient norm AFTER feasibility clipping
+        # Recompute gradient at the clipped point for accurate diagnostics
+        Lw_new = L_sigma.T @ w_new
+        grad_risk_new = -2.0 * lambda_risk * (L_sigma @ Lw_new)
+        _, grad_H_new = compute_entropy_and_gradient(
+            w_new, B_prime, eigenvalues, entropy_eps, D_eps=D_eps,
+            idio_weight=idio_weight, budget=budget,
+        )
+        grad_f_new = alpha * grad_H_new + grad_risk_new
+        if mu is not None:
+            grad_f_new = grad_f_new + mu
+        final_grad_norm = float(np.linalg.norm(grad_f_new))
+
         f_new = obj_fn(w_new)
         obj_improvements.append(f_new - f_current)
 
-        # Convergence check: relative change in objective (scale-independent)
-        if abs(f_new - f_current) < tol * max(1e-10, abs(f_current)):
+        # Convergence check: relative objective change AND gradient norm
+        grad_tol = np.sqrt(tol)
+        obj_converged = abs(f_new - f_current) < tol * max(1e-10, abs(f_current))
+        grad_converged = final_grad_norm < grad_tol
+        if obj_converged and grad_converged:
             w = w_new
             f_current = f_new
             converged = True
@@ -1002,9 +1017,10 @@ def sca_optimize(
     assert np.isfinite(H_final), f"H_final is not finite: {H_final}"
     assert_weights_valid(w, "sca_final_weights")
 
-    if final_grad_norm > 1e-4:
+    grad_warn_threshold = 100.0 * tol
+    if final_grad_norm > grad_warn_threshold:
         warnings.warn(
-            f"SCA final gradient norm {final_grad_norm:.2e} > 1e-4",
+            f"SCA final gradient norm {final_grad_norm:.2e} > {grad_warn_threshold:.1e}",
             stacklevel=2,
         )
 

@@ -9,3 +9,4 @@ data/tiingo_keys.txt
 data/tiingo_raw/*.parquet
 Colab_config.txt
 mosek.lic
+results/
