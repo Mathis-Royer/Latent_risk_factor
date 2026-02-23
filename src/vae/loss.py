@@ -244,37 +244,34 @@ def compute_cross_sectional_loss(
         step = max(1, T // n_dates)
         offsets = list(range(0, T, step))[:n_dates]
 
+        # Gather all return cross-sections at once: (B, n_dates)
+        R = ret_f32[:, offsets]
+
+        # Filter dates with zero variance (e.g., holidays)
+        r_var = R.var(dim=0)  # (n_dates,)
+        valid = r_var > 1e-12
+        R = R[:, valid]  # (B, n_valid)
+
+        n_valid = R.shape[1]
+        if n_valid == 0:
+            return torch.tensor(0.0, device=mu.device, requires_grad=True)
+
         # Pre-compute B^T B + ridge * I (shared across all dates)
         BtB = mu_f32.T @ mu_f32 + ridge * torch.eye(K, device=mu.device)
 
-        losses: list[torch.Tensor] = []
-        for t in offsets:
-            r_t = ret_f32[:, t]  # (B,)
+        # Batched OLS: solve (B^T B + ridge*I) Z_hat = B^T R for all dates at once
+        Bt_R = mu_f32.T @ R  # (K, n_valid)
+        Z_hat = torch.linalg.solve(BtB, Bt_R)  # (K, n_valid) — single batched solve
 
-            # Skip dates where returns have no variance (e.g., holidays)
-            r_var = torch.var(r_t)
-            if r_var < 1e-12:
-                continue
+        # Predict and compute R² vectorized
+        R_hat = mu_f32 @ Z_hat  # (B, n_valid)
+        R_mean = R.mean(dim=0, keepdim=True)  # (1, n_valid)
+        ss_res = ((R - R_hat) ** 2).sum(dim=0)  # (n_valid,)
+        ss_tot = ((R - R_mean) ** 2).sum(dim=0)  # (n_valid,)
 
-            # OLS: z_hat = (B^T B + ridge*I)^{-1} B^T r_t
-            Bt_r = mu_f32.T @ r_t  # (K,)
-            z_hat = torch.linalg.solve(BtB, Bt_r)  # (K,)
+        r_sq = 1.0 - ss_res / ss_tot.clamp(min=1e-12)
 
-            # Predict
-            r_hat = mu_f32 @ z_hat  # (B,)
-
-            # R² = 1 - SS_res / SS_tot
-            r_mean = r_t.mean()
-            ss_res = torch.sum((r_t - r_hat) ** 2)
-            ss_tot = torch.sum((r_t - r_mean) ** 2)
-
-            r_sq = 1.0 - ss_res / torch.clamp(ss_tot, min=1e-12)
-            losses.append(1.0 - r_sq)  # minimize (1 - R²) = SS_res / SS_tot
-
-    if len(losses) == 0:
-        return torch.tensor(0.0, device=mu.device, requires_grad=True)
-
-    return torch.stack(losses).mean()
+    return (1.0 - r_sq).mean()
 
 
 # ---------------------------------------------------------------------------
