@@ -3,9 +3,11 @@ VAE Loss computation: three modes (P/F/A), crisis weighting, co-movement loss.
 
 Implements:
 - Crisis-weighted reconstruction loss (MSE per-element mean × γ_eff)
+- Per-feature weighted reconstruction loss (feature_weights rebalancing)
 - KL divergence (summed over K, averaged over batch)
 - Three assembly modes: P (primary), F (fallback), A (advanced)
 - Co-movement loss (Spearman × cosine distance)
+- Cross-sectional R² loss (factor model quality pressure on encoder)
 - Curriculum scheduling for λ_co
 - Validation ELBO (excludes γ and λ_co, INV-011)
 
@@ -131,6 +133,151 @@ def compute_kl_loss(
 
 
 # ---------------------------------------------------------------------------
+# Sub-task 2b: Per-feature weighted reconstruction loss
+# ---------------------------------------------------------------------------
+
+def compute_weighted_reconstruction_loss(
+    x: torch.Tensor,
+    x_hat: torch.Tensor,
+    crisis_fractions: torch.Tensor,
+    gamma: float,
+    feature_weights: list[float] | None = None,
+) -> torch.Tensor:
+    """
+    Crisis-weighted per-element MSE with optional per-feature reweighting.
+
+    When feature_weights is provided, the MSE for each feature is weighted
+    separately before averaging. This addresses reconstruction imbalance
+    where the VAE over-fits to easy-to-reconstruct features (e.g., volatility)
+    at the expense of harder features (e.g., returns).
+
+    :param x (torch.Tensor): Input windows (B, T, F)
+    :param x_hat (torch.Tensor): Reconstruction (B, T, F)
+    :param crisis_fractions (torch.Tensor): f_c per window (B,)
+    :param gamma (float): Crisis overweighting factor
+    :param feature_weights (list[float] | None): Per-feature weights [w_0, w_1, ...].
+        None or empty = equal weights (standard MSE). [2.0, 0.5] emphasizes
+        returns (f=0) over volatility (f=1).
+
+    :return L_recon (torch.Tensor): Scalar, weighted reconstruction loss
+    """
+    x = x.float()
+    x_hat = x_hat.float()
+
+    if feature_weights is None or len(feature_weights) == 0:
+        return compute_reconstruction_loss(x, x_hat, crisis_fractions, gamma)
+
+    F = x.shape[2]
+    assert len(feature_weights) == F, (
+        f"feature_weights length {len(feature_weights)} != F={F}"
+    )
+
+    # Per-feature MSE with weights: weighted mean over features
+    fw = torch.tensor(feature_weights, device=x.device, dtype=torch.float32)
+    fw = fw / fw.sum()  # normalize to sum=1
+
+    # Squared error per element: (B, T, F)
+    sq_err = (x - x_hat) ** 2
+
+    # Weighted mean over T and F: for each window, sum over T of weighted-F
+    # sq_err: (B, T, F), fw: (F,)
+    # weighted_sq: (B, T, F) * (F,) -> (B, T, F), then mean over T, weighted sum over F
+    mse_per_feature = torch.mean(sq_err, dim=1)  # (B, F)
+    mse_per_window = torch.sum(mse_per_feature * fw.unsqueeze(0), dim=1)  # (B,)
+
+    # Crisis weighting
+    gamma_eff = 1.0 + crisis_fractions * (gamma - 1.0)
+    return torch.mean(gamma_eff * mse_per_window)
+
+
+# ---------------------------------------------------------------------------
+# Sub-task 2c: Cross-sectional R² loss
+# ---------------------------------------------------------------------------
+
+def compute_cross_sectional_loss(
+    mu: torch.Tensor,
+    raw_returns: torch.Tensor,
+    n_sample_dates: int = 20,
+    ridge: float = 1e-4,
+) -> torch.Tensor:
+    """
+    Cross-sectional factor model R² loss.
+
+    Forces the encoder to produce latent means (mu) that serve as useful
+    factor exposures for explaining cross-sectional return variation.
+    This bridges the gap between per-stock temporal training and
+    cross-sectional factor model usage.
+
+    At each sampled time offset t within the batch:
+    1. Treat mu as factor exposures: B = mu  (B_valid, K)
+    2. Get cross-sectional returns: r_t = raw_returns[:, t]  (B_valid,)
+    3. OLS with ridge: z_hat = (B^T B + ridge·I)^{-1} B^T r_t
+    4. Predict: r_hat = B @ z_hat
+    5. R² = 1 - ||r - r_hat||² / ||r - mean(r)||²
+
+    Loss = mean(1 - R²) over sampled dates.
+
+    Differentiable through mu via torch.linalg.solve.
+
+    :param mu (torch.Tensor): Latent means (B, K) — treated as factor exposures
+    :param raw_returns (torch.Tensor): Raw returns per window (B, T)
+    :param n_sample_dates (int): Number of time offsets to sample
+    :param ridge (float): Ridge regularization for OLS stability
+
+    :return L_cs (torch.Tensor): Scalar cross-sectional loss (1 - R²), in [0, 2]
+    """
+    B, K = mu.shape
+    T = raw_returns.shape[1]
+
+    if B < K + 1:
+        # Not enough stocks for meaningful cross-sectional regression
+        return torch.tensor(0.0, device=mu.device, requires_grad=True)
+
+    # Disable AMP autocast: linalg.solve requires consistent float32 dtype,
+    # but autocast downcasts matmuls to BFloat16/Float16 causing dtype mismatch.
+    with torch.amp.autocast(device_type=mu.device.type, enabled=False):
+        mu_f32 = mu.float()
+        ret_f32 = raw_returns.float()
+
+        # Sample time offsets (deterministic spacing for reproducibility)
+        n_dates = min(n_sample_dates, T)
+        step = max(1, T // n_dates)
+        offsets = list(range(0, T, step))[:n_dates]
+
+        # Pre-compute B^T B + ridge * I (shared across all dates)
+        BtB = mu_f32.T @ mu_f32 + ridge * torch.eye(K, device=mu.device)
+
+        losses: list[torch.Tensor] = []
+        for t in offsets:
+            r_t = ret_f32[:, t]  # (B,)
+
+            # Skip dates where returns have no variance (e.g., holidays)
+            r_var = torch.var(r_t)
+            if r_var < 1e-12:
+                continue
+
+            # OLS: z_hat = (B^T B + ridge*I)^{-1} B^T r_t
+            Bt_r = mu_f32.T @ r_t  # (K,)
+            z_hat = torch.linalg.solve(BtB, Bt_r)  # (K,)
+
+            # Predict
+            r_hat = mu_f32 @ z_hat  # (B,)
+
+            # R² = 1 - SS_res / SS_tot
+            r_mean = r_t.mean()
+            ss_res = torch.sum((r_t - r_hat) ** 2)
+            ss_tot = torch.sum((r_t - r_mean) ** 2)
+
+            r_sq = 1.0 - ss_res / torch.clamp(ss_tot, min=1e-12)
+            losses.append(1.0 - r_sq)  # minimize (1 - R²) = SS_res / SS_tot
+
+    if len(losses) == 0:
+        return torch.tensor(0.0, device=mu.device, requires_grad=True)
+
+    return torch.stack(losses).mean()
+
+
+# ---------------------------------------------------------------------------
 # Sub-task 3-5: Loss assembly (Modes P/F/A)
 # ---------------------------------------------------------------------------
 
@@ -153,6 +300,9 @@ def compute_loss(
     sigma_sq_max: float = 10.0,
     curriculum_phase1_frac: float = 0.30,
     curriculum_phase2_frac: float = 0.30,
+    cross_sectional_loss: torch.Tensor | None = None,
+    lambda_cs: float = 0.0,
+    feature_weights: list[float] | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Complete loss computation for a single batch.
@@ -175,6 +325,9 @@ def compute_loss(
     :param sigma_sq_max (float): Upper clamp for observation variance σ²
     :param curriculum_phase1_frac (float): Fraction of epochs for full co-movement
     :param curriculum_phase2_frac (float): Fraction of epochs for linear decay
+    :param cross_sectional_loss (torch.Tensor | None): Pre-computed L_cs scalar
+    :param lambda_cs (float): Cross-sectional R² loss weight
+    :param feature_weights (list[float] | None): Per-feature reconstruction weights
 
     :return total_loss (torch.Tensor): Scalar loss for backprop
     :return components (dict): Loss components for monitoring
@@ -191,8 +344,10 @@ def compute_loss(
     F = x.shape[2]
     D = T * F  # INV-001: D = T × F
 
-    # Reconstruction loss (per-element mean, crisis-weighted)
-    L_recon = compute_reconstruction_loss(x, x_hat, crisis_fractions, gamma)
+    # Reconstruction loss (per-element mean, crisis-weighted, optionally feature-weighted)
+    L_recon = compute_weighted_reconstruction_loss(
+        x, x_hat, crisis_fractions, gamma, feature_weights,
+    )
 
     # KL loss
     L_kl = compute_kl_loss(mu, log_var)
@@ -225,28 +380,33 @@ def compute_loss(
     # and the co-movement gradient signal has no effect on the encoder.
     co_term = lambda_co * (D / 2.0) * L_co
 
+    # Cross-sectional R² loss: bridges temporal training with cross-sectional usage
+    L_cs = cross_sectional_loss if cross_sectional_loss is not None else torch.tensor(0.0, device=x.device)
+    # Scale λ_cs by D/2 to make it commensurate with other loss terms
+    cs_term = lambda_cs * (D / 2.0) * L_cs
+
     # Assembly by mode
     if mode == "P":
-        # Mode P: D/(2σ²)·L_recon + (D/2)·ln(σ²) + L_KL + (D/2)·λ_co·L_co
+        # Mode P: D/(2σ²)·L_recon + (D/2)·ln(σ²) + L_KL + (D/2)·λ_co·L_co + (D/2)·λ_cs·L_cs
         recon_term = (D / (2.0 * sigma_sq)) * L_recon
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
-        total_loss = recon_term + log_norm_term + L_kl + co_term
+        total_loss = recon_term + log_norm_term + L_kl + co_term + cs_term
 
     elif mode == "F":
-        # Mode F: D/2·L_recon + β_t·L_KL + (D/2)·λ_co·L_co
+        # Mode F: D/2·L_recon + β_t·L_KL + (D/2)·λ_co·L_co + (D/2)·λ_cs·L_cs
         # σ²=1 frozen (no gradient on log_sigma_sq)
         # β_t = max(β_min, min(1, epoch / T_warmup))
         beta_t = get_beta_t(epoch, total_epochs, warmup_fraction)
 
         recon_term = (D / 2.0) * L_recon
         log_norm_term = torch.tensor(0.0, device=x.device)
-        total_loss = recon_term + beta_t * L_kl + co_term
+        total_loss = recon_term + beta_t * L_kl + co_term + cs_term
 
     else:  # mode == "A"
-        # Mode A: D/(2σ²)·L_recon + (D/2)·ln(σ²) + β·L_KL + (D/2)·λ_co·L_co
+        # Mode A: D/(2σ²)·L_recon + (D/2)·ln(σ²) + β·L_KL + (D/2)·λ_co·L_co + (D/2)·λ_cs·L_cs
         recon_term = (D / (2.0 * sigma_sq)) * L_recon
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
-        total_loss = recon_term + log_norm_term + beta_fixed * L_kl + co_term
+        total_loss = recon_term + log_norm_term + beta_fixed * L_kl + co_term + cs_term
 
     # Per-feature reconstruction loss (for diagnostics)
     per_feature_mse = compute_reconstruction_loss_per_feature(x, x_hat)
@@ -256,8 +416,10 @@ def compute_loss(
         "recon": L_recon.detach(),
         "kl": L_kl.detach(),
         "co_mov": L_co.detach(),
+        "cross_sec": L_cs.detach(),
         "sigma_sq": sigma_sq.detach(),
         "lambda_co": lambda_co,
+        "lambda_cs": lambda_cs,
         "recon_term": recon_term.detach(),
         "log_norm_term": log_norm_term.detach(),
         "total": total_loss.detach(),

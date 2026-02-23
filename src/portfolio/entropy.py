@@ -193,6 +193,16 @@ def compute_entropy_and_gradient(
         assert H >= -1e-10, f"Standard entropy is negative: {H}"
         H = max(H, 0.0)
 
+    # Gradient clipping: prevent blow-up from near-zero risk contributions.
+    # The entropy gradient contains 1/c'_k terms that explode when contributions
+    # are near zero.  With many factors (AU=64) and large n, many contributions
+    # are near-zero, causing the SCA linearization to be dominated by numerical
+    # artifacts.  Clipping the gradient norm prevents this.
+    grad_norm = float(np.linalg.norm(grad_H))
+    max_grad_norm = 10.0  # empirical: prevents step-size collapse in SCA
+    if grad_norm > max_grad_norm:
+        grad_H = grad_H * (max_grad_norm / grad_norm)
+
     return float(H), grad_H
 
 

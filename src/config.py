@@ -239,6 +239,9 @@ class LossConfig:
     warmup_fraction: float = 0.20
     max_pairs: int = 2048
     delta_sync: int = 21
+    lambda_cs: float = 0.0
+    cs_n_sample_dates: int = 20
+    feature_weights: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         _validate_in("mode", self.mode, {"P", "F", "A"}, default="P")
@@ -251,6 +254,10 @@ class LossConfig:
                         lo=0, hi=1.0, hi_exclusive=True)
         _validate_range("max_pairs", self.max_pairs, default=2048, lo=1)
         _validate_range("delta_sync", self.delta_sync, default=21, lo=1)
+        _validate_range("lambda_cs", self.lambda_cs, default=0.0,
+                        lo=0, hi=5.0)
+        _validate_range("cs_n_sample_dates", self.cs_n_sample_dates,
+                        default=20, lo=1, hi=100)
 
 
 # ---------------------------------------------------------------------------
@@ -449,11 +456,14 @@ class RiskModelConfig:
     sigma_z_shrinkage: str = "analytical_nonlinear"  # Ledoit-Wolf 2020 (robust to non-spiked spectra)
     sigma_z_eigenvalue_pct: float = 0.95
     sigma_z_ewma_half_life: int = 0  # 0 = equal weights (no EWMA); 126 = ~6 months Barra USE4 standard
+    au_max_bai_ng_factor: float = 1.0
     b_a_shrinkage_alpha: float = 0.0
     b_a_clip_threshold: float = 3.5
     use_wls: bool = True
     b_a_normalize: bool = True
     market_intercept: bool = True
+    vt_clamp_min: float = 0.5
+    vt_clamp_max: float = 2.0
 
     def __post_init__(self) -> None:
         _validate_range("winsorize_lo", self.winsorize_lo, default=5.0,
@@ -484,6 +494,15 @@ class RiskModelConfig:
         _validate_range("sigma_z_ewma_half_life",
                         self.sigma_z_ewma_half_life,
                         default=0, lo=0)
+        _validate_range("au_max_bai_ng_factor",
+                        self.au_max_bai_ng_factor,
+                        default=1.0, lo=0.5, hi=3.0)
+        _validate_range("vt_clamp_min", self.vt_clamp_min,
+                        default=0.5, lo=0.1, hi=1.0)
+        _validate_range("vt_clamp_max", self.vt_clamp_max,
+                        default=2.0, lo=1.0, hi=10.0)
+        _validate_pair("vt_clamp_min", self.vt_clamp_min,
+                       "vt_clamp_max", self.vt_clamp_max, strict=True)
 
 
 # ---------------------------------------------------------------------------

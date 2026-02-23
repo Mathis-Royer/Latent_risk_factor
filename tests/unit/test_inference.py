@@ -21,6 +21,7 @@ from src.inference.active_units import (
     compute_au_max_stat,
     filter_exposure_matrix,
     measure_active_units,
+    post_filter_au_bai_ng,
     truncate_active_dims,
 )
 from src.training.trainer import VAETrainer
@@ -613,3 +614,112 @@ class TestAUMaxStatDVTTable:
                     f"n_obs={n_obs}, r_min={r_min}: got {au_max}, "
                     f"expected floor(sqrt(2*{n_obs}/{r_min}))={expected}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Bai-Ng AU post-filter tests (Action 2b)
+# ---------------------------------------------------------------------------
+
+
+class TestPostFilterAUBaiNg:
+    """Tests for post_filter_au_bai_ng function."""
+
+    def test_no_reduction_when_au_below_bound(self) -> None:
+        """When AU <= bound, no filtering should occur."""
+        kl = np.array([0.5, 0.3, 0.2, 0.1, 0.05])
+        active_dims = [0, 1, 2, 3, 4]
+        AU = 5
+        k_bai_ng = 10  # bound = max(10, 0) = 10 > AU=5
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl, k_bai_ng=k_bai_ng,
+        )
+
+        assert AU_out == AU, f"Should not reduce: {AU_out} != {AU}"
+        assert dims_out == active_dims
+
+    def test_reduction_when_au_exceeds_bai_ng(self) -> None:
+        """AU=64 with k_bai_ng=21 → AU_effective=21."""
+        kl = np.zeros(200)
+        kl[:64] = np.linspace(1.0, 0.01, 64)
+        # active_dims sorted by decreasing KL
+        active_dims = list(range(64))
+        AU = 64
+        k_bai_ng = 21
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl, k_bai_ng=k_bai_ng,
+        )
+
+        assert AU_out == 21, f"Expected 21, got {AU_out}"
+        assert len(dims_out) == 21
+        # Should keep top 21 by KL
+        assert dims_out == list(range(21))
+
+    def test_onatski_floor(self) -> None:
+        """2 * k_onatski should be used if larger than k_bai_ng."""
+        kl = np.linspace(1.0, 0.01, 20)
+        active_dims = list(range(20))
+        AU = 20
+        k_bai_ng = 5
+        k_onatski = 8  # 2*8 = 16 > 5
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl,
+            k_bai_ng=k_bai_ng, k_onatski=k_onatski,
+        )
+
+        assert AU_out == 16, f"Expected 2*k_onatski=16, got {AU_out}"
+        assert len(dims_out) == 16
+
+    def test_minimum_two_factors(self) -> None:
+        """Should always keep at least 2 factors."""
+        kl = np.array([0.5, 0.3, 0.2, 0.1, 0.05])
+        active_dims = [0, 1, 2, 3, 4]
+        AU = 5
+        k_bai_ng = 1  # max(1, 0) = 1, but minimum = 2
+        k_onatski = 0
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl,
+            k_bai_ng=k_bai_ng, k_onatski=k_onatski,
+        )
+
+        assert AU_out == 2, f"Minimum should be 2 factors, got {AU_out}"
+        assert len(dims_out) == 2
+
+    def test_factor_multiplier(self) -> None:
+        """factor=1.5 should give 50% slack on Bai-Ng bound."""
+        kl = np.linspace(1.0, 0.01, 30)
+        active_dims = list(range(30))
+        AU = 30
+        k_bai_ng = 10
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl,
+            k_bai_ng=k_bai_ng, factor=1.5,
+        )
+
+        # max(int(10 * 1.5), 0) = 15
+        assert AU_out == 15, f"Expected 15 with factor=1.5, got {AU_out}"
+
+    def test_preserves_kl_ordering(self) -> None:
+        """Filtered dims should maintain decreasing KL order."""
+        kl = np.zeros(100)
+        # Set KL values with known ordering
+        kl[50] = 1.0
+        kl[20] = 0.8
+        kl[70] = 0.6
+        kl[10] = 0.4
+        kl[90] = 0.2
+        # active_dims already sorted by decreasing KL
+        active_dims = [50, 20, 70, 10, 90]
+        AU = 5
+        k_bai_ng = 3
+
+        AU_out, dims_out = post_filter_au_bai_ng(
+            AU, active_dims, kl, k_bai_ng=k_bai_ng,
+        )
+
+        assert AU_out == 3
+        assert dims_out == [50, 20, 70], f"Should keep top 3 by KL: {dims_out}"

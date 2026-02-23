@@ -37,6 +37,7 @@ from src.validation import (
 )
 from src.vae.loss import (
     compute_co_movement_loss,
+    compute_cross_sectional_loss,
     compute_loss,
     compute_validation_elbo,
     get_beta_t,
@@ -93,6 +94,9 @@ class VAETrainer:
         sigma_sq_max: float = 10.0,
         curriculum_phase1_frac: float = 0.30,
         curriculum_phase2_frac: float = 0.30,
+        lambda_cs: float = 0.0,
+        cs_n_sample_dates: int = 20,
+        feature_weights: list[float] | None = None,
     ) -> None:
         """
         :param model (VAEModel): The VAE model
@@ -121,6 +125,9 @@ class VAETrainer:
         :param sigma_sq_max (float): Upper clamp for observation variance σ²
         :param curriculum_phase1_frac (float): Fraction of epochs for full co-movement
         :param curriculum_phase2_frac (float): Fraction of epochs for linear decay
+        :param lambda_cs (float): Cross-sectional R² loss weight
+        :param cs_n_sample_dates (int): Number of dates to sample for L_cs
+        :param feature_weights (list[float] | None): Per-feature recon weights
         """
         self.model: VAEModel = model
         self.loss_mode = loss_mode
@@ -135,6 +142,9 @@ class VAETrainer:
         self._es_min_delta = es_min_delta
         self.curriculum_phase1_frac = curriculum_phase1_frac
         self.curriculum_phase2_frac = curriculum_phase2_frac
+        self.lambda_cs = lambda_cs
+        self.cs_n_sample_dates = cs_n_sample_dates
+        self.feature_weights = feature_weights
         self.device = device or get_optimal_device()
         self._is_cuda = self.device.type == "cuda"
 
@@ -238,6 +248,7 @@ class VAETrainer:
         epoch_kl = torch.tensor(0.0, device=self.device)
         epoch_co = torch.tensor(0.0, device=self.device)
         epoch_sigma_sq = torch.tensor(0.0, device=self.device)
+        epoch_cs = torch.tensor(0.0, device=self.device)
         epoch_recon_per_feature: list[float] | None = None  # Per-feature recon loss
         epoch_log_var_stats: dict[str, Any] | None = None  # VAE posterior diagnostics
         epoch_kl_per_dim_accum: torch.Tensor | None = None  # G1: Per-dimension KL trajectory
@@ -343,6 +354,15 @@ class VAETrainer:
                         mu, raw_ret, max_pairs=self.max_pairs,
                     )
 
+                # Cross-sectional R² loss: forces encoder to produce factor
+                # exposures (mu) that explain cross-sectional return variation
+                cs_loss: torch.Tensor | None = None
+                if raw_ret is not None and self.lambda_cs > 0 and x.shape[0] >= mu.shape[1] + 1:
+                    cs_loss = compute_cross_sectional_loss(
+                        mu, raw_ret,
+                        n_sample_dates=self.cs_n_sample_dates,
+                    )
+
                 loss, components = compute_loss(
                     x=x,
                     x_hat=x_hat,
@@ -362,6 +382,9 @@ class VAETrainer:
                     sigma_sq_max=self._sigma_sq_max,
                     curriculum_phase1_frac=self.curriculum_phase1_frac,
                     curriculum_phase2_frac=self.curriculum_phase2_frac,
+                    cross_sectional_loss=cs_loss,
+                    lambda_cs=self.lambda_cs,
+                    feature_weights=self.feature_weights,
                 )
 
             # Loss explosion warning
@@ -421,6 +444,7 @@ class VAETrainer:
             epoch_kl += components["kl"]
             epoch_co += components["co_mov"]
             epoch_sigma_sq += components["sigma_sq"]
+            epoch_cs += components["cross_sec"]
 
             # Accumulate per-feature reconstruction loss (CPU list)
             rpf = components.get("recon_per_feature")
@@ -494,6 +518,7 @@ class VAETrainer:
             "train_recon": float(epoch_recon / n_batches),
             "train_kl": float(epoch_kl / n_batches),
             "train_co": float(epoch_co / n_batches),
+            "train_cs": float(epoch_cs / n_batches),
             "sigma_sq": float(epoch_sigma_sq / n_batches),
             "AU": au_count,
             "lambda_co": get_lambda_co(
@@ -870,6 +895,7 @@ class VAETrainer:
             "train_recon": "Loss/reconstruction",
             "train_kl": "Loss/kl_divergence",
             "train_co": "Loss/co_movement",
+            "train_cs": "Loss/cross_sectional",
             "val_elbo": "Validation/ELBO",
             "sigma_sq": "Training/sigma_sq",
             "AU": "Training/active_units",

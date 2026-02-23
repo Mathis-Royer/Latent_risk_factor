@@ -62,6 +62,7 @@ def compute_variance_entropy_frontier(
     refine_points: int = 3,
     n_starts_refine: int = 3,
     max_iter_refine: int = 75,
+    initial_warm_start_w: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, dict[float, np.ndarray]]:
     """
     Two-phase variance-entropy frontier computation with early stopping.
@@ -108,6 +109,9 @@ def compute_variance_entropy_frontier(
     :param refine_points (int): Number of refinement points
     :param n_starts_refine (int): Starts for Phase 2
     :param max_iter_refine (int): SCA iterations for Phase 2
+    :param initial_warm_start_w (np.ndarray | None): Initial warm start weights
+        for the first alpha point.  When provided (e.g., from a PCA ERC solution),
+        gives the SCA solver a better starting point than random/equal-weight.
 
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
     :return weights_by_alpha (dict[float, np.ndarray]): Optimal weights for each α
@@ -134,7 +138,7 @@ def compute_variance_entropy_frontier(
 
     results: list[dict[str, float]] = []
     weights_by_alpha: dict[float, np.ndarray] = {}
-    prev_w: np.ndarray | None = None
+    prev_w: np.ndarray | None = initial_warm_start_w
 
     logger.info(
         "Frontier Phase 1: %d coarse points (early_stop=%s, target_enb=%.2f)",

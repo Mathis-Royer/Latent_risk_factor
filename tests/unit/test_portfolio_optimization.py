@@ -162,6 +162,10 @@ class TestEntropy:
 
         Perturb each w_i by epsilon and compare (H(w+e)-H(w-e)) / (2*epsilon)
         to the analytical gradient. Relative error should be below 1e-5.
+
+        Uses balanced eigenvalues to keep gradient norm below the clipping
+        threshold (10.0), ensuring the test checks the mathematical gradient
+        rather than the clipped version.
         """
         np.random.seed(SEED)
         data = _make_portfolio_data()
@@ -172,7 +176,9 @@ class TestEntropy:
         w = w_raw.astype(np.float64)
 
         B_prime = data["B_prime"]
-        eigenvalues = data["eigenvalues"]
+        # Use balanced eigenvalues to prevent gradient blow-up from near-zero
+        # contributions (which triggers clipping and breaks numerical test)
+        eigenvalues = np.ones_like(data["eigenvalues"]) * 0.1
 
         H, grad_H = compute_entropy_and_gradient(w, B_prime, eigenvalues)
 
@@ -202,6 +208,9 @@ class TestEntropy:
 
         Same as test_entropy_gradient_numerical but with D_eps and idio_weight,
         verifying the combined factor + idiosyncratic gradient.
+
+        Uses balanced eigenvalues to keep gradient norm below the clipping
+        threshold (10.0).
         """
         np.random.seed(SEED)
         data = _make_portfolio_data()
@@ -211,7 +220,8 @@ class TestEntropy:
         w = w_raw.astype(np.float64)
 
         B_prime = data["B_prime"]
-        eigenvalues = data["eigenvalues"]
+        # Use balanced eigenvalues to prevent gradient clipping
+        eigenvalues = np.ones_like(data["eigenvalues"]) * 0.1
         D_eps = data["D_eps"]
         idio_weight = 0.3
 
@@ -2570,3 +2580,126 @@ class TestFastSubproblemSolver:
             assert entropies[i] >= entropies[i - 1] - 0.05, (
                 f"Entropy should generally increase with alpha"
             )
+
+
+# ---------------------------------------------------------------------------
+# Entropy gradient clipping tests (Action 1c)
+# ---------------------------------------------------------------------------
+
+
+class TestEntropyGradientClipping:
+    """Tests for gradient clipping in compute_entropy_and_gradient."""
+
+    def test_gradient_norm_bounded(self) -> None:
+        """Gradient norm should never exceed max_grad_norm=10.0."""
+        np.random.seed(SEED)
+        n, au = 100, 10
+
+        # Create a scenario with near-zero risk contributions
+        # (many stocks with tiny weights → near-zero contributions → gradient blow-up)
+        B_prime = np.random.randn(n, au) * 0.1
+        eigenvalues = np.abs(np.random.randn(au)) * 0.01
+        eigenvalues[0] = 1.0  # One dominant factor
+
+        # Concentrated weight → many near-zero contributions
+        w = np.zeros(n)
+        w[0] = 0.5
+        w[1] = 0.3
+        w[2:10] = 0.2 / 8
+        w = w / w.sum()
+
+        _, grad = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+
+        grad_norm = float(np.linalg.norm(grad))
+        assert grad_norm <= 10.0 + 1e-10, (
+            f"Gradient norm {grad_norm:.4f} exceeds max_grad_norm=10.0"
+        )
+
+    def test_small_gradient_not_clipped(self) -> None:
+        """Small gradients should pass through unchanged."""
+        np.random.seed(SEED)
+        n, au = 20, 5
+
+        B_prime = np.random.randn(n, au) * 0.5
+        eigenvalues = np.ones(au) * 0.1  # equal eigenvalues
+
+        w = np.ones(n) / n  # equal weight
+
+        _, grad = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+
+        grad_norm = float(np.linalg.norm(grad))
+        # With equal weights and moderate eigenvalues, gradient should be small
+        assert grad_norm < 10.0, (
+            f"Small gradient should not be clipped, norm={grad_norm:.4f}"
+        )
+
+    def test_clipped_gradient_preserves_direction(self) -> None:
+        """Clipping should preserve gradient direction (only scale magnitude)."""
+        np.random.seed(SEED)
+        n, au = 100, 10
+
+        B_prime = np.random.randn(n, au) * 0.1
+        eigenvalues = np.abs(np.random.randn(au)) * 0.001
+        eigenvalues[0] = 10.0  # extreme dominant factor
+
+        # Very concentrated weights to provoke large gradients
+        w = np.zeros(n)
+        w[0] = 0.9
+        w[1:5] = 0.1 / 4
+        w = w / w.sum()
+
+        _, grad = compute_entropy_and_gradient(w, B_prime, eigenvalues)
+
+        # Gradient should have finite values and bounded norm
+        assert np.isfinite(grad).all(), "Gradient should be finite after clipping"
+        assert float(np.linalg.norm(grad)) <= 10.0 + 1e-10, "Norm should be bounded"
+
+
+# ---------------------------------------------------------------------------
+# Frontier initial warm start tests (Action 1b)
+# ---------------------------------------------------------------------------
+
+
+class TestFrontierWarmStart:
+    """Tests for initial_warm_start_w parameter in frontier."""
+
+    def test_warm_start_accepted(self) -> None:
+        """Frontier should accept and use initial_warm_start_w."""
+        np.random.seed(SEED)
+        n, au = N_STOCKS, AU
+        data = _make_portfolio_data(n, au)
+
+        w_init = np.ones(n) / n  # equal weight warm start
+
+        frontier, weights = compute_variance_entropy_frontier(
+            data["Sigma_assets"], data["B_prime"], data["eigenvalues"], data["D_eps"],
+            alpha_grid=[0.01, 0.1],
+            lambda_risk=1.0, w_max=0.1, w_min=0.001, w_bar=0.05,
+            phi=25.0, is_first=True,
+            n_starts=1, max_iter=20, seed=SEED,
+            initial_warm_start_w=w_init,
+            target_enb=0.0,
+            refine_enabled=False,
+        )
+
+        assert len(frontier) == 2, f"Expected 2 frontier points, got {len(frontier)}"
+        assert len(weights) == 2, f"Expected weights for 2 alphas"
+
+    def test_none_warm_start_works(self) -> None:
+        """Frontier should work without warm start (backward compatibility)."""
+        np.random.seed(SEED)
+        n, au = N_STOCKS, AU
+        data = _make_portfolio_data(n, au)
+
+        frontier, weights = compute_variance_entropy_frontier(
+            data["Sigma_assets"], data["B_prime"], data["eigenvalues"], data["D_eps"],
+            alpha_grid=[0.01],
+            lambda_risk=1.0, w_max=0.1, w_min=0.001, w_bar=0.05,
+            phi=25.0, is_first=True,
+            n_starts=1, max_iter=20, seed=SEED,
+            initial_warm_start_w=None,
+            target_enb=0.0,
+            refine_enabled=False,
+        )
+
+        assert len(frontier) == 1

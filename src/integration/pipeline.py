@@ -46,6 +46,7 @@ from src.data_pipeline.features import compute_rolling_realized_vol
 from src.inference.active_units import (
     compute_au_max_stat,
     filter_exposure_matrix,
+    post_filter_au_bai_ng,
     truncate_active_dims,
 )
 from src.inference.composite import aggregate_profiles, infer_latent_trajectories
@@ -115,9 +116,12 @@ BENCHMARK_CLASSES: dict[str, type] = {
 # while a short holdout of 20 days shrinks moderately (20/(20+20)=0.50).
 # Reduced from 60→20 to lower over-shrinkage when model has low predictive power (EP_oos~0.28).
 _VT_PRIOR_STRENGTH = 20
-# Safety clamps after shrinkage (very wide — the shrinkage does the work)
-_VT_SCALE_MIN = 0.1
-_VT_SCALE_MAX = 10.0
+# Safety clamps after shrinkage.  Tighter bounds [0.5, 2.0] enforce
+# anti-cyclical memory: if recent data shows lower risk we only partially
+# believe it, preventing pro-cyclical VT from halving eigenvalues.
+# Overridable via RiskModelConfig.vt_clamp_min / vt_clamp_max.
+_VT_SCALE_MIN = 0.5
+_VT_SCALE_MAX = 2.0
 
 
 def _align_weights_by_stock_id(
@@ -1436,6 +1440,9 @@ class FullPipeline:
             sigma_sq_max=self.config.vae.sigma_sq_max,
             curriculum_phase1_frac=self.config.training.curriculum_phase1_frac,
             curriculum_phase2_frac=self.config.training.curriculum_phase2_frac,
+            lambda_cs=self.config.loss.lambda_cs,
+            cs_n_sample_dates=self.config.loss.cs_n_sample_dates,
+            feature_weights=self.config.loss.feature_weights or None,
         )
 
         # Crisis labels from VIX (if available)
@@ -1866,6 +1873,9 @@ class FullPipeline:
                 sigma_sq_max=self.config.vae.sigma_sq_max,
                 curriculum_phase1_frac=self.config.training.curriculum_phase1_frac,
                 curriculum_phase2_frac=self.config.training.curriculum_phase2_frac,
+                lambda_cs=self.config.loss.lambda_cs,
+                cs_n_sample_dates=self.config.loss.cs_n_sample_dates,
+                feature_weights=self.config.loss.feature_weights or None,
             )
 
             # Co-movement data: strata from k-means on trailing returns
@@ -2016,6 +2026,45 @@ class FullPipeline:
             )
             au_max = n_stocks - 1
         AU, active_dims = truncate_active_dims(AU, kl_per_dim, active_dims, au_max)
+
+        # Post-filter AU using Bai-Ng IC2 as upper bound (reduces noise factors).
+        # Bai-Ng k is computed later in diagnostics; here we use it if available
+        # from a previous run's state_bag, or compute inline.
+        bai_ng_factor = self.config.risk_model.au_max_bai_ng_factor
+        if bai_ng_factor > 0 and _state_bag is not None:
+            try:
+                from src.risk_model.factor_quality import bai_ng_ic2
+                # Use training returns for Bai-Ng estimation
+                train_ret_slice = returns.loc[train_start:train_end]
+                stock_cols = [c for c in train_ret_slice.columns if c in inferred_stock_ids[:n_stocks]]
+                if len(stock_cols) >= 10:
+                    ret_matrix = train_ret_slice[stock_cols].dropna(how="all").values
+                    ret_matrix = np.nan_to_num(ret_matrix, nan=0.0)
+                    # Center returns (bai_ng_ic2 expects centered data)
+                    ret_matrix = ret_matrix - ret_matrix.mean(axis=0, keepdims=True)
+                    if ret_matrix.shape[0] >= 50:
+                        k_bai_ng = bai_ng_ic2(ret_matrix, k_max=AU)
+                        k_onatski = _state_bag.get("k_onatski", 0)
+                        AU_pre = AU
+                        AU, active_dims = post_filter_au_bai_ng(
+                            AU, active_dims, kl_per_dim,
+                            k_bai_ng=k_bai_ng, k_onatski=k_onatski,
+                            factor=bai_ng_factor,
+                        )
+                        if AU < AU_pre:
+                            logger.info(
+                                "  [Fold %d] AU post-filtered: %d -> %d "
+                                "(Bai-Ng IC2=%d, Onatski=%d, factor=%.1f)",
+                                fold_id, AU_pre, AU, k_bai_ng, k_onatski,
+                                bai_ng_factor,
+                            )
+                        if _state_bag is not None:
+                            _state_bag["k_bai_ng"] = k_bai_ng
+                            _state_bag["au_pre_filter"] = AU_pre
+            except Exception as e:
+                logger.warning(
+                    "  [Fold %d] Bai-Ng AU post-filter failed: %s", fold_id, e,
+                )
 
         if AU == 0:
             n_input = len(stock_ids)
@@ -2274,6 +2323,8 @@ class FullPipeline:
             # vt_shrunk = (n·vt_raw + ν·1.0) / (n + ν) pulls extreme
             # ratios toward unity, with strength inversely proportional
             # to holdout sample size.
+            vt_min = self.config.risk_model.vt_clamp_min
+            vt_max = self.config.risk_model.vt_clamp_max
             vt_factors = np.ones(len(eigenvalues), dtype=np.float64)
             for k in range(len(eigenvalues)):
                 realized_k = float(np.var(z_holdout_principal[:, k], ddof=1))
@@ -2283,7 +2334,7 @@ class FullPipeline:
                     n_holdout_vt * vt_raw_k + _VT_PRIOR_STRENGTH * 1.0
                 ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
                 vt_factors[k] = float(np.clip(
-                    vt_shrunk_k, _VT_SCALE_MIN, _VT_SCALE_MAX,
+                    vt_shrunk_k, vt_min, vt_max,
                 ))
             eigenvalues = eigenvalues * vt_factors
             eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
@@ -2309,7 +2360,7 @@ class FullPipeline:
                     n_idio_obs * vt_idio_raw + _VT_PRIOR_STRENGTH * 1.0
                 ) / (n_idio_obs + _VT_PRIOR_STRENGTH)
                 vt_idio = float(np.clip(
-                    vt_idio_shrunk, _VT_SCALE_MIN, _VT_SCALE_MAX,
+                    vt_idio_shrunk, vt_min, vt_max,
                 ))
             else:
                 vt_idio = 1.0
@@ -2511,6 +2562,21 @@ class FullPipeline:
             else:
                 budget = None
 
+        # PCA warm start: inverse-volatility weights from Sigma_assets diagonal.
+        # Gives the SCA solver a better starting point than random/equal-weight,
+        # improving convergence for large n (Action 1b from post-mortem).
+        pca_warm_start: np.ndarray | None = None
+        try:
+            diag_var = np.diag(Sigma_assets)
+            inv_vol = 1.0 / np.sqrt(np.maximum(diag_var, 1e-15))
+            w_ivol = inv_vol / inv_vol.sum()
+            # Clip to box constraints
+            w_ivol = np.clip(w_ivol, 0.0, pc.w_max)
+            w_ivol = w_ivol / max(w_ivol.sum(), 1e-15)
+            pca_warm_start = w_ivol
+        except Exception:
+            pass  # Fallback: frontier starts from random/EW
+
         # Two-phase frontier with early stopping
         frontier, frontier_weights = compute_variance_entropy_frontier(
             Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
@@ -2527,6 +2593,7 @@ class FullPipeline:
             idio_weight=idio_weight,
             normalize_entropy_gradient=pc.normalize_entropy_gradient,
             budget=budget,
+            initial_warm_start_w=pca_warm_start,
             # Two-phase early stopping params
             target_enb=effective_target_enb,
             coarse_grid=pc.frontier_coarse_grid,

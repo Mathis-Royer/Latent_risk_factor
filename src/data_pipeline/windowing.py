@@ -107,6 +107,7 @@ def create_windows(
     stride: int = 1,
     sigma_min: float = 1e-8,
     max_zero_frac: float = 0.20,
+    log_transform_vol: bool = True,
 ) -> tuple[torch.Tensor, pd.DataFrame, torch.Tensor]:
     """
     Create sliding windows from returns and volatility data.
@@ -128,6 +129,9 @@ def create_windows(
     :param stride (int): Step between consecutive windows
     :param sigma_min (float): Minimum std for z-scoring (prevents NaN)
     :param max_zero_frac (float): Maximum fraction of zero-return days
+    :param log_transform_vol (bool): If True, apply log(vol + 1e-8) before
+        z-scoring. Compresses the volatility distribution, preventing the
+        VAE from over-allocating latent capacity to volatility patterns.
 
     :return windows (torch.Tensor): Shape (N, T, F), z-scored windows
     :return metadata (pd.DataFrame): Columns: stock_id, start_date, end_date
@@ -237,6 +241,13 @@ def create_windows(
         win_ends = win_ends[zero_ok]
         n_valid = len(win_starts)
 
+        # --- Log-transform volatility before z-scoring ---
+        # Compresses the vol distribution (highly persistent, GARCH effects)
+        # so the VAE allocates more latent capacity to return patterns
+        # (which matter for the cross-sectional factor model).
+        if log_transform_vol:
+            vol_clean = np.log(np.maximum(vol_clean, 1e-8))
+
         # --- Z-score per feature per window (CONV-02) ---
         ret_mu = ret_clean.mean(axis=1, keepdims=True)
         ret_sigma = ret_clean.std(axis=1, keepdims=True)
@@ -252,10 +263,13 @@ def create_windows(
         assert_finite_2d(ret_zscore, "z_scored_returns")
 
         # Validate z-score normalization (mean≈0, std≈1)
-        # Only validate if original data had variance (skip constant data)
-        if float(ret_sigma.mean()) > sigma_min * 10:
+        # Only validate if original data had meaningful variance.
+        # Threshold 1e-4 (instead of sigma_min*10) avoids false positives
+        # from float32 precision artifacts in log-transformed constant data.
+        _ZSCORE_GUARD = 1e-4
+        if float(ret_sigma.mean()) > _ZSCORE_GUARD:
             assert_z_score_normalized(ret_zscore.flatten(), "z_scored_returns")
-        if float(vol_sigma.mean()) > sigma_min * 10:
+        if float(vol_sigma.mean()) > _ZSCORE_GUARD:
             assert_z_score_normalized(vol_zscore.flatten(), "z_scored_volatility")
 
         # Fill pre-allocated arrays (no list accumulation)

@@ -14,8 +14,10 @@ import torch
 
 from src.vae.loss import (
     compute_co_movement_loss,
+    compute_cross_sectional_loss,
     compute_loss,
     compute_reconstruction_loss,
+    compute_weighted_reconstruction_loss,
     compute_validation_elbo,
     get_beta_t,
     get_lambda_co,
@@ -1295,3 +1297,168 @@ class TestEndToEndELBOKnownValues:
         assert abs(elbo.item() - expected_elbo) < 1e-4, (
             f"Validation ELBO: got {elbo.item():.6f}, expected {expected_elbo:.6f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-sectional R² loss tests
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSectionalLoss:
+    """Tests for compute_cross_sectional_loss (Action 2a)."""
+
+    def test_perfect_factor_model_gives_zero_loss(self) -> None:
+        """When mu perfectly explains returns, R²≈1 and loss≈0."""
+        torch.manual_seed(42)
+        B_stocks = 30
+        K_factors = 5
+        T_days = 50
+
+        # Construct returns from a known factor model: r = B @ z + eps
+        mu = torch.randn(B_stocks, K_factors)
+        z = torch.randn(T_days, K_factors) * 0.01
+        raw_returns = (mu @ z.T)  # (B, T) — perfect factor model, no noise
+
+        loss = compute_cross_sectional_loss(mu, raw_returns, n_sample_dates=20)
+
+        assert loss.item() < 0.05, (
+            f"Loss should be near 0 for perfect factor model, got {loss.item():.4f}"
+        )
+
+    def test_random_mu_gives_high_loss(self) -> None:
+        """When mu is random noise, R²≈0 and loss≈1."""
+        torch.manual_seed(42)
+        B_stocks = 30
+        K_factors = 5
+        T_days = 50
+
+        mu = torch.randn(B_stocks, K_factors)
+        raw_returns = torch.randn(B_stocks, T_days) * 0.01  # independent noise
+
+        loss = compute_cross_sectional_loss(mu, raw_returns, n_sample_dates=20)
+
+        assert loss.item() > 0.5, (
+            f"Loss should be high for random mu, got {loss.item():.4f}"
+        )
+
+    def test_too_few_stocks_returns_zero(self) -> None:
+        """When B < K+1, should return zero (underdetermined OLS)."""
+        mu = torch.randn(3, 10)  # B=3 < K+1=11
+        raw_returns = torch.randn(3, 50)
+
+        loss = compute_cross_sectional_loss(mu, raw_returns)
+
+        assert loss.item() == 0.0, "Should return 0 when B < K+1"
+
+    def test_gradient_flows_through_mu(self) -> None:
+        """Loss must be differentiable w.r.t. mu."""
+        torch.manual_seed(42)
+        mu = torch.randn(20, 5, requires_grad=True)
+        raw_returns = torch.randn(20, 50) * 0.01
+
+        loss = compute_cross_sectional_loss(mu, raw_returns, n_sample_dates=10)
+        loss.backward()
+
+        assert mu.grad is not None, "Gradient should flow to mu"
+        assert torch.isfinite(mu.grad).all(), "Gradient should be finite"
+        assert mu.grad.abs().sum() > 0, "Gradient should be non-zero"
+
+    def test_loss_in_valid_range(self) -> None:
+        """Loss = mean(1 - R²) should be in [0, 2] (R² ∈ [-1, 1])."""
+        torch.manual_seed(42)
+        mu = torch.randn(30, 5)
+        raw_returns = torch.randn(30, 50) * 0.01
+
+        loss = compute_cross_sectional_loss(mu, raw_returns, n_sample_dates=20)
+
+        assert 0.0 <= loss.item() <= 2.0, (
+            f"Loss should be in [0, 2], got {loss.item():.4f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-feature weighted reconstruction loss tests
+# ---------------------------------------------------------------------------
+
+
+class TestWeightedReconstructionLoss:
+    """Tests for compute_weighted_reconstruction_loss (Action 3a)."""
+
+    def test_no_weights_equals_standard_loss(self) -> None:
+        """No feature_weights should match standard compute_reconstruction_loss."""
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F)
+        x_hat = torch.randn(B, T, F)
+        crisis = torch.zeros(B)
+
+        standard = compute_reconstruction_loss(x, x_hat, crisis, gamma=1.0)
+        weighted = compute_weighted_reconstruction_loss(
+            x, x_hat, crisis, gamma=1.0, feature_weights=None,
+        )
+
+        assert abs(standard.item() - weighted.item()) < 1e-6, (
+            f"No weights should equal standard: {standard.item()} vs {weighted.item()}"
+        )
+
+    def test_equal_weights_matches_standard(self) -> None:
+        """Equal weights [1.0, 1.0] should give same result as standard."""
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F)
+        x_hat = torch.randn(B, T, F)
+        crisis = torch.zeros(B)
+
+        standard = compute_reconstruction_loss(x, x_hat, crisis, gamma=1.0)
+        weighted = compute_weighted_reconstruction_loss(
+            x, x_hat, crisis, gamma=1.0, feature_weights=[1.0, 1.0],
+        )
+
+        assert abs(standard.item() - weighted.item()) < 1e-5, (
+            f"Equal weights should match standard: {standard.item()} vs {weighted.item()}"
+        )
+
+    def test_weights_emphasize_first_feature(self) -> None:
+        """Weights [2.0, 0.0] should only measure feature 0 reconstruction."""
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F)
+        x_hat = x.clone()
+        x_hat[:, :, 0] += 1.0  # Error only in feature 0
+        crisis = torch.zeros(B)
+
+        loss_emphasize = compute_weighted_reconstruction_loss(
+            x, x_hat, crisis, gamma=1.0, feature_weights=[2.0, 0.0001],
+        )
+
+        # Feature 0 MSE should dominate
+        assert loss_emphasize.item() > 0.5, (
+            f"With weight on feature 0 and error there, loss should be high: {loss_emphasize.item()}"
+        )
+
+    def test_crisis_weighting_still_works(self) -> None:
+        """Crisis fractions should still up-weight crisis windows."""
+        torch.manual_seed(42)
+        x = torch.randn(B, T, F)
+        x_hat = torch.randn(B, T, F)
+        no_crisis = torch.zeros(B)
+        high_crisis = torch.ones(B)
+
+        loss_calm = compute_weighted_reconstruction_loss(
+            x, x_hat, no_crisis, gamma=2.0, feature_weights=[2.0, 0.5],
+        )
+        loss_crisis = compute_weighted_reconstruction_loss(
+            x, x_hat, high_crisis, gamma=2.0, feature_weights=[2.0, 0.5],
+        )
+
+        assert loss_crisis.item() > loss_calm.item(), (
+            f"Crisis loss should be higher: crisis={loss_crisis.item()} vs calm={loss_calm.item()}"
+        )
+
+    def test_wrong_weight_count_raises(self) -> None:
+        """Feature weights count must match F."""
+        x = torch.randn(B, T, F)
+        x_hat = torch.randn(B, T, F)
+        crisis = torch.zeros(B)
+
+        with pytest.raises(AssertionError, match="feature_weights length"):
+            compute_weighted_reconstruction_loss(
+                x, x_hat, crisis, gamma=1.0, feature_weights=[1.0, 2.0, 3.0],
+            )

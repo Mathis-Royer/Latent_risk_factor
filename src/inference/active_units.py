@@ -163,6 +163,46 @@ def truncate_active_dims(
     return len(truncated), truncated
 
 
+def post_filter_au_bai_ng(
+    AU: int,
+    active_dims: list[int],
+    kl_per_dim: np.ndarray,
+    k_bai_ng: int,
+    k_onatski: int = 0,
+    factor: float = 1.0,
+) -> tuple[int, list[int]]:
+    """
+    Post-filter active units using Bai-Ng IC2 as an upper bound.
+
+    AU_effective = min(AU, max(k_bai_ng * factor, 2 * k_onatski))
+
+    With AU=64, k_bai_ng=21, k_onatski=2, factor=1.0:
+    AU_effective = min(64, max(21, 4)) = 21
+
+    This reduces dimensionality to statistical bounds, keeping only factors
+    with cross-sectional support and filtering out noise dimensions.
+
+    :param AU (int): Current number of active units (KL > threshold)
+    :param active_dims (list[int]): Active dimension indices (sorted by decreasing KL)
+    :param kl_per_dim (np.ndarray): Marginal KL per dimension (K,)
+    :param k_bai_ng (int): Number of factors from Bai-Ng IC2 criterion
+    :param k_onatski (int): Number of factors from Onatski (2009) test
+    :param factor (float): Multiplier for Bai-Ng bound (1.0 = exact, 1.5 = 50% slack)
+
+    :return AU_filtered (int): Post-filtered AU
+    :return active_dims_filtered (list[int]): Filtered active dims (sorted by KL)
+    """
+    au_bound = max(int(k_bai_ng * factor), 2 * k_onatski)
+    au_bound = max(au_bound, 2)  # minimum 2 factors for meaningful diversification
+
+    if AU <= au_bound:
+        return AU, active_dims
+
+    # Keep top au_bound dimensions (already sorted by decreasing KL)
+    filtered = active_dims[:au_bound]
+    return len(filtered), filtered
+
+
 def filter_exposure_matrix(
     B: np.ndarray,
     active_dims: list[int],
