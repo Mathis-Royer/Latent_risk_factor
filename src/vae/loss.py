@@ -26,6 +26,10 @@ from src.validation import (
     assert_reconstruction_bounded,
 )
 
+# Guard flag: expensive tensor-scanning assertions are skipped in optimized mode.
+# Set to False explicitly or run with `python -O` to disable.
+_VALIDATE = __debug__
+
 
 # ---------------------------------------------------------------------------
 # Sub-task 1: Crisis-weighted reconstruction loss
@@ -91,15 +95,9 @@ def compute_reconstruction_loss_per_feature(
     x = x.float()
     x_hat = x_hat.float()
 
-    F = x.shape[2]
-    per_feature_mse: list[float] = []
-
-    for f in range(F):
-        # MSE for feature f, averaged over batch and time
-        mse_f = torch.mean((x[:, :, f] - x_hat[:, :, f]) ** 2).item()
-        per_feature_mse.append(mse_f)
-
-    return per_feature_mse
+    # Vectorized: single (F,) tensor, one GPU→CPU sync
+    mse_per_f = torch.mean((x - x_hat) ** 2, dim=(0, 1))  # (F,)
+    return mse_per_f.tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +140,7 @@ def compute_weighted_reconstruction_loss(
     crisis_fractions: torch.Tensor,
     gamma: float,
     feature_weights: list[float] | None = None,
+    feature_weights_tensor: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Crisis-weighted per-element MSE with optional per-feature reweighting.
@@ -158,6 +157,8 @@ def compute_weighted_reconstruction_loss(
     :param feature_weights (list[float] | None): Per-feature weights [w_0, w_1, ...].
         None or empty = equal weights (standard MSE). [2.0, 0.5] emphasizes
         returns (f=0) over volatility (f=1).
+    :param feature_weights_tensor (torch.Tensor | None): Pre-built normalized (F,)
+        tensor on device. Avoids per-batch torch.tensor() + normalization.
 
     :return L_recon (torch.Tensor): Scalar, weighted reconstruction loss
     """
@@ -173,8 +174,11 @@ def compute_weighted_reconstruction_loss(
     )
 
     # Per-feature MSE with weights: weighted mean over features
-    fw = torch.tensor(feature_weights, device=x.device, dtype=torch.float32)
-    fw = fw / fw.sum()  # normalize to sum=1
+    if feature_weights_tensor is not None:
+        fw = feature_weights_tensor
+    else:
+        fw = torch.tensor(feature_weights, device=x.device, dtype=torch.float32)
+        fw = fw / fw.sum()  # normalize to sum=1
 
     # Squared error per element: (B, T, F)
     sq_err = (x - x_hat) ** 2
@@ -300,6 +304,8 @@ def compute_loss(
     cross_sectional_loss: torch.Tensor | None = None,
     lambda_cs: float = 0.0,
     feature_weights: list[float] | None = None,
+    feature_weights_tensor: torch.Tensor | None = None,
+    compute_diagnostics: bool = True,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Complete loss computation for a single batch.
@@ -325,6 +331,10 @@ def compute_loss(
     :param cross_sectional_loss (torch.Tensor | None): Pre-computed L_cs scalar
     :param lambda_cs (float): Cross-sectional R² loss weight
     :param feature_weights (list[float] | None): Per-feature reconstruction weights
+    :param feature_weights_tensor (torch.Tensor | None): Pre-built normalized (F,) tensor
+        on the correct device. When provided, avoids per-batch torch.tensor() allocation.
+    :param compute_diagnostics (bool): If True, compute per-feature MSE (slow).
+        Set False for most training batches, True at logging intervals.
 
     :return total_loss (torch.Tensor): Scalar loss for backprop
     :return components (dict): Loss components for monitoring
@@ -344,6 +354,7 @@ def compute_loss(
     # Reconstruction loss (per-element mean, crisis-weighted, optionally feature-weighted)
     L_recon = compute_weighted_reconstruction_loss(
         x, x_hat, crisis_fractions, gamma, feature_weights,
+        feature_weights_tensor=feature_weights_tensor,
     )
 
     # KL loss
@@ -393,11 +404,11 @@ def compute_loss(
         # Mode F: D/2·L_recon + β_t·L_KL + (D/2)·λ_co·L_co + (D/2)·λ_cs·L_cs
         # σ²=1 frozen (no gradient on log_sigma_sq)
         # β_t = max(β_min, min(1, epoch / T_warmup))
-        beta_t = get_beta_t(epoch, total_epochs, warmup_fraction)
+        beta_t_val = get_beta_t(epoch, total_epochs, warmup_fraction)
 
         recon_term = (D / 2.0) * L_recon
         log_norm_term = torch.tensor(0.0, device=x.device)
-        total_loss = recon_term + beta_t * L_kl + co_term + cs_term
+        total_loss = recon_term + beta_t_val * L_kl + co_term + cs_term
 
     else:  # mode == "A"
         # Mode A: D/(2σ²)·L_recon + (D/2)·ln(σ²) + β·L_KL + (D/2)·λ_co·L_co + (D/2)·λ_cs·L_cs
@@ -405,8 +416,10 @@ def compute_loss(
         log_norm_term = (D / 2.0) * torch.log(sigma_sq)
         total_loss = recon_term + log_norm_term + beta_fixed * L_kl + co_term + cs_term
 
-    # Per-feature reconstruction loss (for diagnostics)
-    per_feature_mse = compute_reconstruction_loss_per_feature(x, x_hat)
+    # Per-feature reconstruction loss (expensive — only when diagnostics requested)
+    per_feature_mse: list[float] = []
+    if compute_diagnostics:
+        per_feature_mse = compute_reconstruction_loss_per_feature(x, x_hat)
 
     # Monitoring components — detached tensors to avoid per-batch GPU sync
     components: dict[str, Any] = {
@@ -420,11 +433,11 @@ def compute_loss(
         "recon_term": recon_term.detach(),
         "log_norm_term": log_norm_term.detach(),
         "total": total_loss.detach(),
-        "recon_per_feature": per_feature_mse,  # [mse_return, mse_vol] for F=2
+        "recon_per_feature": per_feature_mse,
     }
 
     if mode == "F":
-        components["beta_t"] = get_beta_t(epoch, total_epochs, warmup_fraction)
+        components["beta_t"] = beta_t_val  # reuse already-computed value
 
     assert_finite_tensor(total_loss, "total_loss")
 
@@ -479,13 +492,15 @@ def compute_co_movement_loss(
         idx_j = idx_j[perm]
 
     # Spearman rank correlation on raw returns (no gradient needed)
-    # CRITICAL: Check for NaN in raw_returns before Spearman (diagnostic fix)
-    assert not torch.isnan(raw_returns).any(), (
-        "NaN in raw_returns before Spearman correlation"
-    )
+    if _VALIDATE:
+        assert not torch.isnan(raw_returns).any(), (
+            "NaN in raw_returns before Spearman correlation"
+        )
     with torch.no_grad():
-        spearman_corr = _batch_spearman(
-            raw_returns[idx_i], raw_returns[idx_j],
+        # Rank all B series ONCE, then index pairs (rank B vs 2×pairs series)
+        all_ranks = _to_ranks(raw_returns)  # (B, T)
+        spearman_corr = _batch_spearman_from_ranks(
+            all_ranks[idx_i], all_ranks[idx_j],
         )
         # Target distance: g(ρ) = 1 - ρ
         target_dist = 1.0 - spearman_corr
@@ -514,11 +529,38 @@ def _batch_spearman(
 
     :return rho (torch.Tensor): Spearman correlations (n_pairs,)
     """
-    # Convert to ranks along time dimension
     ranks_i = _to_ranks(returns_i)
     ranks_j = _to_ranks(returns_j)
+    return _pearson_from_ranks(ranks_i, ranks_j)
 
-    # Pearson correlation on ranks = Spearman
+
+def _batch_spearman_from_ranks(
+    ranks_i: torch.Tensor,
+    ranks_j: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute Spearman correlation from pre-computed ranks (avoids redundant ranking).
+
+    :param ranks_i (torch.Tensor): Pre-computed ranks for stock i (n_pairs, T)
+    :param ranks_j (torch.Tensor): Pre-computed ranks for stock j (n_pairs, T)
+
+    :return rho (torch.Tensor): Spearman correlations (n_pairs,)
+    """
+    return _pearson_from_ranks(ranks_i, ranks_j)
+
+
+def _pearson_from_ranks(
+    ranks_i: torch.Tensor,
+    ranks_j: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Pearson correlation on rank tensors (= Spearman on original data).
+
+    :param ranks_i (torch.Tensor): Ranks (n_pairs, T)
+    :param ranks_j (torch.Tensor): Ranks (n_pairs, T)
+
+    :return rho (torch.Tensor): Correlations (n_pairs,)
+    """
     # Centered ranks
     ranks_i_c = ranks_i - ranks_i.mean(dim=1, keepdim=True)
     ranks_j_c = ranks_j - ranks_j.mean(dim=1, keepdim=True)
@@ -532,9 +574,10 @@ def _batch_spearman(
     # Clamp denominator to avoid division by zero
     rho = num / torch.clamp(denom, min=1e-8)
     rho = torch.clamp(rho, -1.0, 1.0)
-    assert rho.min() >= -1.0 and rho.max() <= 1.0, (
-        f"Spearman rho out of [-1, 1]: min={rho.min().item()}, max={rho.max().item()}"
-    )
+    if _VALIDATE:
+        assert rho.min() >= -1.0 and rho.max() <= 1.0, (
+            f"Spearman rho out of [-1, 1]: min={rho.min().item()}, max={rho.max().item()}"
+        )
     return rho
 
 
@@ -642,8 +685,12 @@ def compute_validation_elbo(
     # Unweighted MSE (γ=1 → γ_eff=1 for all)
     L_recon = torch.mean((x - x_hat) ** 2)
 
-    # KL
-    L_kl = compute_kl_loss(mu, log_var)
+    # KL — inputs already float32, use internal computation directly to avoid double cast
+    kl_per_sample = 0.5 * torch.sum(
+        mu ** 2 + torch.exp(log_var) - log_var - 1.0,
+        dim=1,
+    )
+    L_kl = torch.mean(kl_per_sample)
 
     # σ² (log_sigma_sq is a Parameter, always float32)
     sigma_sq = torch.clamp(torch.exp(log_sigma_sq), min=sigma_sq_min, max=sigma_sq_max)

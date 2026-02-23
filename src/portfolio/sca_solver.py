@@ -209,6 +209,7 @@ def solve_sca_subproblem_fast(
     max_inner_iter: int = 50,
     tol: float = 1e-7,
     nesterov: bool = True,
+    _L_norm_sq: float | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """
     Solve SCA sub-problem via projected gradient descent with Nesterov acceleration.
@@ -249,7 +250,7 @@ def solve_sca_subproblem_fast(
     # Estimate Lipschitz constant of the smooth part:
     # L_smooth = λ · λ_max(Σ) + φ (concentration Hessian upper bound)
     # For Cholesky L: λ_max(Σ) ≤ ||L||_2^2 ≈ ||L||_F^2 / n (heuristic)
-    L_norm_sq = np.sum(L_sigma ** 2)
+    L_norm_sq = _L_norm_sq if _L_norm_sq is not None else float(np.sum(L_sigma ** 2))
     lambda_max_est = L_norm_sq / n * 2.0  # conservative factor
     # Add concentration penalty curvature (2·φ per dimension worst case)
     L_smooth = lambda_risk * lambda_max_est + 2.0 * phi
@@ -866,6 +867,9 @@ def sca_optimize(
     # Pre-compute Cholesky once (or reuse from caller)
     L_sigma = _L_sigma if _L_sigma is not None else _safe_cholesky(Sigma_assets)
 
+    # Pre-compute Frobenius norm² for fast PGD step size estimation
+    L_norm_sq_cached = float(np.sum(L_sigma ** 2))
+
     # Build SCA sub-problem solver
     # Option 1: Fast projected gradient descent (10-50× faster, default)
     # Option 2: CVXPY interior-point (legacy, higher precision)
@@ -933,6 +937,7 @@ def sca_optimize(
                 mu=mu,
                 max_inner_iter=fast_subproblem_max_iter,
                 tol=fast_subproblem_tol,
+                _L_norm_sq=L_norm_sq_cached,
             )
         else:
             # Legacy CVXPY interior-point (higher precision, slower)

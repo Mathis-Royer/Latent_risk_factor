@@ -2046,7 +2046,7 @@ class TestFrontierEarlyStop:
         target_enb = 2.0  # Should be easily achievable
 
         # Run with early stopping enabled
-        frontier_es, weights_es = compute_variance_entropy_frontier(
+        frontier_es, weights_es, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2064,7 +2064,7 @@ class TestFrontierEarlyStop:
         )
 
         # Run without early stopping (target_enb=0)
-        frontier_full, weights_full = compute_variance_entropy_frontier(
+        frontier_full, weights_full, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2104,7 +2104,7 @@ class TestFrontierEarlyStop:
         coarse_grid = [0.001, 0.01, 0.1, 1.0, 5.0]
 
         # Kneedle mode: target_enb=0
-        frontier, _ = compute_variance_entropy_frontier(
+        frontier, _, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2145,7 +2145,7 @@ class TestFrontierEarlyStop:
         max_iter_full = 50
         max_iter_after = 20
 
-        frontier, weights = compute_variance_entropy_frontier(
+        frontier, weights, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2185,7 +2185,7 @@ class TestFrontierEarlyStop:
         # Set target that should be reached at middle point
         target_enb = 2.5
 
-        frontier, weights = compute_variance_entropy_frontier(
+        frontier, weights, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2226,7 +2226,7 @@ class TestFrontierEarlyStop:
 
         alpha_grid = [0.0, 0.5, 2.0]  # Legacy grid
 
-        frontier, _ = compute_variance_entropy_frontier(
+        frontier, _, _ = compute_variance_entropy_frontier(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -2555,7 +2555,7 @@ class TestFastSubproblemSolver:
         n, au = 15, 4
         data = _make_portfolio_data(n=n, au=au)
 
-        frontier, weights_by_alpha = compute_variance_entropy_frontier(
+        frontier, weights_by_alpha, _ = compute_variance_entropy_frontier(
             Sigma_assets=data["Sigma_assets"],
             B_prime=data["B_prime"],
             eigenvalues=data["eigenvalues"],
@@ -2671,7 +2671,7 @@ class TestFrontierWarmStart:
 
         w_init = np.ones(n) / n  # equal weight warm start
 
-        frontier, weights = compute_variance_entropy_frontier(
+        frontier, weights, _ = compute_variance_entropy_frontier(
             data["Sigma_assets"], data["B_prime"], data["eigenvalues"], data["D_eps"],
             alpha_grid=[0.01, 0.1],
             lambda_risk=1.0, w_max=0.1, w_min=0.001, w_bar=0.05,
@@ -2691,7 +2691,7 @@ class TestFrontierWarmStart:
         n, au = N_STOCKS, AU
         data = _make_portfolio_data(n, au)
 
-        frontier, weights = compute_variance_entropy_frontier(
+        frontier, weights, _ = compute_variance_entropy_frontier(
             data["Sigma_assets"], data["B_prime"], data["eigenvalues"], data["D_eps"],
             alpha_grid=[0.01],
             lambda_risk=1.0, w_max=0.1, w_min=0.001, w_bar=0.05,

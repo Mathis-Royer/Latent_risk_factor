@@ -167,7 +167,7 @@ class PCAFactorRiskParity(BenchmarkModel):
         # Key must match PortfolioConfig.entropy_idio_weight (INV-012)
         idio_weight = float(cp.get("entropy_idio_weight", 0.2))
 
-        frontier, frontier_weights = compute_variance_entropy_frontier(
+        frontier, frontier_weights, _ = compute_variance_entropy_frontier(
             Sigma_assets=self.Sigma_assets,
             B_prime=self.B_prime,
             eigenvalues=self.eigenvalues,

@@ -145,6 +145,7 @@ class VAETrainer:
         self.lambda_cs = lambda_cs
         self.cs_n_sample_dates = cs_n_sample_dates
         self.feature_weights = feature_weights
+        self._feature_weights_tensor: torch.Tensor | None = None  # cached on device
         self.device = device or get_optimal_device()
         self._is_cuda = self.device.type == "cuda"
 
@@ -152,6 +153,11 @@ class VAETrainer:
         configure_backend(self.device)
 
         self.model = self.model.to(self.device)
+
+        # Cache normalized feature_weights tensor on device (Step 7: avoid per-batch allocation)
+        if self.feature_weights is not None and len(self.feature_weights) > 0:
+            fw = torch.tensor(self.feature_weights, device=self.device, dtype=torch.float32)
+            self._feature_weights_tensor = fw / fw.sum()
 
         # torch.compile for op fusion (PyTorch 2.x, CUDA and MPS)
         if compile_model and hasattr(torch, "compile") and self.device.type in ("cuda", "mps"):
@@ -299,44 +305,36 @@ class VAETrainer:
                     x_hat, mu, log_var = self.model(x)
 
                 # Capture log_var stats (for VAE posterior diagnostics)
+                # GPU accumulation: single .cpu() at epoch end (Step 5)
                 with torch.no_grad():
                     log_var_batch = log_var.detach()
-                    # Track bounds (using clamping bounds for latent log_var)
                     lower_bound = -6.0
                     upper_bound = 6.0
+                    mean_dim = log_var_batch.mean(dim=0)
+                    frac_lower = (log_var_batch <= lower_bound + 0.1).float().mean(dim=0)
+                    frac_upper = (log_var_batch >= upper_bound - 0.1).float().mean(dim=0)
                     if epoch_log_var_stats is None:
                         epoch_log_var_stats = {
-                            "mean_per_dim_accum": log_var_batch.mean(dim=0).cpu(),
-                            "frac_at_lower_accum": (
-                                log_var_batch <= lower_bound + 0.1
-                            ).float().mean(dim=0).cpu(),
-                            "frac_at_upper_accum": (
-                                log_var_batch >= upper_bound - 0.1
-                            ).float().mean(dim=0).cpu(),
+                            "mean_per_dim_accum": mean_dim,
+                            "frac_at_lower_accum": frac_lower,
+                            "frac_at_upper_accum": frac_upper,
                             "batch_count": 1,
                         }
                     else:
-                        epoch_log_var_stats["mean_per_dim_accum"] += (
-                            log_var_batch.mean(dim=0).cpu()
-                        )
-                        epoch_log_var_stats["frac_at_lower_accum"] += (
-                            log_var_batch <= lower_bound + 0.1
-                        ).float().mean(dim=0).cpu()
-                        epoch_log_var_stats["frac_at_upper_accum"] += (
-                            log_var_batch >= upper_bound - 0.1
-                        ).float().mean(dim=0).cpu()
+                        epoch_log_var_stats["mean_per_dim_accum"] += mean_dim
+                        epoch_log_var_stats["frac_at_lower_accum"] += frac_lower
+                        epoch_log_var_stats["frac_at_upper_accum"] += frac_upper
                         epoch_log_var_stats["batch_count"] += 1
 
                     # G1: Per-dimension KL trajectory tracking
-                    # KL_k = (1/B) Σ_i 0.5(μ²_ik + exp(lv_ik) - lv_ik - 1)
                     kl_per_dim_batch = 0.5 * torch.mean(
                         mu.detach() ** 2 + torch.exp(log_var_batch) - log_var_batch - 1.0,
                         dim=0,
                     )
                     if epoch_kl_per_dim_accum is None:
-                        epoch_kl_per_dim_accum = kl_per_dim_batch.cpu()
+                        epoch_kl_per_dim_accum = kl_per_dim_batch
                     else:
-                        epoch_kl_per_dim_accum += kl_per_dim_batch.cpu()
+                        epoch_kl_per_dim_accum += kl_per_dim_batch
 
                 # Co-movement loss on raw returns (ISD MOD-004: NOT z-scored)
                 co_mov_loss: torch.Tensor | None = None
@@ -363,6 +361,12 @@ class VAETrainer:
                         n_sample_dates=self.cs_n_sample_dates,
                     )
 
+                # Compute per-feature diagnostics only at logging intervals or last batch
+                _do_diag = (
+                    step_in_epoch == 0
+                    or (self._logging_steps > 0 and self._global_step % self._logging_steps == 0)
+                )
+
                 loss, components = compute_loss(
                     x=x,
                     x_hat=x_hat,
@@ -385,6 +389,8 @@ class VAETrainer:
                     cross_sectional_loss=cs_loss,
                     lambda_cs=self.lambda_cs,
                     feature_weights=self.feature_weights,
+                    feature_weights_tensor=self._feature_weights_tensor,
+                    compute_diagnostics=_do_diag,
                 )
 
             # Loss explosion warning
@@ -456,27 +462,19 @@ class VAETrainer:
             n_batches += 1
             self._global_step += 1
 
-            # Per-step TensorBoard logging (sync only when logging)
+            # Per-step TensorBoard logging (batch .item() calls into single sync)
             if (
                 self._tb_writer is not None
                 and self._logging_steps > 0
                 and self._global_step % self._logging_steps == 0
             ):
-                self._tb_writer.add_scalar(
-                    "Step/loss", components["total"].item(), self._global_step,
-                )
-                self._tb_writer.add_scalar(
-                    "Step/reconstruction", components["recon"].item(), self._global_step,
-                )
-                self._tb_writer.add_scalar(
-                    "Step/kl_divergence", components["kl"].item(), self._global_step,
-                )
-                self._tb_writer.add_scalar(
-                    "Step/co_movement", components["co_mov"].item(), self._global_step,
-                )
-                self._tb_writer.add_scalar(
-                    "Step/sigma_sq", components["sigma_sq"].item(), self._global_step,
-                )
+                # Stack detached scalars → single .cpu() → single sync point
+                tb_keys = ["total", "recon", "kl", "co_mov", "sigma_sq"]
+                tb_vals = torch.stack([components[k] for k in tb_keys]).cpu().tolist()
+                tb_tags = ["Step/loss", "Step/reconstruction", "Step/kl_divergence",
+                           "Step/co_movement", "Step/sigma_sq"]
+                for tag, val in zip(tb_tags, tb_vals):
+                    self._tb_writer.add_scalar(tag, val, self._global_step)
 
             # Update shared progress bar (throttle postfix to reduce syncs)
             if progress_bar is not None:
@@ -533,17 +531,18 @@ class VAETrainer:
         }
 
         # Add log_var statistics for VAE posterior diagnostics
+        # Single GPU→CPU transfer at epoch end (Step 5)
         if epoch_log_var_stats is not None:
             bc = epoch_log_var_stats["batch_count"]
             metrics["log_var_stats"] = {
-                "mean_per_dim": (epoch_log_var_stats["mean_per_dim_accum"] / bc).tolist(),
-                "frac_at_lower": (epoch_log_var_stats["frac_at_lower_accum"] / bc).tolist(),
-                "frac_at_upper": (epoch_log_var_stats["frac_at_upper_accum"] / bc).tolist(),
+                "mean_per_dim": (epoch_log_var_stats["mean_per_dim_accum"] / bc).cpu().tolist(),
+                "frac_at_lower": (epoch_log_var_stats["frac_at_lower_accum"] / bc).cpu().tolist(),
+                "frac_at_upper": (epoch_log_var_stats["frac_at_upper_accum"] / bc).cpu().tolist(),
             }
 
-        # G1: Per-dimension KL trajectory — averaged across batches
+        # G1: Per-dimension KL trajectory — averaged across batches (single .cpu() at epoch end)
         if epoch_kl_per_dim_accum is not None:
-            kl_per_dim = (epoch_kl_per_dim_accum / n_batches).tolist()
+            kl_per_dim = (epoch_kl_per_dim_accum / n_batches).cpu().tolist()
             n_collapsed = sum(1 for kl in kl_per_dim if kl < 0.01)
             metrics["kl_per_dim"] = kl_per_dim
             metrics["n_collapsed_dims"] = n_collapsed

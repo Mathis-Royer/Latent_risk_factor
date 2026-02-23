@@ -199,8 +199,6 @@ def compute_residuals(
 
     :return residuals_by_stock (dict): stock_id -> list of residuals
     """
-    residuals_by_stock: dict[int, list[float]] = {sid: [] for sid in stock_ids}
-
     # Pre-extract returns as numpy for fast access
     ret_matrix = returns.values
     ret_dates = returns.index
@@ -214,6 +212,10 @@ def compute_residuals(
             ret_date_to_loc[str(d.date())] = i
         else:
             ret_date_to_loc[str(d)] = i
+
+    # Pre-allocate residual storage as lists of arrays for efficient accumulation
+    stock_id_set = set(stock_ids)
+    all_residuals: dict[int, list[float]] = {sid: [] for sid in stock_ids}
 
     for t_idx, date_str in enumerate(dates):
         if date_str not in B_A_by_date:
@@ -235,12 +237,13 @@ def compute_residuals(
         col_indices = [ret_col_to_idx[s] for s in available_cols]
         r_t = ret_matrix[date_loc][col_indices].astype(np.float64)
 
-        # eps_{i,t} = r_{i,t} - B_A_{i,t} z_hat_t
-        predicted = B_t_avail @ z_hat[t_idx]
-        residuals = r_t - predicted
+        # eps_{i,t} = r_{i,t} - B_A_{i,t} z_hat_t (vectorized)
+        residuals = r_t - B_t_avail @ z_hat[t_idx]
 
+        # Vectorized NaN filtering and accumulation
+        valid_mask = ~np.isnan(residuals)
         for i, sid in enumerate(available_cols):
-            if i < len(residuals) and not np.isnan(residuals[i]) and sid in residuals_by_stock:
-                residuals_by_stock[sid].append(float(residuals[i]))
+            if valid_mask[i] and sid in stock_id_set:
+                all_residuals[sid].append(float(residuals[i]))
 
-    return residuals_by_stock
+    return all_residuals

@@ -95,14 +95,19 @@ def infer_latent_trajectories(
         "window_metadata must have 'stock_id' column"
     )
 
-    # Group by stock_id
+    # Group by stock_id using argsort for O(N log N) instead of O(N * M) masks
     stock_ids_arr = np.asarray(window_metadata["stock_id"].values)
     trajectories: dict[int, np.ndarray] = {}
 
-    unique_stocks = np.unique(stock_ids_arr)
-    for sid in unique_stocks:
-        mask = stock_ids_arr == sid
-        trajectories[int(sid)] = mu_all[mask]
+    sort_idx = np.argsort(stock_ids_arr)
+    sorted_sids = stock_ids_arr[sort_idx]
+    sorted_mu = mu_all[sort_idx]
+    # Find boundaries between consecutive stock IDs
+    change_points = np.where(np.diff(sorted_sids) != 0)[0] + 1
+    splits = np.split(sorted_mu, change_points)
+    unique_sids = sorted_sids[np.r_[0, change_points]]
+    for sid, chunk in zip(unique_sids, splits):
+        trajectories[int(sid)] = chunk
 
     kl_per_dim: np.ndarray | None = None
     if sum_kl is not None and n_samples > 0:

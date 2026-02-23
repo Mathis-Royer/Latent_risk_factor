@@ -63,7 +63,7 @@ def compute_variance_entropy_frontier(
     n_starts_refine: int = 3,
     max_iter_refine: int = 75,
     initial_warm_start_w: np.ndarray | None = None,
-) -> tuple[pd.DataFrame, dict[float, np.ndarray]]:
+) -> tuple[pd.DataFrame, dict[float, np.ndarray], dict[float, dict]]:
     """
     Two-phase variance-entropy frontier computation with early stopping.
 
@@ -115,6 +115,7 @@ def compute_variance_entropy_frontier(
 
     :return frontier (pd.DataFrame): Columns: alpha, variance, entropy, n_active
     :return weights_by_alpha (dict[float, np.ndarray]): Optimal weights for each α
+    :return solver_stats_by_alpha (dict[float, dict]): Solver stats for each α
     """
     # Determine grid to use: coarse_grid (new) or alpha_grid (legacy)
     if coarse_grid is not None and len(coarse_grid) > 0:
@@ -138,6 +139,7 @@ def compute_variance_entropy_frontier(
 
     results: list[dict[str, float]] = []
     weights_by_alpha: dict[float, np.ndarray] = {}
+    solver_stats_by_alpha: dict[float, dict] = {}
     prev_w: np.ndarray | None = initial_warm_start_w
 
     logger.info(
@@ -162,7 +164,7 @@ def compute_variance_entropy_frontier(
 
         warm_start_w = prev_w
 
-        w_opt, _f_opt, _H_opt, _ = multi_start_optimize(
+        w_opt, _f_opt, _H_opt, _stats = multi_start_optimize(
             Sigma_assets=Sigma_assets,
             B_prime=B_prime,
             eigenvalues=eigenvalues,
@@ -192,6 +194,7 @@ def compute_variance_entropy_frontier(
 
         prev_w = w_opt
         weights_by_alpha[alpha] = w_opt.copy()
+        solver_stats_by_alpha[alpha] = _stats
 
         variance = float(w_opt @ Sigma_assets @ w_opt)
         entropy = compute_entropy_only(
@@ -282,7 +285,7 @@ def compute_variance_entropy_frontier(
                     alpha, n_starts_refine, max_iter_refine,
                 )
 
-                w_opt, _f_opt, _H_opt, _ = multi_start_optimize(
+                w_opt, _f_opt, _H_opt, _stats = multi_start_optimize(
                     Sigma_assets=Sigma_assets,
                     B_prime=B_prime,
                     eigenvalues=eigenvalues,
@@ -311,6 +314,7 @@ def compute_variance_entropy_frontier(
                 )
 
                 weights_by_alpha[alpha] = w_opt.copy()
+                solver_stats_by_alpha[alpha] = _stats
 
                 variance = float(w_opt @ Sigma_assets @ w_opt)
                 entropy = compute_entropy_only(
@@ -347,7 +351,7 @@ def compute_variance_entropy_frontier(
     # Sort results by alpha for consistent output
     df = pd.DataFrame(results).sort_values("alpha").reset_index(drop=True)
 
-    return df, weights_by_alpha
+    return df, weights_by_alpha, solver_stats_by_alpha
 
 
 def select_operating_alpha(

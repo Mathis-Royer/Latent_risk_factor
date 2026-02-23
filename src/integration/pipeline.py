@@ -2169,9 +2169,11 @@ class FullPipeline:
         # Build universe snapshots for estimation rescaling (point-in-time)
         train_dates = [str(d.date()) for d in train_returns.index]
         train_ret_sub = returns.loc[train_start:train_end]
+        # Precompute valid date set once (avoids O(N²) strftime per date)
+        valid_date_strs = set(train_ret_sub.index.strftime("%Y-%m-%d"))
         universe_snapshots: dict[str, list[int]] = {}
         for d in train_dates:
-            if d in train_ret_sub.index.strftime("%Y-%m-%d").values:
+            if d in valid_date_strs:
                 row = train_ret_sub.loc[d]
                 valid_ids = [
                     sid for sid in inferred_stock_ids
@@ -2325,17 +2327,14 @@ class FullPipeline:
             # to holdout sample size.
             vt_min = self.config.risk_model.vt_clamp_min
             vt_max = self.config.risk_model.vt_clamp_max
-            vt_factors = np.ones(len(eigenvalues), dtype=np.float64)
-            for k in range(len(eigenvalues)):
-                realized_k = float(np.var(z_holdout_principal[:, k], ddof=1))
-                pred_k = max(float(eigenvalues[k]), 1e-15)
-                vt_raw_k = realized_k / pred_k
-                vt_shrunk_k = (
-                    n_holdout_vt * vt_raw_k + _VT_PRIOR_STRENGTH * 1.0
-                ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
-                vt_factors[k] = float(np.clip(
-                    vt_shrunk_k, vt_min, vt_max,
-                ))
+            # Vectorized variance targeting across all factors
+            realized_var = np.var(z_holdout_principal, axis=0, ddof=1)
+            pred_var = np.maximum(eigenvalues, 1e-15)
+            vt_raw = realized_var / pred_var
+            vt_shrunk = (
+                n_holdout_vt * vt_raw + _VT_PRIOR_STRENGTH * 1.0
+            ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
+            vt_factors = np.clip(vt_shrunk, vt_min, vt_max)
             eigenvalues = eigenvalues * vt_factors
             eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
 
@@ -2453,17 +2452,18 @@ class FullPipeline:
             # NEW: Literature comparison (Marchenko-Pastur, Bai-Ng, Onatski)
             try:
                 from src.integration.diagnostics import compute_literature_comparison
-                from src.risk_model.factor_quality import bai_ng_ic2
 
-                # Get Bai-Ng estimate from training returns
-                k_bai_ng = None
-                train_ret_lit = returns.loc[train_start:train_end]
-                cols_lit = [c for c in inferred_stock_ids if c in train_ret_lit.columns]
-                if len(cols_lit) >= 10:
-                    ret_lit = train_ret_lit[cols_lit].dropna(axis=0, how="all").fillna(0.0)
-                    if ret_lit.shape[0] >= 50 and ret_lit.shape[1] >= 10:
-                        ret_centered = ret_lit.values - ret_lit.values.mean(axis=0)
-                        k_bai_ng = bai_ng_ic2(ret_centered, k_max=min(50, AU + 20))
+                # Reuse cached Bai-Ng result from AU post-filter (avoids redundant SVD)
+                k_bai_ng = _state_bag.get("k_bai_ng")
+                if k_bai_ng is None:
+                    from src.risk_model.factor_quality import bai_ng_ic2
+                    train_ret_lit = returns.loc[train_start:train_end]
+                    cols_lit = [c for c in inferred_stock_ids if c in train_ret_lit.columns]
+                    if len(cols_lit) >= 10:
+                        ret_lit = train_ret_lit[cols_lit].dropna(axis=0, how="all").fillna(0.0)
+                        if ret_lit.shape[0] >= 50 and ret_lit.shape[1] >= 10:
+                            ret_centered = ret_lit.values - ret_lit.values.mean(axis=0)
+                            k_bai_ng = bai_ng_ic2(ret_centered, k_max=min(50, AU + 20))
 
                 _state_bag["literature_comparison"] = compute_literature_comparison(
                     eigenvalues=eigenvalues,
@@ -2578,7 +2578,7 @@ class FullPipeline:
             pass  # Fallback: frontier starts from random/EW
 
         # Two-phase frontier with early stopping
-        frontier, frontier_weights = compute_variance_entropy_frontier(
+        frontier, frontier_weights, frontier_stats = compute_variance_entropy_frontier(
             Sigma_assets, B_prime_signal, eigenvalues_signal, D_eps_port,
             alpha_grid=pc.alpha_grid,  # legacy fallback
             lambda_risk=pc.lambda_risk,
@@ -2635,7 +2635,11 @@ class FullPipeline:
             if mu is not None:
                 _state_bag["mu"] = mu
 
-        # Reuse weights from frontier computation (avoids redundant SCA solve)
+        # Reuse weights and solver stats from frontier (avoids redundant SCA solve)
+        frontier_solver_stats = frontier_stats.get(alpha_opt, {
+            "n_starts": pc.n_starts, "best_start_idx": 0,
+            "converged_count": 0, "iterations": [], "best_convergence_info": {},
+        })
         w_opt = frontier_weights[alpha_opt]
         H_opt = compute_entropy_only(
             w_opt, B_prime_signal, eigenvalues_signal, pc.entropy_eps,
@@ -2687,28 +2691,10 @@ class FullPipeline:
             idio_weight=idio_weight,
         )
 
-        # Capture solver diagnostics: run one final evaluation to get convergence info
-        # Use same n_starts as actual optimization to accurately report what was used
+        # Solver diagnostics: reuse stats from frontier's optimal alpha call
+        # (avoids redundant multi_start_optimize that was ~12-15% of fold time)
         if _state_bag is not None:
-            _, _, _, solver_stats = multi_start_optimize(
-                Sigma_assets=Sigma_assets,
-                B_prime=B_prime_signal,
-                eigenvalues=eigenvalues_signal,
-                D_eps=D_eps_port,
-                alpha=alpha_opt,
-                n_starts=pc.n_starts,
-                seed=self.config.seed,
-                lambda_risk=pc.lambda_risk,
-                w_max=pc.w_max,
-                w_min=pc.w_min,
-                w_bar=pc.w_bar,
-                phi=pc.phi,
-                w_old=w_old,
-                is_first=is_first,
-                warm_start_w=w_final,  # Start from final solution
-                idio_weight=idio_weight,
-            )
-            _state_bag["solver_stats"] = solver_stats
+            _state_bag["solver_stats"] = frontier_solver_stats
 
             # Compute constraint binding status
             constraint_params = {

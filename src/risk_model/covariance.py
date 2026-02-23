@@ -551,10 +551,9 @@ def estimate_d_eps(
                     resids = residuals_by_stock.get(sid, [])
                     if len(resids) >= 4:
                         r_arr = np.asarray(resids, dtype=np.float64)
-                        r_mean = np.mean(r_arr)
                         r_var = np.var(r_arr, ddof=1)
                         if r_var > 1e-20:
-                            m4 = float(np.mean((r_arr - r_mean) ** 4))
+                            m4 = float(np.mean((r_arr - np.mean(r_arr)) ** 4))
                             kappa4[j] = max(m4 / (r_var ** 2) - 3.0, 0.0)
 
                 # Var(d_hat_i) = d_i^2 * (kappa4_i + 2) / (T_i - 1)
