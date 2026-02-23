@@ -96,7 +96,9 @@ def setup_drive_persistence(
         print(f"Cleaned up {len(deleted)} old run(s)")
 
     # Ensure parent of local_results_dir exists
-    local_results_dir = Path(local_results_dir).resolve()
+    # Use absolute() instead of resolve() to avoid following existing symlinks,
+    # which would point to the Drive directory and cause rmtree to delete it
+    local_results_dir = Path(local_results_dir).absolute()
     local_results_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Remove existing local directory/symlink if present
