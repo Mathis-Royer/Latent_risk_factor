@@ -46,15 +46,77 @@ def load_experiment_data(run_dir: str | Path) -> dict[str, Any]:
     """
     Load all data needed for experiments from a completed diagnostic run.
 
-    Wraps pipeline_state.load_run_data() and adds convenience accessors.
+    Wraps pipeline_state.load_run_data() and supplements with data from
+    the checkpoints/ subdirectory (used by newer pipeline runs).
 
     :param run_dir (str | Path): Path to diagnostic run folder
 
     :return data (dict): Keys: B_A, B_full, stock_ids, weights, diagnostics,
             run_dir, pca_loadings, pca_eigenvalues, literature_comparison, AU
     """
+    import json as _json
+
     run_dir_str = str(run_dir)
+    run_path = Path(run_dir)
     data = load_run_data(run_dir_str)
+
+    # Supplement from checkpoints/ subdirectory (newer pipeline layout)
+    ckpt_arrays = run_path / "checkpoints" / "arrays"
+    ckpt_json = run_path / "checkpoints" / "json"
+
+    # B_A
+    if data.get("B_A") is None:
+        ba_path = ckpt_arrays / "inference_done" / "B_A.npy"
+        if ba_path.exists():
+            data["B_A"] = np.load(ba_path)
+
+    # B_full
+    if data.get("B_full") is None:
+        bf_path = ckpt_arrays / "inference_done" / "B_full.npy"
+        if bf_path.exists():
+            data["B_full"] = np.load(bf_path)
+
+    # weights
+    if data.get("weights") is None:
+        w_path = ckpt_arrays / "portfolio_done" / "w_vae.npy"
+        if w_path.exists():
+            data["weights"] = np.load(w_path)
+
+    # stock_ids
+    if data.get("stock_ids") is None:
+        ids_path = ckpt_json / "inferred_stock_ids.json"
+        if ids_path.exists():
+            with open(ids_path, "r") as f:
+                data["stock_ids"] = _json.load(f)
+
+    # AU and alpha_opt from scalars
+    if data.get("AU") is None or data.get("alpha_opt") is None:
+        scalars_path = ckpt_json / "scalars.json"
+        if scalars_path.exists():
+            with open(scalars_path, "r") as f:
+                scalars = _json.load(f)
+            if data.get("AU") is None and "AU" in scalars:
+                data["AU"] = scalars["AU"]
+            if data.get("alpha_opt") is None and "alpha_opt" in scalars:
+                data["alpha_opt"] = scalars["alpha_opt"]
+
+    # PCA loadings and eigenvalues
+    if data.get("pca_loadings") is None:
+        pca_path = ckpt_arrays / "covariance_done" / "pca_loadings.npy"
+        if pca_path.exists():
+            data["pca_loadings"] = np.load(pca_path)
+
+    if data.get("pca_eigenvalues") is None:
+        pca_eig_path = ckpt_arrays / "covariance_done" / "pca_eigenvalues.npy"
+        if pca_eig_path.exists():
+            data["pca_eigenvalues"] = np.load(pca_eig_path)
+
+    # Literature comparison
+    if data.get("literature_comparison") is None:
+        lit_path = ckpt_json / "literature_comparison.json"
+        if lit_path.exists():
+            with open(lit_path, "r") as f:
+                data["literature_comparison"] = _json.load(f)
 
     # Ensure critical keys are present
     missing = []
@@ -64,6 +126,7 @@ def load_experiment_data(run_dir: str | Path) -> dict[str, Any]:
     if missing:
         raise ValueError(
             f"Checkpoint at {run_dir_str} missing critical data: {missing}. "
+            f"Available keys: {[k for k, v in data.items() if v is not None]}. "
             f"Ensure the run completed at least through PORTFOLIO_DONE stage."
         )
 
