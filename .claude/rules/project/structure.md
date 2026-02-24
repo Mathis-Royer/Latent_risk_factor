@@ -103,6 +103,7 @@ latent_risk_factor/
 │       ├── diagnostics.py            # E2E diagnostic collection (health checks)
 │       ├── diagnostic_report.py      # Markdown/JSON/CSV report generation
 │       ├── diagnostic_plots.py       # PNG diagnostic plot generation
+│       ├── diagnostic_experiments.py # Tier 0-2 experiments (component substitution, profiling, sweeps)
 │       ├── visualization.py          # Dashboard display helpers
 │       └── colab_drive.py            # Google Drive persistence for Colab
 │
@@ -120,7 +121,8 @@ latent_risk_factor/
 │   │   ├── test_benchmarks.py
 │   │   ├── test_utils.py             # Hardware adaptation tests
 │   │   ├── test_pipeline_state.py    # State management + checkpointing tests
-│   │   └── test_colab_drive.py       # Google Drive persistence tests
+│   │   ├── test_colab_drive.py       # Google Drive persistence tests
+│   │   └── test_diagnostic_experiments.py  # Diagnostic experiments module tests
 │   ├── integration/                  # Integration tests
 │   │   ├── __init__.py
 │   │   ├── test_vae_training.py
@@ -136,6 +138,10 @@ latent_risk_factor/
 │   ├── run_walk_forward.py           # Run full walk-forward validation
 │   ├── run_benchmarks.py             # Run benchmarks only
 │   └── run_diagnostic.py             # Comprehensive pipeline diagnostic (quick/full)
+│
+├── notebooks/                        # Jupyter notebooks
+│   ├── dashboard.ipynb               # Main diagnostic dashboard
+│   └── diagnostic_experiments.ipynb  # V2 post-mortem experimental protocol (Tier 0-3)
 │
 ├── ISD_methodology.md                # ISD Methodology v1.0
 ├── CLAUDE.md                         # Project-level Claude instructions
@@ -164,6 +170,7 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-02-24 | src/integration/, notebooks/, tests/unit/ | Added `diagnostic_experiments.py`, `notebooks/diagnostic_experiments.ipynb`, `test_diagnostic_experiments.py` |
 | 2026-02-22 | src/integration/, tests/unit/ | Added `colab_drive.py` (Google Drive persistence) and `test_colab_drive.py` |
 | 2026-02-21 | src/integration/, tests/unit/ | Added `pipeline_state.py` (state management + checkpointing) and `test_pipeline_state.py` |
 | 2026-02-10 | src/integration/, scripts/ | Added diagnostic pipeline: `diagnostics.py`, `diagnostic_report.py`, `diagnostic_plots.py`, `run_diagnostic.py` |
