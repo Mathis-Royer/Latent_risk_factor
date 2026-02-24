@@ -1021,6 +1021,13 @@ def replay_oos_simulation(
     holdout_fraction: float = 0.2,
     holdout_start: str | None = None,
     refresh_risk_model: bool = True,
+    *,
+    entropy_trigger_alpha_override: float | None = None,
+    oos_n_starts_scheduled_override: int | None = None,
+    oos_n_starts_exceptional_override: int | None = None,
+    oos_sca_max_iter_scheduled_override: int | None = None,
+    oos_sca_max_iter_exceptional_override: int | None = None,
+    rebalancing_frequency_days_override: int | None = None,
 ) -> dict[str, Any]:
     """
     Replay only the OOS simulation from a completed diagnostic run.
@@ -1037,6 +1044,12 @@ def replay_oos_simulation(
     :param holdout_fraction (float): Fraction of data for OOS (default 0.2)
     :param holdout_start (str | None): Explicit OOS start date (overrides fraction)
     :param refresh_risk_model (bool): Enable risk model refresh during OOS
+    :param entropy_trigger_alpha_override (float | None): Override entropy trigger
+    :param oos_n_starts_scheduled_override (int | None): Override scheduled n_starts
+    :param oos_n_starts_exceptional_override (int | None): Override exceptional n_starts
+    :param oos_sca_max_iter_scheduled_override (int | None): Override scheduled max_iter
+    :param oos_sca_max_iter_exceptional_override (int | None): Override exceptional max_iter
+    :param rebalancing_frequency_days_override (int | None): Override rebalancing frequency
 
     :return result (dict): Keys: oos_result, metrics, risk_model, dates
     """
@@ -1260,7 +1273,16 @@ def replay_oos_simulation(
 
     # ---- 5. Run OOS simulation ----
     returns_oos = returns.loc[oos_start:oos_end]
-    rebal_freq = pc.rebalancing_frequency_days
+    rebal_freq = rebalancing_frequency_days_override or pc.rebalancing_frequency_days
+
+    # Apply overrides
+    eff_n_starts_sched = oos_n_starts_scheduled_override or pc.oos_n_starts_scheduled
+    eff_n_starts_exc = oos_n_starts_exceptional_override or pc.oos_n_starts_exceptional
+    eff_max_iter_sched = oos_sca_max_iter_scheduled_override or pc.oos_sca_max_iter_scheduled
+    eff_max_iter_exc = oos_sca_max_iter_exceptional_override or pc.oos_sca_max_iter_exceptional
+    eff_entropy_alpha = (entropy_trigger_alpha_override
+                         if entropy_trigger_alpha_override is not None
+                         else pc.entropy_trigger_alpha)
 
     # Exchange codes for Shumway delisting
     exchange_codes: dict[int, int] = {}
@@ -1275,10 +1297,10 @@ def replay_oos_simulation(
         "lambda_risk": pc.lambda_risk, "n_starts": pc.n_starts,
         "entropy_idio_weight": pc.entropy_idio_weight,
         "alpha_opt": alpha_opt,
-        "oos_n_starts_scheduled": pc.oos_n_starts_scheduled,
-        "oos_n_starts_exceptional": pc.oos_n_starts_exceptional,
-        "oos_sca_max_iter_scheduled": pc.oos_sca_max_iter_scheduled,
-        "oos_sca_max_iter_exceptional": pc.oos_sca_max_iter_exceptional,
+        "oos_n_starts_scheduled": eff_n_starts_sched,
+        "oos_n_starts_exceptional": eff_n_starts_exc,
+        "oos_sca_max_iter_scheduled": eff_max_iter_sched,
+        "oos_sca_max_iter_exceptional": eff_max_iter_exc,
     }
 
     risk_model_config = {
@@ -1296,8 +1318,9 @@ def replay_oos_simulation(
 
     logger.info(
         "  Running OOS simulation: %d days, rebal every %d days, "
-        "refresh=%s...",
+        "refresh=%s, entropy_alpha=%.2f, n_starts_sched=%d, n_starts_exc=%d...",
         len(returns_oos), rebal_freq, refresh_risk_model,
+        eff_entropy_alpha, eff_n_starts_sched, eff_n_starts_exc,
     )
     t_oos = time.monotonic()
 
@@ -1315,7 +1338,7 @@ def replay_oos_simulation(
         H_initial=H_initial,
         alpha_opt=alpha_opt,
         rebalancing_frequency_days=rebal_freq,
-        entropy_trigger_alpha=pc.entropy_trigger_alpha,
+        entropy_trigger_alpha=eff_entropy_alpha,
         tc_bps=pc.transaction_cost_bps,
         delisting_return_nyse_amex=pc.delisting_return_nyse_amex,
         delisting_return_nasdaq=pc.delisting_return_nasdaq,

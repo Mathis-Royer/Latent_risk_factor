@@ -456,7 +456,7 @@ class RiskModelConfig:
     sigma_z_shrinkage: str = "analytical_nonlinear"  # Ledoit-Wolf 2020 (robust to non-spiked spectra)
     sigma_z_eigenvalue_pct: float = 0.95
     sigma_z_ewma_half_life: int = 0  # 0 = equal weights (no EWMA); 126 = ~6 months Barra USE4 standard
-    au_max_bai_ng_factor: float = 1.0
+    au_max_bai_ng_factor: float = 0.0
     b_a_shrinkage_alpha: float = 0.0
     b_a_clip_threshold: float = 3.5
     use_wls: bool = True
@@ -496,7 +496,7 @@ class RiskModelConfig:
                         default=0, lo=0)
         _validate_range("au_max_bai_ng_factor",
                         self.au_max_bai_ng_factor,
-                        default=1.0, lo=0.5, hi=3.0)
+                        default=0.0, lo=0.0, hi=1000.0)
         _validate_range("vt_clamp_min", self.vt_clamp_min,
                         default=0.5, lo=0.1, hi=1.0)
         _validate_range("vt_clamp_max", self.vt_clamp_max,
@@ -605,7 +605,7 @@ class PortfolioConfig:
             0.1, 0.2, 0.5, 1.0, 2.0, 5.0,
         ]
     )
-    momentum_enabled: bool = True
+    momentum_enabled: bool = False
     momentum_lookback: int = 252
     momentum_skip: int = 21
     momentum_weight: float = 0.30

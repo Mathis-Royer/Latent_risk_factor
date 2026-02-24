@@ -561,6 +561,7 @@ def phase_prices(
     key_rotator: KeyRotator,
     progress: ProgressTracker,
     start_date: str = "1995-01-01",
+    end_date: str | None = None,
     max_tickers: int | None = None,
     wait_on_rate_limit: bool = False,
 ) -> None:
@@ -577,6 +578,7 @@ def phase_prices(
     :param key_rotator (KeyRotator): API key rotator
     :param progress (ProgressTracker): Progress tracker
     :param start_date (str): Earliest date to fetch
+    :param end_date (str | None): Latest date to fetch (YYYY-MM-DD). None = today.
     :param max_tickers (int | None): Limit downloads (for testing)
     :param wait_on_rate_limit (bool): If True, sleep when all keys are
         exhausted instead of stopping. Default: False (stop and resume).
@@ -593,12 +595,12 @@ def phase_prices(
     to_update: list[str] = []
     already_done = 0
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    cutoff_date = end_date if end_date is not None else datetime.now().strftime("%Y-%m-%d")
 
     for ticker in tickers:
         if progress.is_complete(ticker):
             last_date = progress.get_last_date(ticker)
-            if last_date and last_date < today:
+            if last_date and last_date < cutoff_date:
                 to_update.append(ticker)
             else:
                 already_done += 1
@@ -631,7 +633,10 @@ def phase_prices(
 
     n_downloaded = 0  # New tickers downloaded this session
     n_updated = 0     # Existing tickers updated this session
+    n_skipped = 0     # Tickers skipped (fetch_start > end_date)
     global_retries_used = 0
+
+    print(f"[phase_prices] Starting loop: {len(all_work)} tickers, end_date={end_date}", flush=True)
 
     for i, (ticker, mode) in enumerate(all_work):
         if key_rotator.active_count == 0:
@@ -680,8 +685,20 @@ def phase_prices(
         else:
             fetch_start = start_date
 
+        # Skip API call if fetch window is empty (fetch_start > end_date)
+        if end_date is not None and fetch_start > end_date:
+            n_skipped += 1
+            progress.mark_complete(ticker, cutoff_date)
+            if mode == "update":
+                n_updated += 1
+            else:
+                n_downloaded += 1
+            if n_skipped % 500 == 0:
+                print(f"  Skipped {n_skipped} tickers (already have data past {end_date})", flush=True)
+            continue
+
         # Fetch prices — single attempt (retry only if global budget allows)
-        df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start)
+        df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start, end_date=end_date)
 
         if status == "auth_failed":
             key_rotator.disable_key(api_key)
@@ -714,7 +731,7 @@ def phase_prices(
                     )
                     break
             if retry_key is not None:
-                df, status = fetch_ticker_prices(ticker, retry_key, start_date=fetch_start)
+                df, status = fetch_ticker_prices(ticker, retry_key, start_date=fetch_start, end_date=end_date)
                 if status == "ok":
                     key_rotator.record_use(retry_key)
                 else:
@@ -725,7 +742,7 @@ def phase_prices(
             # Retry once if global budget allows, otherwise skip immediately
             if global_retries_used < MAX_GLOBAL_RETRIES:
                 global_retries_used += 1
-                df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start)
+                df, status = fetch_ticker_prices(ticker, api_key, start_date=fetch_start, end_date=end_date)
 
             if status == "error":
                 logger.debug("Skipping %s (error)", ticker)
@@ -737,7 +754,7 @@ def phase_prices(
 
         # Process result
         if df is None or df.empty:
-            progress.mark_complete(ticker, today)
+            progress.mark_complete(ticker, cutoff_date)
             if mode == "update":
                 n_updated += 1
             else:
@@ -764,11 +781,14 @@ def phase_prices(
 
         if (i + 1) % 10 == 0:
             total_downloaded = already_downloaded + n_downloaded
-            logger.info(
-                "Progress: %d/%d downloaded (%.1f%%) | +%d new, +%d updated | %s [%d keys]",
-                total_downloaded, total_tickers, 100.0 * total_downloaded / total_tickers,
-                n_downloaded, n_updated, ticker, key_rotator.available_count,
+            msg = (
+                f"Progress: {total_downloaded}/{total_tickers} downloaded "
+                f"({100.0 * total_downloaded / total_tickers:.1f}%) | "
+                f"+{n_downloaded} new, +{n_updated} updated, {n_skipped} skipped | {ticker} "
+                f"[{key_rotator.available_count} keys]"
             )
+            logger.info(msg)
+            print(msg, flush=True)  # Force Jupyter output
 
     total_downloaded = already_downloaded + n_downloaded
     logger.info(
@@ -966,6 +986,7 @@ def run_download(
     data_dir: str = "data/",
     max_tickers: int | None = None,
     start_date: str = "1995-01-01",
+    end_date: str | None = None,
     wait_on_rate_limit: bool = False,
     sp500_first: bool = False,
     sp500_file: str | None = None,
@@ -987,6 +1008,7 @@ def run_download(
     :param data_dir (str): Output directory
     :param max_tickers (int | None): Limit number of tickers (for testing)
     :param start_date (str): Earliest date to fetch
+    :param end_date (str | None): Latest date to fetch (YYYY-MM-DD). None = today.
     :param wait_on_rate_limit (bool): If True, sleep ~62 min when all keys
         are exhausted instead of stopping. Default: False (stop and resume).
     :param sp500_first (bool): If True, download S&P 500 tickers first
@@ -1047,7 +1069,8 @@ def run_download(
     logger.info("=== Phase 2: Price Download (max_tickers=%s) ===", max_tickers)
     phase_prices(
         data_dir, tickers_df, key_rotator, progress,
-        start_date=start_date, max_tickers=max_tickers,
+        start_date=start_date, end_date=end_date,
+        max_tickers=max_tickers,
         wait_on_rate_limit=wait_on_rate_limit,
     )
 

@@ -360,6 +360,7 @@ def load_data_source(
     seed: int = 42,
     min_price: float = 1.0,
     min_history_days: int = 504,
+    end_date: str | None = None,
 ) -> tuple[pd.DataFrame, str]:
     """
     Load stock data from the specified source.
@@ -377,6 +378,7 @@ def load_data_source(
     :param seed (int): Random seed for reproducibility
     :param min_price (float): Minimum adj_price for Tiingo data (default $1.00)
     :param min_history_days (int): Minimum trading days for Tiingo data (default 504)
+    :param end_date (str | None): Latest date to include (YYYY-MM-DD). None = no filter.
 
     :return stock_data (pd.DataFrame): Stock data with core columns
     :return start_date (str): Start date string (YYYY-MM-DD)
@@ -408,6 +410,8 @@ def load_data_source(
             min_price=min_price,
             min_history_days=min_history_days,
         )
+        if end_date is not None:
+            stock_data = stock_data[stock_data["date"] <= pd.Timestamp(end_date)]
         stock_data = _filter_universe(stock_data, n_stocks, n_years)
         start_date = str(stock_data["date"].min().date())
         return stock_data, start_date
@@ -416,6 +420,8 @@ def load_data_source(
         if not data_path:
             raise ValueError("data_path is required when source='csv'")
         stock_data = load_stock_data(data_path)
+        if end_date is not None:
+            stock_data = stock_data[stock_data["date"] <= pd.Timestamp(end_date)]
         stock_data = _filter_universe(stock_data, n_stocks, n_years)
         start_date = str(stock_data["date"].min().date())
         return stock_data, start_date
