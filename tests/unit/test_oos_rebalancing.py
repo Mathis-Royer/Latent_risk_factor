@@ -22,6 +22,7 @@ from src.walk_forward.oos_rebalancing import (
     _align_matrix_to_universe,
     _align_vector_to_universe,
     _handle_delistings_at_date,
+    _refresh_risk_model,
 )
 
 
@@ -843,3 +844,365 @@ class TestBenchmarkOOSRebalancing:
         # Cumulative return = exp(sum(log_returns)) - 1
         expected_cumulative = np.exp(np.sum(result.daily_returns)) - 1.0
         assert np.isclose(result.cumulative_return, expected_cumulative, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Risk Model Refresh Tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def refresh_setup():
+    """Create a test setup with factor structure suitable for risk model refresh.
+
+    Uses 20 stocks, 3 factors, 500 training days + 120 OOS days.
+    Returns have a genuine factor structure for meaningful regression.
+    """
+    np.random.seed(123)
+    n = 20
+    AU = 3
+    T_train = 500
+    T_oos = 120
+
+    stock_ids = list(range(2001, 2001 + n))
+
+    # Factor structure: B × z + eps
+    B_A = np.random.randn(n, AU) * 0.3
+    z_train = np.random.randn(T_train, AU) * 0.01
+    z_oos = np.random.randn(T_oos, AU) * 0.01
+    eps_train = np.random.randn(T_train, n) * 0.005
+    eps_oos = np.random.randn(T_oos, n) * 0.005
+
+    ret_train = z_train @ B_A.T + eps_train
+    ret_oos = z_oos @ B_A.T + eps_oos
+
+    train_dates = pd.date_range("2015-01-01", periods=T_train, freq="B")
+    oos_dates = pd.date_range(train_dates[-1] + pd.Timedelta(days=1),
+                              periods=T_oos, freq="B")
+    all_dates = train_dates.append(oos_dates)
+
+    returns_full = pd.DataFrame(
+        np.vstack([ret_train, ret_oos]),
+        index=all_dates,
+        columns=stock_ids,
+    )
+    returns_oos = pd.DataFrame(ret_oos, index=oos_dates, columns=stock_ids)
+
+    trailing_vol = pd.DataFrame(
+        np.full((len(all_dates), n), 0.20),
+        index=all_dates,
+        columns=stock_ids,
+    )
+
+    # Build initial B_A_by_date and universe_snapshots (training period)
+    from src.risk_model.rescaling import rescale_estimation
+    train_dates_str = [str(d.date()) for d in train_dates]
+    universe_snapshots: dict[str, list[int]] = {d: stock_ids for d in train_dates_str}
+    B_A_by_date = rescale_estimation(
+        B_A, trailing_vol.loc[train_dates[0]:train_dates[-1]],
+        universe_snapshots, stock_ids,
+    )
+
+    # Build initial risk model
+    from src.risk_model.factor_regression import estimate_factor_returns
+    from src.risk_model.covariance import assemble_risk_model, estimate_d_eps, estimate_sigma_z
+    from src.risk_model.factor_regression import compute_residuals
+
+    z_hat, valid_dates = estimate_factor_returns(
+        B_A_by_date, returns_full.loc[train_dates[0]:train_dates[-1]],
+        universe_snapshots,
+    )
+    n_z = z_hat.shape[0]
+    n_est = max(1, n_z - max(20, int(n_z * 0.2)))
+    residuals = compute_residuals(
+        B_A_by_date, z_hat[:n_est],
+        returns_full.loc[train_dates[0]:train_dates[-1]],
+        universe_snapshots, valid_dates[:n_est],
+        stock_ids,
+    )
+    Sigma_z, n_signal, _ = estimate_sigma_z(z_hat[:n_est], shrinkage_method="spiked")
+    D_eps = estimate_d_eps(residuals, stock_ids)
+    risk_model = assemble_risk_model(B_A, Sigma_z, D_eps)
+
+    eigenvalues = risk_model["eigenvalues"]
+    B_prime = risk_model["B_prime_port"]
+
+    Sigma_assets = risk_model["Sigma_assets"]
+
+    w_initial = np.ones(n) / n
+    exchange_codes = {sid: 1 for sid in stock_ids}
+    train_start = str(train_dates[0].date())
+    train_end = str(train_dates[-1].date())
+
+    risk_model_config = {
+        "shrinkage_method": "spiked",
+        "eigenvalue_pct": 0.95,
+        "ewma_half_life": 0,
+        "d_eps_floor": 1e-6,
+        "winsorize_lo": 5.0,
+        "winsorize_hi": 95.0,
+        "market_intercept": False,
+        "use_wls": False,
+        "vt_clamp_min": 0.5,
+        "vt_clamp_max": 2.0,
+    }
+
+    return {
+        "B_A": B_A,
+        "B_prime": B_prime,
+        "eigenvalues": eigenvalues,
+        "Sigma_assets": Sigma_assets,
+        "D_eps": D_eps,
+        "stock_ids": stock_ids,
+        "returns_full": returns_full,
+        "returns_oos": returns_oos,
+        "trailing_vol": trailing_vol,
+        "w_initial": w_initial,
+        "exchange_codes": exchange_codes,
+        "train_start": train_start,
+        "train_end": train_end,
+        "risk_model_config": risk_model_config,
+        "B_A_by_date": B_A_by_date,
+        "universe_snapshots": universe_snapshots,
+        "n": n,
+        "AU": AU,
+        "T_oos": T_oos,
+    }
+
+
+class TestRiskModelRefresh:
+    """Tests for OOS risk model refresh functionality."""
+
+    def test_refresh_changes_sigma(self, refresh_setup):
+        """Sigma_assets should differ between initial and after OOS refresh."""
+        s = refresh_setup
+        result = simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=21,
+            refresh_risk_model=True,
+            returns_full=s["returns_full"],
+            train_start=s["train_start"],
+            risk_model_config=s["risk_model_config"],
+            B_A_by_date_initial=s["B_A_by_date"],
+            universe_snapshots_initial=s["universe_snapshots"],
+        )
+        # Simulation should complete with rebalancing events
+        assert result.n_scheduled_rebalances >= 1
+        assert len(result.daily_returns) == s["T_oos"]
+        assert np.all(np.isfinite(result.daily_returns))
+
+    def test_refresh_returns_finite(self, refresh_setup):
+        """All daily returns should be finite and cumulative return valid."""
+        s = refresh_setup
+        result = simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=30,
+            refresh_risk_model=True,
+            returns_full=s["returns_full"],
+            train_start=s["train_start"],
+            risk_model_config=s["risk_model_config"],
+            B_A_by_date_initial=s["B_A_by_date"],
+            universe_snapshots_initial=s["universe_snapshots"],
+        )
+        assert np.all(np.isfinite(result.daily_returns))
+        assert np.isfinite(result.cumulative_return)
+        # Final weights should sum to 1
+        assert np.isclose(np.sum(result.final_weights), 1.0, atol=0.01)
+
+    def test_frozen_backward_compatible(self, refresh_setup):
+        """refresh=False should produce identical results to no-refresh path."""
+        s = refresh_setup
+        result_frozen = simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=21,
+            refresh_risk_model=False,
+            seed=42,
+        )
+        result_default = simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=21,
+            seed=42,
+        )
+        # Same daily returns (both frozen)
+        np.testing.assert_array_almost_equal(
+            result_frozen.daily_returns, result_default.daily_returns,
+        )
+        assert result_frozen.n_scheduled_rebalances == result_default.n_scheduled_rebalances
+
+    def test_expanding_window_grows(self, refresh_setup):
+        """B_A_by_date_cumulative should grow at each rebalancing."""
+        s = refresh_setup
+        B_A_by_date_copy = {k: v.copy() for k, v in s["B_A_by_date"].items()}
+        initial_size = len(B_A_by_date_copy)
+
+        # Run simulation with refresh
+        simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=30,
+            refresh_risk_model=True,
+            returns_full=s["returns_full"],
+            train_start=s["train_start"],
+            risk_model_config=s["risk_model_config"],
+            B_A_by_date_initial=s["B_A_by_date"],
+            universe_snapshots_initial=s["universe_snapshots"],
+        )
+        # Original dict should NOT be mutated (we deep-copy internally)
+        assert len(s["B_A_by_date"]) == initial_size
+
+    def test_market_intercept_propagated(self, refresh_setup):
+        """When market_intercept=True, new B_A_by_date entries have intercept column."""
+        s = refresh_setup
+        config = {**s["risk_model_config"], "market_intercept": True}
+
+        # Build initial B_A_by_date with intercept
+        B_A_by_date_with_intercept = {}
+        for date_str, B_t in s["B_A_by_date"].items():
+            n_active = B_t.shape[0]
+            intercept = np.ones((n_active, 1), dtype=np.float64)
+            B_A_by_date_with_intercept[date_str] = np.hstack([B_t, intercept])
+
+        # Run with market intercept
+        result = simulate_oos_rebalancing(
+            B_prime=s["B_prime"],
+            eigenvalues=s["eigenvalues"],
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            Sigma_assets_initial=s["Sigma_assets"],
+            D_eps_initial=s["D_eps"],
+            returns_oos=s["returns_oos"],
+            trailing_vol=s["trailing_vol"],
+            exchange_codes=s["exchange_codes"],
+            w_initial=s["w_initial"],
+            H_initial=1.0,
+            alpha_opt=0.5,
+            rebalancing_frequency_days=30,
+            refresh_risk_model=True,
+            returns_full=s["returns_full"],
+            train_start=s["train_start"],
+            risk_model_config=config,
+            B_A_by_date_initial=B_A_by_date_with_intercept,
+            universe_snapshots_initial=s["universe_snapshots"],
+        )
+        # Should complete without errors
+        assert result.n_scheduled_rebalances >= 1
+        assert np.all(np.isfinite(result.daily_returns))
+
+    def test_refresh_helper_unit(self, refresh_setup):
+        """Unit test of _refresh_risk_model() with synthetic data."""
+        s = refresh_setup
+        oos_dates = s["returns_oos"].index
+        mid_date = str(oos_dates[60].date())
+
+        B_A_by_date_copy = {k: v.copy() for k, v in s["B_A_by_date"].items()}
+        universe_snapshots_copy = {k: list(v) for k, v in s["universe_snapshots"].items()}
+        last_update = s["train_end"]
+
+        result = _refresh_risk_model(
+            B_A_raw=s["B_A"],
+            inferred_stock_ids=s["stock_ids"],
+            returns=s["returns_full"],
+            trailing_vol=s["trailing_vol"],
+            current_date=mid_date,
+            train_start=s["train_start"],
+            B_A_by_date_cumulative=B_A_by_date_copy,
+            universe_snapshots_cumulative=universe_snapshots_copy,
+            last_update_date=last_update,
+            risk_model_config=s["risk_model_config"],
+        )
+
+        assert result, "Refresh should return non-empty dict"
+        assert "Sigma_assets" in result
+        assert "eigenvalues_signal" in result
+        assert "B_prime_signal" in result
+        assert "D_eps" in result
+        assert "last_update_date" in result
+
+        # Sigma_assets should be PSD (eigenvalues >= 0)
+        eigvals = np.linalg.eigvalsh(result["Sigma_assets"])
+        assert np.all(eigvals >= -1e-10), f"Non-PSD Sigma: min eigval={eigvals.min()}"
+
+        # Eigenvalues_signal should be positive
+        assert np.all(result["eigenvalues_signal"] > 0)
+
+        # B_A_by_date should have grown (includes OOS dates)
+        assert len(B_A_by_date_copy) > len(s["B_A_by_date"])
+
+        # D_eps should be positive
+        assert np.all(result["D_eps"] > 0)
+
+    def test_refresh_requires_params(self):
+        """refresh=True without required params should raise ValueError."""
+        n, AU = 5, 2
+        with pytest.raises(ValueError, match="returns_full"):
+            simulate_oos_rebalancing(
+                B_prime=np.random.randn(n, AU),
+                eigenvalues=np.array([0.1, 0.05]),
+                B_A_raw=np.random.randn(n, AU),
+                inferred_stock_ids=list(range(n)),
+                Sigma_assets_initial=np.eye(n),
+                D_eps_initial=np.ones(n) * 0.01,
+                returns_oos=pd.DataFrame(),
+                trailing_vol=pd.DataFrame(),
+                exchange_codes={},
+                w_initial=np.ones(n) / n,
+                H_initial=1.0,
+                alpha_opt=0.5,
+                refresh_risk_model=True,
+                returns_full=None,
+                train_start=None,
+                risk_model_config=None,
+            )

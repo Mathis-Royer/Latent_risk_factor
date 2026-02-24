@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-source", type=str, default=None,
         choices=["synthetic", "tiingo", "csv"],
-        help="Data source type (default: auto-detect from --data-path or --synthetic)",
+        help="Data source type (default: tiingo)",
     )
     parser.add_argument(
         "--data-path", type=str, default=None,
@@ -145,8 +145,7 @@ def main() -> int:
             elif args.data_path:
                 source = "csv"
             else:
-                logger.error("Must specify --data-source, --data-path, or --synthetic")
-                return 1
+                source = "tiingo"
 
         # Load data
         if source == "synthetic":

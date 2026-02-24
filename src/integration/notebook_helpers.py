@@ -5,6 +5,8 @@ These functions simplify notebook cells by extracting complex logic that would
 otherwise be inline, making notebook cells cleaner (1-5 lines each).
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import shutil
@@ -1001,3 +1003,366 @@ def run_decision_synthesis(
         synthesis["json_path"] = str(json_path)
 
     return synthesis
+
+
+# ---------------------------------------------------------------------------
+# OOS Replay from checkpoint
+# ---------------------------------------------------------------------------
+
+_VT_PRIOR_STRENGTH = 20  # Bayesian prior strength for VT shrinkage
+
+
+def replay_oos_simulation(
+    run_dir: str | Path,
+    returns: pd.DataFrame,
+    trailing_vol: pd.DataFrame,
+    config: PipelineConfig,
+    stock_data: pd.DataFrame | None = None,
+    holdout_fraction: float = 0.2,
+    holdout_start: str | None = None,
+    refresh_risk_model: bool = True,
+) -> dict[str, Any]:
+    """
+    Replay only the OOS simulation from a completed diagnostic run.
+
+    Loads checkpoint data (w_vae, B_A, inferred_stock_ids), reconstructs
+    the risk model (~30s), then runs simulate_oos_rebalancing() with the
+    current config. Skips VAE training, portfolio optimization, and benchmarks.
+
+    :param run_dir (str | Path): Path to diagnostic run folder
+    :param returns (pd.DataFrame): Full log-returns (dates x permnos)
+    :param trailing_vol (pd.DataFrame): Trailing volatilities
+    :param config (PipelineConfig): Pipeline configuration
+    :param stock_data (pd.DataFrame | None): Raw stock data (for exchange codes)
+    :param holdout_fraction (float): Fraction of data for OOS (default 0.2)
+    :param holdout_start (str | None): Explicit OOS start date (overrides fraction)
+    :param refresh_risk_model (bool): Enable risk model refresh during OOS
+
+    :return result (dict): Keys: oos_result, metrics, risk_model, dates
+    """
+    import time
+
+    from src.portfolio.entropy import compute_entropy_only
+    from src.risk_model.covariance import (
+        assemble_risk_model,
+        estimate_d_eps,
+        estimate_sigma_z,
+    )
+    from src.risk_model.factor_regression import (
+        compute_residuals,
+        estimate_factor_returns,
+    )
+    from src.risk_model.rescaling import rescale_estimation, rescale_portfolio
+    from src.walk_forward.metrics import portfolio_metrics_from_oos_result
+    from src.walk_forward.oos_rebalancing import simulate_oos_rebalancing
+
+    run_path = Path(run_dir)
+    t0 = time.monotonic()
+
+    # ---- 1. Load checkpoint data ----
+    logger.info("Loading checkpoint from %s...", run_path)
+    arrays_dir = run_path / "checkpoints" / "arrays"
+    json_dir = run_path / "checkpoints" / "json"
+
+    w_vae = np.load(arrays_dir / "portfolio_done" / "w_vae.npy")
+    B_A = np.load(arrays_dir / "inference_done" / "B_A.npy")
+
+    with open(json_dir / "inferred_stock_ids.json") as f:
+        inferred_stock_ids: list[int] = json.load(f)
+
+    with open(json_dir / "scalars.json") as f:
+        scalars = json.load(f)
+    alpha_opt: float = scalars["alpha_opt"]
+    n_signal_saved: int = scalars.get("n_signal", 0)
+
+    logger.info(
+        "  Checkpoint loaded: w_vae(%d), B_A(%s), %d stocks, alpha=%.2f",
+        len(w_vae), B_A.shape, len(inferred_stock_ids), alpha_opt,
+    )
+
+    # ---- 2. Compute train/OOS split ----
+    all_dates = returns.index
+    if holdout_start is None:
+        split_idx = int(len(all_dates) * (1.0 - holdout_fraction))
+        holdout_ts: pd.Timestamp = pd.Timestamp(str(all_dates[split_idx]))  # type: ignore[assignment]
+    else:
+        holdout_ts = pd.Timestamp(holdout_start)  # type: ignore[assignment]
+
+    train_dates = all_dates[all_dates < holdout_ts]
+    test_dates = all_dates[all_dates >= holdout_ts]
+    data_start = str(pd.Timestamp(str(all_dates[0])).date())
+    train_start = data_start
+    train_end = str(pd.Timestamp(str(train_dates[-1])).date())
+    oos_start = str(pd.Timestamp(str(test_dates[0])).date())
+    oos_end = str(pd.Timestamp(str(test_dates[-1])).date())
+
+    logger.info(
+        "  Split: train [%s, %s] (%d days), OOS [%s, %s] (%d days)",
+        train_start, train_end, len(train_dates),
+        oos_start, oos_end, len(test_dates),
+    )
+
+    # ---- 3. Reconstruct risk model from B_A + data (~30s) ----
+    logger.info("  Reconstructing risk model from B_A...")
+    rm = config.risk_model
+    pc = config.portfolio
+    AU = B_A.shape[1]
+
+    # Universe snapshots (point-in-time)
+    train_ret_sub = returns.loc[train_start:train_end]
+    train_date_strs = [str(d.date()) for d in train_ret_sub.index]
+    universe_snapshots: dict[str, list[int]] = {}
+    for d in train_date_strs:
+        row = train_ret_sub.loc[d]
+        valid_ids = [
+            sid for sid in inferred_stock_ids
+            if sid in row.index and pd.notna(row[sid])
+        ]
+        universe_snapshots[d] = valid_ids if valid_ids else inferred_stock_ids
+
+    # Dual rescaling
+    B_A_by_date = rescale_estimation(
+        B_A, trailing_vol.loc[train_start:train_end],
+        universe_snapshots, inferred_stock_ids,
+        percentile_bounds=(rm.winsorize_lo, rm.winsorize_hi),
+    )
+    B_A_port = rescale_portfolio(
+        B_A, trailing_vol, train_end,
+        inferred_stock_ids, inferred_stock_ids,
+        percentile_bounds=(rm.winsorize_lo, rm.winsorize_hi),
+    )
+
+    # Market intercept
+    if rm.market_intercept:
+        for date_str in B_A_by_date:
+            n_active = B_A_by_date[date_str].shape[0]
+            B_A_by_date[date_str] = np.hstack([
+                B_A_by_date[date_str],
+                np.ones((n_active, 1), dtype=np.float64),
+            ])
+        B_A_port = np.hstack([
+            B_A_port,
+            np.ones((B_A_port.shape[0], 1), dtype=np.float64),
+        ])
+
+    # Factor regression
+    z_hat, valid_dates = estimate_factor_returns(
+        B_A_by_date, returns.loc[train_start:train_end],
+        universe_snapshots,
+        conditioning_threshold=rm.conditioning_threshold,
+        ridge_scale=rm.ridge_scale,
+        use_wls=rm.use_wls,
+    )
+    logger.info("  Factor regression: %d valid dates, %d factors", len(valid_dates), z_hat.shape[1])
+
+    # Estimation / holdout split for VT
+    n_z = z_hat.shape[0]
+    n_vt_holdout = max(20, int(n_z * 0.2))
+    n_est = n_z - n_vt_holdout
+    z_hat_est = z_hat[:n_est]
+    valid_dates_est = valid_dates[:n_est]
+
+    # Residuals + covariance
+    residuals = compute_residuals(
+        B_A_by_date, z_hat_est,
+        returns.loc[train_start:train_end],
+        universe_snapshots, valid_dates_est, inferred_stock_ids,
+    )
+    Sigma_z, n_signal, _ = estimate_sigma_z(
+        z_hat_est,
+        eigenvalue_pct=rm.sigma_z_eigenvalue_pct,
+        shrinkage_method=rm.sigma_z_shrinkage,
+        ewma_half_life=rm.sigma_z_ewma_half_life,
+    )
+    D_eps = estimate_d_eps(
+        residuals, inferred_stock_ids, d_eps_floor=rm.d_eps_floor,
+    )
+
+    n_port = B_A_port.shape[0]
+    D_eps_port = D_eps[:n_port]
+
+    risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
+    Sigma_assets = risk_model["Sigma_assets"]
+    eigenvalues = risk_model["eigenvalues"]
+    B_prime_port = risk_model["B_prime_port"]
+    V = risk_model["V"]
+
+    # Signal/noise split
+    n_signal = max(1, min(n_signal, len(eigenvalues)))
+    skip_pc1 = rm.market_intercept
+    signal_start = 1 if skip_pc1 else 0
+    signal_end = min(n_signal + (1 if skip_pc1 else 0), len(eigenvalues))
+    eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
+    B_prime_signal = B_prime_port[:, signal_start:signal_end].copy()
+    n_signal_eff = len(eigenvalues_signal)
+
+    # Per-factor variance targeting
+    z_hat_principal = z_hat @ V
+    z_holdout_principal = z_hat_principal[n_est:]
+    n_holdout_vt = z_holdout_principal.shape[0]
+
+    if n_holdout_vt >= 20:
+        vt_min = rm.vt_clamp_min
+        vt_max = rm.vt_clamp_max
+        realized_var = np.var(z_holdout_principal, axis=0, ddof=1)
+        pred_var = np.maximum(eigenvalues, 1e-15)
+        vt_raw = realized_var / pred_var
+        vt_shrunk = (
+            n_holdout_vt * vt_raw + _VT_PRIOR_STRENGTH * 1.0
+        ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
+        vt_factors = np.clip(vt_shrunk, vt_min, vt_max)
+        eigenvalues = eigenvalues * vt_factors
+        eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
+
+        # Idiosyncratic VT
+        residuals_holdout = compute_residuals(
+            B_A_by_date, z_hat[n_est:],
+            returns.loc[train_start:train_end],
+            universe_snapshots, valid_dates[n_est:], inferred_stock_ids,
+        )
+        idio_ratios: list[float] = []
+        for i, sid in enumerate(inferred_stock_ids[:n_port]):
+            resids_h = residuals_holdout.get(sid, [])
+            if len(resids_h) >= 10 and D_eps_port[i] > 1e-12:
+                realized_idio = float(np.var(resids_h, ddof=1))
+                idio_ratios.append(realized_idio / float(D_eps_port[i]))
+        if len(idio_ratios) >= 10:
+            vt_idio_raw = float(np.median(idio_ratios))
+            n_idio_obs = len(idio_ratios)
+            vt_idio = float(np.clip(
+                (n_idio_obs * vt_idio_raw + _VT_PRIOR_STRENGTH) /
+                (n_idio_obs + _VT_PRIOR_STRENGTH),
+                vt_min, vt_max,
+            ))
+        else:
+            vt_idio = 1.0
+        D_eps_port = np.maximum(D_eps_port * vt_idio, rm.d_eps_floor)
+
+    # Reassemble with VT
+    Sigma_sys_vt = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+    Sigma_assets = Sigma_sys_vt + np.diag(D_eps_port)
+    Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)
+
+    t_risk = time.monotonic() - t0
+    logger.info(
+        "  Risk model reconstructed in %.1fs: n_signal=%d, eigenvalues=%s",
+        t_risk, n_signal_eff,
+        np.array2string(eigenvalues_signal[:5], precision=4),
+    )
+
+    # ---- 4. Compute H_initial from w_vae ----
+    idio_weight = pc.entropy_idio_weight
+    H_initial = compute_entropy_only(
+        w_vae, B_prime_signal, eigenvalues_signal, pc.entropy_eps,
+        D_eps=D_eps_port, idio_weight=idio_weight,
+    )
+    logger.info("  H_initial = %.4f (from saved w_vae)", H_initial)
+
+    # ---- 5. Run OOS simulation ----
+    returns_oos = returns.loc[oos_start:oos_end]
+    rebal_freq = pc.rebalancing_frequency_days
+
+    # Exchange codes for Shumway delisting
+    exchange_codes: dict[int, int] = {}
+    if stock_data is not None and "exchange_code" in stock_data.columns:
+        exc = stock_data.groupby("permno")["exchange_code"].first()
+        exchange_codes = exc.to_dict()
+
+    oos_constraint_params = {
+        "w_max": pc.w_max, "w_min": pc.w_min, "w_bar": pc.w_bar,
+        "phi": pc.phi, "kappa_1": pc.kappa_1, "kappa_2": pc.kappa_2,
+        "delta_bar": pc.delta_bar, "tau_max": pc.tau_max,
+        "lambda_risk": pc.lambda_risk, "n_starts": pc.n_starts,
+        "entropy_idio_weight": pc.entropy_idio_weight,
+        "alpha_opt": alpha_opt,
+        "oos_n_starts_scheduled": pc.oos_n_starts_scheduled,
+        "oos_n_starts_exceptional": pc.oos_n_starts_exceptional,
+        "oos_sca_max_iter_scheduled": pc.oos_sca_max_iter_scheduled,
+        "oos_sca_max_iter_exceptional": pc.oos_sca_max_iter_exceptional,
+    }
+
+    risk_model_config = {
+        "shrinkage_method": rm.sigma_z_shrinkage,
+        "eigenvalue_pct": rm.sigma_z_eigenvalue_pct,
+        "ewma_half_life": rm.sigma_z_ewma_half_life,
+        "d_eps_floor": rm.d_eps_floor,
+        "winsorize_lo": rm.winsorize_lo,
+        "winsorize_hi": rm.winsorize_hi,
+        "market_intercept": rm.market_intercept,
+        "use_wls": rm.use_wls,
+        "vt_clamp_min": rm.vt_clamp_min,
+        "vt_clamp_max": rm.vt_clamp_max,
+    }
+
+    logger.info(
+        "  Running OOS simulation: %d days, rebal every %d days, "
+        "refresh=%s...",
+        len(returns_oos), rebal_freq, refresh_risk_model,
+    )
+    t_oos = time.monotonic()
+
+    oos_result = simulate_oos_rebalancing(
+        B_prime=B_prime_signal,
+        eigenvalues=eigenvalues_signal,
+        B_A_raw=B_A,
+        inferred_stock_ids=inferred_stock_ids,
+        Sigma_assets_initial=Sigma_assets,
+        D_eps_initial=D_eps_port,
+        returns_oos=returns_oos,
+        trailing_vol=trailing_vol,
+        exchange_codes=exchange_codes,
+        w_initial=w_vae,
+        H_initial=H_initial,
+        alpha_opt=alpha_opt,
+        rebalancing_frequency_days=rebal_freq,
+        entropy_trigger_alpha=pc.entropy_trigger_alpha,
+        tc_bps=pc.transaction_cost_bps,
+        delisting_return_nyse_amex=pc.delisting_return_nyse_amex,
+        delisting_return_nasdaq=pc.delisting_return_nasdaq,
+        constraint_params=oos_constraint_params,
+        d_eps_floor=rm.d_eps_floor,
+        seed=config.seed,
+        idio_weight=idio_weight,
+        refresh_risk_model=refresh_risk_model,
+        returns_full=returns if refresh_risk_model else None,
+        train_start=train_start if refresh_risk_model else None,
+        risk_model_config=risk_model_config if refresh_risk_model else None,
+        B_A_by_date_initial=B_A_by_date if refresh_risk_model else None,
+        universe_snapshots_initial=universe_snapshots if refresh_risk_model else None,
+    )
+
+    # ---- 6. Compute metrics ----
+    metrics = portfolio_metrics_from_oos_result(
+        oos_result, AU=AU, K=config.vae.K,
+        Sigma_hat=Sigma_assets, n_signal=n_signal_eff,
+    )
+
+    total_time = time.monotonic() - t0
+    logger.info(
+        "  OOS replay done in %.1fs (risk model %.1fs + OOS %.1fs). "
+        "Sharpe=%.3f, return=%.2f%%, vol=%.2f%%, MDD=%.2f%%",
+        total_time, t_risk, time.monotonic() - t_oos,
+        metrics.get("sharpe", 0), metrics.get("ann_return", 0) * 100,
+        metrics.get("ann_vol_oos", 0) * 100,
+        metrics.get("max_drawdown_oos", 0) * 100,
+    )
+
+    return {
+        "oos_result": oos_result,
+        "metrics": metrics,
+        "w_final": oos_result.final_weights,
+        "dates": {
+            "train_start": train_start, "train_end": train_end,
+            "oos_start": oos_start, "oos_end": oos_end,
+        },
+        "risk_model": {
+            "Sigma_assets": Sigma_assets,
+            "eigenvalues_signal": eigenvalues_signal,
+            "B_prime_signal": B_prime_signal,
+            "D_eps_port": D_eps_port,
+            "n_signal": n_signal_eff,
+        },
+        "alpha_opt": alpha_opt,
+        "H_initial": H_initial,
+        "total_time_sec": total_time,
+    }

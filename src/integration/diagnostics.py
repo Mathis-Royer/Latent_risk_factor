@@ -1918,6 +1918,37 @@ def collect_diagnostics(
         state_bag, w_vae, vae_metrics,
     )
 
+    # Compute training-period Sharpe for train vs OOS comparison
+    train_date_range = state_bag.get("train_date_range", {})
+    inferred_stock_ids = state_bag.get("inferred_stock_ids", [])
+    if (
+        returns is not None
+        and train_date_range
+        and len(inferred_stock_ids) > 0
+        and len(w_vae) > 0
+    ):
+        t_start = train_date_range.get("start")
+        t_end = train_date_range.get("end")
+        if t_start is not None and t_end is not None:
+            try:
+                cols = inferred_stock_ids[:len(w_vae)]
+                train_ret = returns.loc[t_start:t_end, cols].fillna(0.0)
+                port_ret_train = train_ret.values @ w_vae
+                if len(port_ret_train) > 1:
+                    mu = float(np.mean(port_ret_train))
+                    sigma = float(np.std(port_ret_train, ddof=1))
+                    sharpe_train = mu / sigma * np.sqrt(252) if sigma > 1e-12 else 0.0
+                    portfolio["sharpe_train"] = float(sharpe_train)
+                    portfolio["ann_return_train"] = float(mu * 252)
+                    portfolio["ann_vol_train"] = float(sigma * np.sqrt(252))
+                    # Max drawdown on training period
+                    cum = np.cumprod(1 + port_ret_train)
+                    running_max = np.maximum.accumulate(cum)
+                    dd = (cum - running_max) / running_max
+                    portfolio["max_drawdown_train"] = float(np.min(dd))
+            except Exception as e:
+                logger.debug("Could not compute training Sharpe: %s", e)
+
     logger.info("Collecting solver diagnostics...")
     solver = _safe_diagnostic(
         "solver_diagnostics",

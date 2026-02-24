@@ -676,6 +676,32 @@ def generate_diagnostic_markdown(
     # ===== 6. OOS Performance =====
     lines.append("## 6. Out-of-Sample Performance")
     lines.append("")
+
+    # Train vs OOS comparison table (if training metrics available)
+    sharpe_train = portfolio.get("sharpe_train")
+    if sharpe_train is not None:
+        lines.append("### Train vs OOS Comparison")
+        lines.append("")
+        lines.append("| Metric | Train | OOS |")
+        lines.append("|--------|-------|-----|")
+        lines.append(
+            f"| Sharpe | {_fmt(sharpe_train, 3)} "
+            f"| {_fmt(portfolio.get('sharpe', 0), 3)} |"
+        )
+        lines.append(
+            f"| Ann. return | {portfolio.get('ann_return_train', 0):.2%} "
+            f"| {portfolio.get('ann_return', 0):.2%} |"
+        )
+        lines.append(
+            f"| Ann. volatility | {portfolio.get('ann_vol_train', 0):.2%} "
+            f"| {portfolio.get('ann_vol', 0):.2%} |"
+        )
+        lines.append(
+            f"| Max drawdown | {portfolio.get('max_drawdown_train', 0):.2%} "
+            f"| {portfolio.get('max_drawdown', 0):.2%} |"
+        )
+        lines.append("")
+
     lines.append("### VAE Portfolio")
     lines.append("")
     lines.append(f"- **Annualized return**: {portfolio.get('ann_return', 0):.2%}")

@@ -135,7 +135,7 @@ class DataPipelineConfig:
     vol_window: int = 252
     vix_lookback_percentile: float = 80.0
     min_valid_fraction: float = 0.80
-    data_source: str = "synthetic"
+    data_source: str = "tiingo"
     data_dir: str = "data/"
     training_stride: int = 21
 
@@ -149,7 +149,7 @@ class DataPipelineConfig:
         _validate_range("min_valid_fraction", self.min_valid_fraction,
                         default=0.80, lo=0, hi=1, lo_exclusive=True)
         _validate_in("data_source", self.data_source,
-                     {"synthetic", "tiingo", "csv"}, default="synthetic")
+                     {"synthetic", "tiingo", "csv"}, default="tiingo")
         _validate_range("training_stride", self.training_stride, default=21, lo=1, hi=63)
 
     @property
@@ -643,6 +643,11 @@ class PortfolioConfig:
     use_fast_subproblem: bool = True  # True = PGD (10-50× faster), False = CVXPY (legacy)
     fast_subproblem_max_iter: int = 50  # Max PGD iterations per SCA iteration
     fast_subproblem_tol: float = 1e-7  # PGD convergence tolerance
+    # OOS Risk Model Refresh (DVT §4.7)
+    # When True, re-estimate Sigma_z, D_eps, B_port at each OOS rebalancing using
+    # an expanding window [train_start, current_date]. This eliminates the asymmetry
+    # where benchmarks call fit() at each rebalancing but the VAE uses a frozen 2019 model.
+    refresh_risk_model_oos: bool = True
 
     def __post_init__(self) -> None:
         _validate_range("w_min", self.w_min, default=0.001,

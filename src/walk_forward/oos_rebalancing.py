@@ -6,12 +6,15 @@ Implements scheduled and exceptional rebalancing during OOS evaluation:
 - Exceptional rebalancing when entropy drops below trigger threshold
 - Shumway delisting imputation (-30% NYSE/AMEX, -55% NASDAQ)
 - Transaction cost and turnover tracking
+- Optional risk model refresh at each rebalancing (expanding window)
 
-Key constraint: B_prime and eigenvalues are FROZEN during OOS (no VAE
-re-inference needed). Only Sigma_assets and D_eps are recomputed from
-rolling returns/residuals, making rebalancing lightweight.
+When refresh_risk_model=True, the risk model (Sigma_z, D_eps, B_port,
+eigenvalues) is re-estimated at each rebalancing using an expanding window
+[train_start, current_date]. This eliminates the evaluation asymmetry where
+benchmarks call fit() at each rebalancing but the VAE would otherwise use a
+frozen training-period model during the entire OOS period.
 
-Reference: DVT §4.2 — Rebalancing Protocol.
+Reference: DVT §4.2 — Rebalancing Protocol, §4.7 — Rescaling Protocol.
 """
 
 import logging
@@ -23,6 +26,9 @@ import pandas as pd
 
 from src.portfolio.entropy import compute_entropy_only
 from src.portfolio.sca_solver import multi_start_optimize
+from src.risk_model.covariance import assemble_risk_model, estimate_d_eps, estimate_sigma_z
+from src.risk_model.factor_regression import compute_residuals, estimate_factor_returns
+from src.risk_model.rescaling import rescale_estimation, rescale_portfolio
 from src.validation import (
     assert_growth_finite,
     assert_weights_sum_to_one,
@@ -166,45 +172,232 @@ def _handle_delistings_at_date(
     return w_new, imputed_returns, total_delisting_return
 
 
-def _compute_d_eps_rolling(
-    returns_trailing: pd.DataFrame,
-    B_A: np.ndarray,
-    stock_ids: list[int],
-    d_eps_floor: float = 1e-6,
-) -> np.ndarray:
+_VT_PRIOR_STRENGTH = 20  # Bayesian shrinkage prior for variance targeting
+
+
+def _refresh_risk_model(
+    B_A_raw: np.ndarray,
+    inferred_stock_ids: list[int],
+    returns: pd.DataFrame,
+    trailing_vol: pd.DataFrame,
+    current_date: str,
+    train_start: str,
+    B_A_by_date_cumulative: dict[str, np.ndarray],
+    universe_snapshots_cumulative: dict[str, list[int]],
+    last_update_date: str,
+    risk_model_config: dict[str, Any],
+) -> dict[str, Any]:
     """
-    Compute idiosyncratic variances from rolling residuals.
+    Refresh the full risk model at an OOS rebalancing date.
 
-    :param returns_trailing (pd.DataFrame): Trailing returns for D_eps estimation
-    :param B_A (np.ndarray): Exposure matrix (n, AU)
-    :param stock_ids (list[int]): Stock IDs matching B_A rows
-    :param d_eps_floor (float): Floor for idiosyncratic variance
+    Uses an expanding window [train_start, current_date] to re-estimate
+    Sigma_z, D_eps, and portfolio-rescaled B_port. B_A_raw (VAE exposures)
+    are frozen — only the dual rescaling, factor regression, and covariance
+    estimation are refreshed with the latest return data.
 
-    :return D_eps (np.ndarray): Idiosyncratic variances (n,), aligned to stock_ids
+    Mutates B_A_by_date_cumulative and universe_snapshots_cumulative in-place
+    by extending them with new OOS dates (last_update_date, current_date].
+
+    :param B_A_raw (np.ndarray): Raw VAE exposure matrix (n, AU) — frozen
+    :param inferred_stock_ids (list[int]): Stock IDs matching B_A_raw rows
+    :param returns (pd.DataFrame): Full returns DataFrame (train + OOS)
+    :param trailing_vol (pd.DataFrame): Trailing volatilities (full history)
+    :param current_date (str): Current rebalancing date (YYYY-MM-DD)
+    :param train_start (str): Start of training period (YYYY-MM-DD)
+    :param B_A_by_date_cumulative (dict): Mutable dict of date -> B_A_t,
+        extended in-place with new OOS dates
+    :param universe_snapshots_cumulative (dict): Mutable dict of date -> stock IDs,
+        extended in-place with new OOS dates
+    :param last_update_date (str): Last date included in B_A_by_date
+    :param risk_model_config (dict): Risk model configuration parameters
+
+    :return result (dict): Contains Sigma_assets, eigenvalues_signal,
+        B_prime_signal, D_eps, last_update_date
     """
-    n = len(stock_ids)
+    market_intercept = bool(risk_model_config.get("market_intercept", True))
+    winsorize_lo = float(risk_model_config.get("winsorize_lo", 5.0))
+    winsorize_hi = float(risk_model_config.get("winsorize_hi", 95.0))
+    percentile_bounds = (winsorize_lo, winsorize_hi)
 
-    # BUG FIX: Use explicit ID-to-variance mapping to ensure correct alignment
-    # (diagnostic fix — original code assumed positional alignment)
-    available = [sid for sid in stock_ids if sid in returns_trailing.columns]
-    if len(available) == 0:
-        return np.full(n, d_eps_floor, dtype=np.float64)
+    # 1. Extend universe_snapshots for new OOS dates (last_update_date, current_date]
+    oos_returns = returns.loc[last_update_date:current_date]
+    oos_date_strs = [str(d.date()) if hasattr(d, "date") else str(d)[:10]
+                     for d in oos_returns.index]
+    last_update_str = last_update_date[:10]
+    for d in oos_date_strs:
+        if d <= last_update_str:
+            continue
+        if d in universe_snapshots_cumulative:
+            continue
+        row = oos_returns.loc[oos_returns.index[oos_date_strs.index(d)]]
+        valid_ids = [
+            sid for sid in inferred_stock_ids
+            if sid in row.index and pd.notna(row[sid])
+        ]
+        universe_snapshots_cumulative[d] = valid_ids if valid_ids else inferred_stock_ids
 
-    # Compute variance per available stock
-    R: np.ndarray = np.asarray(returns_trailing[available].values, dtype=np.float64)
-    sample_var: np.ndarray = np.var(R, axis=0, ddof=1)  # type: ignore[assignment]
+    # 2. Extend B_A_by_date via rescale_estimation() on new dates only
+    new_snapshots = {
+        d: sids for d, sids in universe_snapshots_cumulative.items()
+        if d > last_update_str and d not in B_A_by_date_cumulative
+    }
+    if new_snapshots:
+        new_vol = trailing_vol.loc[last_update_date:current_date]
+        new_B_A_by_date = rescale_estimation(
+            B_A_raw, new_vol, new_snapshots, inferred_stock_ids,
+            percentile_bounds=percentile_bounds,
+        )
+        # 3. Add market intercept to new entries if configured
+        if market_intercept:
+            for date_str in new_B_A_by_date:
+                n_active = new_B_A_by_date[date_str].shape[0]
+                intercept = np.ones((n_active, 1), dtype=np.float64)
+                new_B_A_by_date[date_str] = np.hstack(
+                    [new_B_A_by_date[date_str], intercept]
+                )
+        B_A_by_date_cumulative.update(new_B_A_by_date)
 
-    # Build ID-to-variance mapping
-    var_dict: dict[int, float] = {}
-    for i, sid in enumerate(available):
-        var_dict[sid] = max(float(sample_var[i]), d_eps_floor)
+    # 4. Factor regression on full expanding window [train_start, current_date]
+    full_returns = returns.loc[train_start:current_date]
+    z_hat, valid_dates = estimate_factor_returns(
+        B_A_by_date_cumulative, full_returns,
+        universe_snapshots_cumulative,
+        use_wls=bool(risk_model_config.get("use_wls", True)),
+    )
 
-    # Align to stock_ids order
-    D_eps = np.array([
-        var_dict.get(sid, d_eps_floor) for sid in stock_ids
-    ], dtype=np.float64)
+    n_factors = z_hat.shape[1] if z_hat.shape[0] > 0 else B_A_raw.shape[1]
+    if z_hat.shape[0] < n_factors:
+        logger.warning(
+            "Risk model refresh: insufficient dates for regression (%d < %d factors)",
+            z_hat.shape[0], n_factors,
+        )
+        return {}
 
-    return D_eps
+    # Split z_hat: 80% estimation / 20% VT holdout
+    n_z = z_hat.shape[0]
+    n_vt_holdout = max(20, int(n_z * 0.2))
+    n_est = n_z - n_vt_holdout
+    z_hat_est = z_hat[:n_est]
+    valid_dates_est = valid_dates[:n_est]
+
+    # 5. Residuals from estimation period
+    residuals = compute_residuals(
+        B_A_by_date_cumulative, z_hat_est,
+        full_returns,
+        universe_snapshots_cumulative, valid_dates_est,
+        inferred_stock_ids,
+    )
+
+    # 6. Sigma_z estimation
+    Sigma_z, n_signal, _ = estimate_sigma_z(
+        z_hat_est,
+        eigenvalue_pct=float(risk_model_config.get("eigenvalue_pct", 0.95)),
+        shrinkage_method=str(risk_model_config.get("shrinkage_method", "analytical_nonlinear")),
+        ewma_half_life=int(risk_model_config.get("ewma_half_life", 0)),
+    )
+
+    # 7. D_eps estimation
+    D_eps = estimate_d_eps(
+        residuals, inferred_stock_ids,
+        d_eps_floor=float(risk_model_config.get("d_eps_floor", 1e-6)),
+    )
+
+    # 8. Portfolio rescaling at current_date
+    B_A_port = rescale_portfolio(
+        B_A_raw, trailing_vol, current_date,
+        inferred_stock_ids, inferred_stock_ids,
+        percentile_bounds=percentile_bounds,
+    )
+    if market_intercept:
+        intercept_port = np.ones((B_A_port.shape[0], 1), dtype=np.float64)
+        B_A_port = np.hstack([B_A_port, intercept_port])
+
+    n_port = B_A_port.shape[0]
+    D_eps_port = D_eps[:n_port]
+
+    # 9. Assemble risk model
+    risk_model = assemble_risk_model(B_A_port, Sigma_z, D_eps_port)
+    Sigma_assets = risk_model["Sigma_assets"]
+    eigenvalues = risk_model["eigenvalues"]
+    B_prime_port = risk_model["B_prime_port"]
+    V = risk_model["V"]
+
+    # 10. Signal/noise split (skip PC1 if market_intercept)
+    n_signal = max(1, min(n_signal, len(eigenvalues)))
+    skip_pc1 = market_intercept
+    signal_start = 1 if skip_pc1 else 0
+    signal_end = n_signal + (1 if skip_pc1 else 0)
+    signal_end = min(signal_end, len(eigenvalues))
+
+    # 11. Per-factor variance targeting on holdout
+    z_hat_principal = z_hat @ V
+    z_holdout_principal = z_hat_principal[n_est:]
+    n_holdout_vt = z_holdout_principal.shape[0]
+    vt_min = float(risk_model_config.get("vt_clamp_min", 0.5))
+    vt_max = float(risk_model_config.get("vt_clamp_max", 2.0))
+
+    if n_holdout_vt >= 20:
+        realized_var = np.var(z_holdout_principal, axis=0, ddof=1)
+        pred_var = np.maximum(eigenvalues, 1e-15)
+        vt_raw = realized_var / pred_var
+        vt_shrunk = (
+            n_holdout_vt * vt_raw + _VT_PRIOR_STRENGTH * 1.0
+        ) / (n_holdout_vt + _VT_PRIOR_STRENGTH)
+        vt_factors = np.clip(vt_shrunk, vt_min, vt_max)
+        eigenvalues = eigenvalues * vt_factors
+
+        # Idiosyncratic VT
+        residuals_holdout = compute_residuals(
+            B_A_by_date_cumulative, z_hat[n_est:],
+            full_returns,
+            universe_snapshots_cumulative, valid_dates[n_est:],
+            inferred_stock_ids,
+        )
+        idio_ratios: list[float] = []
+        for i, sid in enumerate(inferred_stock_ids[:n_port]):
+            resids_h = residuals_holdout.get(sid, [])
+            if len(resids_h) >= 10 and D_eps_port[i] > 1e-12:
+                realized_idio = float(np.var(resids_h, ddof=1))
+                idio_ratios.append(realized_idio / float(D_eps_port[i]))
+        if len(idio_ratios) >= 10:
+            vt_idio_raw = float(np.median(idio_ratios))
+            n_idio_obs = len(idio_ratios)
+            vt_idio = float(np.clip(
+                (n_idio_obs * vt_idio_raw + _VT_PRIOR_STRENGTH * 1.0)
+                / (n_idio_obs + _VT_PRIOR_STRENGTH),
+                vt_min, vt_max,
+            ))
+        else:
+            vt_idio = 1.0
+        D_eps_port = np.maximum(
+            D_eps_port * vt_idio,
+            float(risk_model_config.get("d_eps_floor", 1e-6)),
+        )
+
+    # Rebuild Sigma_assets with VT-calibrated eigenvalues
+    eigenvalues_signal = eigenvalues[signal_start:signal_end].copy()
+    B_prime_signal = B_prime_port[:, signal_start:signal_end].copy()
+
+    Sigma_sys_vt = B_prime_port @ np.diag(eigenvalues) @ B_prime_port.T
+    Sigma_assets = Sigma_sys_vt + np.diag(D_eps_port)
+    Sigma_assets = 0.5 * (Sigma_assets + Sigma_assets.T)
+
+    logger.info(
+        "  [Risk refresh] %s: n_dates=%d (est=%d, holdout=%d), "
+        "n_signal=%d, eigenvalues_signal=[%.2e..%.2e]",
+        current_date, n_z, n_est, n_vt_holdout,
+        len(eigenvalues_signal),
+        float(eigenvalues_signal[-1]) if len(eigenvalues_signal) > 0 else 0.0,
+        float(eigenvalues_signal[0]) if len(eigenvalues_signal) > 0 else 0.0,
+    )
+
+    return {
+        "Sigma_assets": Sigma_assets,
+        "eigenvalues_signal": eigenvalues_signal,
+        "B_prime_signal": B_prime_signal,
+        "D_eps": D_eps_port,
+        "last_update_date": current_date,
+    }
 
 
 def _execute_rebalancing(
@@ -318,12 +511,24 @@ def simulate_oos_rebalancing(
     d_eps_floor: float = 1e-6,
     seed: int = 42,
     idio_weight: float = 0.2,
+    # Risk model refresh (DVT §4.7)
+    refresh_risk_model: bool = False,
+    returns_full: pd.DataFrame | None = None,
+    train_start: str | None = None,
+    risk_model_config: dict[str, Any] | None = None,
+    B_A_by_date_initial: dict[str, np.ndarray] | None = None,
+    universe_snapshots_initial: dict[str, list[int]] | None = None,
 ) -> OOSRebalancingResult:
     """
     Simulate OOS period with periodic rebalancing.
 
-    B_prime and eigenvalues are FROZEN during OOS (no VAE re-inference).
-    Only D_eps is recomputed from rolling residuals at each rebalancing.
+    When refresh_risk_model=False (default), B_prime and eigenvalues are
+    FROZEN during OOS — only portfolio weights are re-optimized.
+
+    When refresh_risk_model=True, the risk model (Sigma_z, D_eps, B_port,
+    eigenvalues) is re-estimated at each rebalancing using an expanding
+    window [train_start, current_date]. B_A_raw (VAE exposures) remain
+    frozen — only rescaling, regression, and covariance are refreshed.
 
     :param B_prime (np.ndarray): Rotated exposures in principal basis (n, AU)
     :param eigenvalues (np.ndarray): Principal eigenvalues (AU,)
@@ -347,6 +552,19 @@ def simulate_oos_rebalancing(
     :param d_eps_floor (float): Floor for idiosyncratic variance
     :param seed (int): Random seed for optimization
     :param idio_weight (float): Weight for idiosyncratic entropy layer
+    :param refresh_risk_model (bool): If True, re-estimate risk model at each
+        rebalancing using expanding window. Requires returns_full, train_start,
+        risk_model_config, B_A_by_date_initial, universe_snapshots_initial.
+    :param returns_full (pd.DataFrame | None): Full returns (train + OOS) for
+        risk model refresh. Required when refresh_risk_model=True.
+    :param train_start (str | None): Start of training period (YYYY-MM-DD).
+        Required when refresh_risk_model=True.
+    :param risk_model_config (dict | None): Risk model config parameters.
+        Required when refresh_risk_model=True.
+    :param B_A_by_date_initial (dict | None): Initial date -> B_A_t dict from
+        training. Copied and extended during OOS. Required when refresh=True.
+    :param universe_snapshots_initial (dict | None): Initial date -> stock_ids
+        dict from training. Copied and extended. Required when refresh=True.
 
     :return result (OOSRebalancingResult): Complete simulation result
     """
@@ -369,6 +587,32 @@ def simulate_oos_rebalancing(
     # Use initial risk model (frozen B_prime, eigenvalues, Sigma)
     Sigma_current = Sigma_assets_initial.copy()
     D_eps_current = D_eps_initial.copy()
+
+    # Mutable copies of B_prime and eigenvalues (updated when refresh=True)
+    B_prime_current = B_prime.copy()
+    eigenvalues_current = eigenvalues.copy()
+
+    # Risk model refresh state
+    if refresh_risk_model:
+        if returns_full is None or train_start is None or risk_model_config is None:
+            raise ValueError(
+                "refresh_risk_model=True requires returns_full, train_start, "
+                "and risk_model_config"
+            )
+        if B_A_by_date_initial is None or universe_snapshots_initial is None:
+            raise ValueError(
+                "refresh_risk_model=True requires B_A_by_date_initial and "
+                "universe_snapshots_initial"
+            )
+        # Deep-copy dicts so we don't mutate the caller's data
+        B_A_by_date_cumul = {k: v.copy() for k, v in B_A_by_date_initial.items()}
+        universe_snapshots_cumul = {k: list(v) for k, v in universe_snapshots_initial.items()}
+        # Last date covered by the initial B_A_by_date
+        last_update_date = max(B_A_by_date_cumul.keys()) if B_A_by_date_cumul else train_start
+    else:
+        B_A_by_date_cumul = {}
+        universe_snapshots_cumul = {}
+        last_update_date = ""
 
     # Results accumulators
     daily_returns: list[float] = []
@@ -477,14 +721,14 @@ def simulate_oos_rebalancing(
         if trigger is None and len(current_universe) > 0:
             # Need aligned B_prime and D_eps for entropy
             B_aligned = _align_matrix_to_universe(
-                B_prime, inferred_stock_ids, current_universe,
+                B_prime_current, inferred_stock_ids, current_universe,
             )
             D_aligned = _align_vector_to_universe(
                 D_eps_current, inferred_stock_ids, current_universe,
             )
 
             H_current = compute_entropy_only(
-                w_current, B_aligned, eigenvalues,
+                w_current, B_aligned, eigenvalues_current,
                 D_eps=D_aligned, idio_weight=idio_weight,
             )
 
@@ -498,9 +742,32 @@ def simulate_oos_rebalancing(
 
         # Execute rebalancing
         if trigger is not None:
+            # Refresh risk model if enabled (expanding window estimation)
+            if refresh_risk_model and returns_full is not None:
+                assert train_start is not None
+                assert risk_model_config is not None
+                refresh_result = _refresh_risk_model(
+                    B_A_raw=B_A_raw,
+                    inferred_stock_ids=inferred_stock_ids,
+                    returns=returns_full,
+                    trailing_vol=trailing_vol,
+                    current_date=date_str,
+                    train_start=train_start,
+                    B_A_by_date_cumulative=B_A_by_date_cumul,
+                    universe_snapshots_cumulative=universe_snapshots_cumul,
+                    last_update_date=last_update_date,
+                    risk_model_config=risk_model_config,
+                )
+                if refresh_result:
+                    Sigma_current = refresh_result["Sigma_assets"]
+                    D_eps_current = refresh_result["D_eps"]
+                    B_prime_current = refresh_result["B_prime_signal"]
+                    eigenvalues_current = refresh_result["eigenvalues_signal"]
+                    last_update_date = refresh_result["last_update_date"]
+
             # Align risk model components to current universe
             B_aligned = _align_matrix_to_universe(
-                B_prime, inferred_stock_ids, current_universe,
+                B_prime_current, inferred_stock_ids, current_universe,
             )
             B_A_aligned = _align_matrix_to_universe(
                 B_A_raw, inferred_stock_ids, current_universe,
@@ -514,7 +781,7 @@ def simulate_oos_rebalancing(
 
             # Compute entropy before rebalancing
             H_before = compute_entropy_only(
-                w_current, B_aligned, eigenvalues,
+                w_current, B_aligned, eigenvalues_current,
                 D_eps=D_aligned, idio_weight=idio_weight,
             )
 
@@ -522,7 +789,7 @@ def simulate_oos_rebalancing(
             w_old_for_tc = w_current.copy()
             w_new = _execute_rebalancing(
                 B_prime=B_aligned,
-                eigenvalues=eigenvalues,
+                eigenvalues=eigenvalues_current,
                 Sigma_assets=Sigma_aligned,
                 D_eps=D_aligned,
                 w_old=w_current,
@@ -544,7 +811,7 @@ def simulate_oos_rebalancing(
 
             # Compute entropy after rebalancing
             H_after = compute_entropy_only(
-                w_new, B_aligned, eigenvalues,
+                w_new, B_aligned, eigenvalues_current,
                 D_eps=D_aligned, idio_weight=idio_weight,
             )
 

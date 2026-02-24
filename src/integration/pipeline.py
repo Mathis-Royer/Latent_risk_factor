@@ -2771,6 +2771,24 @@ class FullPipeline:
                 d_eps_floor=self.config.risk_model.d_eps_floor,
                 seed=self.config.seed + fold_id,
                 idio_weight=idio_weight,
+                # Risk model refresh during OOS (DVT §4.7)
+                refresh_risk_model=pc.refresh_risk_model_oos,
+                returns_full=returns,
+                train_start=train_start,
+                risk_model_config={
+                    "shrinkage_method": self.config.risk_model.sigma_z_shrinkage,
+                    "eigenvalue_pct": self.config.risk_model.sigma_z_eigenvalue_pct,
+                    "ewma_half_life": self.config.risk_model.sigma_z_ewma_half_life,
+                    "d_eps_floor": self.config.risk_model.d_eps_floor,
+                    "winsorize_lo": self.config.risk_model.winsorize_lo,
+                    "winsorize_hi": self.config.risk_model.winsorize_hi,
+                    "market_intercept": self.config.risk_model.market_intercept,
+                    "use_wls": self.config.risk_model.use_wls,
+                    "vt_clamp_min": self.config.risk_model.vt_clamp_min,
+                    "vt_clamp_max": self.config.risk_model.vt_clamp_max,
+                },
+                B_A_by_date_initial=B_A_by_date,
+                universe_snapshots_initial=universe_snapshots,
             )
 
             metrics = portfolio_metrics_from_oos_result(

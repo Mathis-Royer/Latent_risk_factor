@@ -831,6 +831,8 @@ class PipelineStateManager:
             if "eigenvalues" in risk_model:
                 # Full eigenvalues (before signal/noise split)
                 stage_arrays["eigenvalues_full"] = risk_model["eigenvalues"]
+            if "D_eps_port" in risk_model:
+                stage_arrays["D_eps_port"] = risk_model["D_eps_port"]
             if "z_hat" in state_bag:
                 stage_arrays["z_hat"] = state_bag["z_hat"]
             if "eigenvalues_signal" in state_bag:
@@ -995,6 +997,8 @@ class PipelineStateManager:
             risk_model: dict[str, Any] = {}
             if "Sigma_assets" in state_bag:
                 risk_model["Sigma_assets"] = state_bag.pop("Sigma_assets")
+            if "D_eps_port" in state_bag:
+                risk_model["D_eps_port"] = state_bag.pop("D_eps_port")
             if risk_model:
                 state_bag["risk_model"] = risk_model
 
