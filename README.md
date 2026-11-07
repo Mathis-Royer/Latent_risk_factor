@@ -35,7 +35,12 @@ place `mosek.lic` at `~/mosek/mosek.lic`. Academic licences are free at
 Optional credentials (environment variables, never commit them):
 
 - `TIINGO_API_KEYS` — only to refresh/extend the equity dataset
-  (`scripts/download_tiingo.py --phase all`).
+  (`scripts/download_tiingo.py --phase all`). Resolved by
+  `src/data_pipeline/tiingo_keys.load_tiingo_keys()`, first source found wins:
+  1. environment variable (`export TIINGO_API_KEYS=key1,key2`, e.g. in `~/.zshrc`);
+  2. Colab Secrets — key icon in the Colab sidebar, secret named `TIINGO_API_KEYS`,
+     with notebook access enabled;
+  3. `keys.txt` at the repo root, one key per line (gitignored).
 - `FRED_API_KEY` — VIX series for crisis labels (`src/data_pipeline/crisis.py`).
   The CLI scripts currently run without it (crisis weighting disabled).
 

@@ -61,6 +61,11 @@ import numpy as np
 import pandas as pd
 import requests
 
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.data_pipeline.tiingo_keys import load_tiingo_keys  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -1156,7 +1161,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_api_keys(args: argparse.Namespace) -> list[str]:
     """
-    Load API keys from CLI args, file, or environment variable.
+    Load API keys from CLI args (--api-keys, --keys-file), else from
+    load_tiingo_keys(): TIINGO_API_KEYS env var, Colab Secrets, then keys.txt.
 
     :param args (Namespace): Parsed arguments
 
@@ -1176,10 +1182,9 @@ def load_api_keys(args: argparse.Namespace) -> list[str]:
             with open(args.keys_file) as f:
                 keys.extend(line.strip() for line in f if line.strip())
 
-    # From environment
-    env_keys = os.environ.get("TIINGO_API_KEYS", "") or os.environ.get("TIINGO_API_KEY", "")
-    if env_keys:
-        keys.extend(k.strip() for k in env_keys.split(",") if k.strip())
+    # Fallback: env var → Colab Secrets → gitignored keys.txt
+    if not keys:
+        keys.extend(load_tiingo_keys())
 
     # Deduplicate while preserving order
     seen: set[str] = set()
@@ -1237,7 +1242,7 @@ def main() -> int:
         if not keys:
             logger.error(
                 "No API keys provided. Use --api-keys, --keys-file, "
-                "or set TIINGO_API_KEYS environment variable."
+                "set TIINGO_API_KEYS (env var or Colab secret), or create keys.txt."
             )
             return 1
 
