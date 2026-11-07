@@ -834,11 +834,11 @@ class TestLoadRunData:
         np.testing.assert_array_almost_equal(data["pca_eigenvalues"], pca_eigenvalues)
 
     def test_load_literature_comparison(self, temp_dir: str) -> None:
-        """Should load literature_comparison from json/covariance_done/."""
+        """Should load literature_comparison from json/ (flat layout used by save_json)."""
         manager = DiagnosticRunManager(base_dir=temp_dir)
 
         # Create literature_comparison file
-        json_dir = manager.run_dir / "json" / "covariance_done"
+        json_dir = manager.run_dir / "json"
         json_dir.mkdir(parents=True, exist_ok=True)
         lit_comp = {
             "vae_au": 25,

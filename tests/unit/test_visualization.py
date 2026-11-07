@@ -489,9 +489,13 @@ class TestDisplayDiagnosticResults:
         assert "ml_diagnostics_displayed" in result
         assert "zip_created" in result
 
-    def test_export_zip_creates_archive(self, tmp_path, mock_diagnostics, mock_run_data):
+    def test_export_zip_creates_archive(self, tmp_path, monkeypatch, mock_diagnostics, mock_run_data):
         """Should create ZIP archive when export_zip=True."""
         from src.integration.notebook_helpers import display_diagnostic_results
+
+        # The archive is written to the CWD: isolate it so the test
+        # does not leave diagnostic_export.zip at the repository root.
+        monkeypatch.chdir(tmp_path)
 
         output_dir = tmp_path / "diagnostic"
         output_dir.mkdir()
