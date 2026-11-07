@@ -1031,8 +1031,10 @@ def run_download(
     merged_path = os.path.join(data_dir, "tiingo_us_equities.parquet")
 
     # Auto-detect offline mode: raw dir absent but merged parquet present
+    offline_reason = "requested"
     if offline_mode is None:
         offline_mode = not os.path.isdir(raw_dir) and os.path.exists(merged_path)
+        offline_reason = "tiingo_raw/ not found"
 
     if offline_mode:
         if not os.path.exists(merged_path):
@@ -1043,7 +1045,8 @@ def run_download(
             )
             return False
         logger.info(
-            "Offline mode: tiingo_raw/ not found — using existing %s (no download).",
+            "Offline mode (%s) — using existing %s (no download).",
+            offline_reason,
             merged_path,
         )
         return True

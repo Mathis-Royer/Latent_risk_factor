@@ -41,6 +41,9 @@ Optional credentials (environment variables, never commit them):
   2. Colab Secrets — key icon in the Colab sidebar, secret named `TIINGO_API_KEYS`,
      with notebook access enabled;
   3. `keys.txt` at the repo root, one key per line (gitignored).
+
+  The dashboard never calls the API unless `DOWNLOAD_TIINGO = True` in its
+  configuration cell, even when keys are available.
 - `FRED_API_KEY` — VIX series for crisis labels (`src/data_pipeline/crisis.py`).
   The CLI scripts currently run without it (crisis weighting disabled).
 
