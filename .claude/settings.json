@@ -13,12 +13,11 @@
       "WebSearch(*)"
     ],
     "deny": [
-      "Bash(rm -rf *)",
       "Bash(git push --force*)",
       "Bash(git reset --hard*)",
+      "Bash(rm -rf *)",
       "Edit(**/.env)",
       "Edit(**/.env.*)",
-      "Edit(~/.ssh/**)",
       "Write(**/.env)",
       "Write(**/.env.*)"
     ],
@@ -36,28 +35,18 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pyright ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/pyright \"$file_path\" 2>&1 | head -30 || true; fi"
-          },
-          {
-            "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pylint ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/pylint \"$file_path\" --disable=C0114,C0115,C0116 --max-line-length=120 2>&1 | head -20 || true; fi"
-          },
-          {
-            "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Flake8 ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/flake8 \"$file_path\" --max-line-length=120 2>&1 | head -15 || true; fi"
-          }
-        ]
-      }
     ]
   },
   "enabledPlugins": {
-    "code-simplifier@claude-plugins-official": true
+    "agent-kit@agent-kit": true,
+    "code-simplifier@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": false,
+    "cloudflare@claude-plugins-official": false,
+    "code-modernization@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": false,
+    "ui-design@claude-code-workflows": false,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": false,
+    "impeccable@impeccable": false
   }
 }

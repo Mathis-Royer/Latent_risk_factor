@@ -1,6 +1,7 @@
-# Testing Philosophy
+<!-- agent-kit: stacks/python/testing.md v0.1.3 -->
+# Testing philosophy (agent-kit, Python stack)
 
-> **PORTABILITY NOTICE**: This file is designed to be **reusable across any Python project**.
+> Loaded on demand when writing or reviewing tests.
 
 ## Core Principle
 

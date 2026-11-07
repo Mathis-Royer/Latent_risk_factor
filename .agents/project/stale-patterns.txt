@@ -1,0 +1,4 @@
+# regex<TAB>reason — commands or names that must not appear in living docs (check_config.py)
+pip install -r requirements\.txt	no requirements.txt: use uv sync --all-extras
+\.claude/rules/	configuration moved to AGENTS.md and .agents/
+^(?!.*heavy_lock).*pytest tests/?(\s|$|`)	the full suite is a heavy job: run targeted tests or wrap it with heavy_lock.py

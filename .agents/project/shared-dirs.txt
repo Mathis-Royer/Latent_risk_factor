@@ -1,0 +1,3 @@
+# Ignored directories shared (by symlink) with parallel-session worktrees, one per line, e.g. data
+data/tiingo_raw
+results

@@ -1,0 +1,7 @@
+# One regex per line: paths agents must never write (checked by the agent-kit PreToolUse hook).
+# .env*, .dev.vars* and ~/.ssh are always protected.
+(^|/)keys\.txt$
+(^|/)data/tiingo_keys\.txt$
+(^|/)Colab_config\.txt$
+(^|/)mosek\.lic$
+(^|/)data/tiingo_raw/
