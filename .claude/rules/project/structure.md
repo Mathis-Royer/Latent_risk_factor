@@ -33,6 +33,11 @@ latent_risk_factor/
 │   ├── implementation_decisions.md   # Log of decisions for spec gaps (see ISD Section 00)
 │   ├── strategy_philosophy.md        # Strategy philosophy synthesis (10 core principles)
 │   ├── sigma_z_ewma_justification.md # EWMA=0 baseline justification (anti-cyclical)
+│   ├── audit_v5/                     # Strategy re-audit v5 (2026-11-07)
+│   │   ├── REDESIGN.md               # Root-cause synthesis + systemic redesign proposal
+│   │   ├── INDEX.md                  # Units, advocate/critic scores, links
+│   │   ├── findings.jsonl            # 728 normalized findings
+│   │   └── reports/                  # 34 raw agent reports (U01..U17 × advocate/critic)
 │   └── assertions/                   # Contract assertion definitions
 │       └── contracts.yaml            # Inter-module interface contracts
 │
@@ -170,6 +175,7 @@ latent_risk_factor/
 
 | Date | Section | Change |
 |------|---------|--------|
+| 2026-11-07 | docs/ | Added `docs/audit_v5/` (re-audit reports, findings, redesign proposal) |
 | 2026-02-24 | src/integration/, notebooks/, tests/unit/ | Added `diagnostic_experiments.py`, `notebooks/diagnostic_experiments.ipynb`, `test_diagnostic_experiments.py` |
 | 2026-02-22 | src/integration/, tests/unit/ | Added `colab_drive.py` (Google Drive persistence) and `test_colab_drive.py` |
 | 2026-02-21 | src/integration/, tests/unit/ | Added `pipeline_state.py` (state management + checkpointing) and `test_pipeline_state.py` |
