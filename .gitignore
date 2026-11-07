@@ -10,3 +10,7 @@ data/tiingo_raw/*.parquet
 Colab_config.txt
 mosek.lic
 results/
+# Regenerable caches / notebook exports
+data/sp500_index.parquet
+diagnostic_export.zip
+.claude/settings.local.json

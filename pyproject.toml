@@ -18,6 +18,12 @@ dependencies = [
     "statsmodels>=0.14",
     "fredapi>=0.5",
     "tensorboard>=2.14",
+    "tqdm>=4.60",          # training / inference progress bars
+    "matplotlib>=3.7",     # diagnostic plots (src/integration)
+    "pyarrow>=14",         # parquet I/O (Tiingo data, SP500 cache)
+    "pyyaml>=6.0",         # run_walk_forward.py --config *.yaml
+    "requests>=2.28",      # scripts/download_tiingo.py
+    "yfinance>=0.2",       # SP500 benchmark (auto-download if cache missing)
 ]
 
 [project.optional-dependencies]
@@ -28,10 +34,8 @@ dev = [
     "flake8",
 ]
 notebook = [
-    "yfinance>=0.2",
-]
-shrinkage = [
-    "covShrinkage",  # Analytical nonlinear shrinkage (DGJ)
+    "ipython>=8.0",
+    "ipykernel>=6.0",
 ]
 
 [build-system]
