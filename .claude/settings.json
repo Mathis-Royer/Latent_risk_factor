@@ -5,11 +5,10 @@
   "permissions": {
     "allow": [
       "Bash(*)",
-      "Read(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
-      "Read(/Users/mathis/.claude/projects/**)",
-      "Read(/Users/mathis/.claude/**)",
-      "Edit(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
-      "Write(/Users/mathis/Latent_risk_factor/Latent_risk_factor/**)",
+      "Read(/**)",
+      "Read(~/.claude/projects/**)",
+      "Read(~/.claude/**)",
+      "Edit(/**)",
       "WebFetch(*)",
       "WebSearch(*)"
     ],
@@ -44,15 +43,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pyright ===' && pyright \"$file_path\" 2>&1 | head -30 || true; fi"
+            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pyright ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/pyright \"$file_path\" 2>&1 | head -30 || true; fi"
           },
           {
             "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pylint ===' && pylint \"$file_path\" --disable=C0114,C0115,C0116 --max-line-length=120 2>&1 | head -20 || true; fi"
+            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Pylint ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/pylint \"$file_path\" --disable=C0114,C0115,C0116 --max-line-length=120 2>&1 | head -20 || true; fi"
           },
           {
             "type": "command",
-            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Flake8 ===' && flake8 \"$file_path\" --max-line-length=120 2>&1 | head -15 || true; fi"
+            "command": "file_path=$(cat /dev/stdin | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))\"); if [[ \"$file_path\" == *.py ]]; then echo '=== Flake8 ===' && \"$CLAUDE_PROJECT_DIR\"/.venv/bin/flake8 \"$file_path\" --max-line-length=120 2>&1 | head -15 || true; fi"
           }
         ]
       }
