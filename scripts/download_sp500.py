@@ -15,9 +15,13 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 
-from src.benchmarks.sp500_index import download_sp500_data
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.benchmarks.sp500_index import download_sp500_data  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,

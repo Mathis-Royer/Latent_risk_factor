@@ -16,6 +16,7 @@ import gc
 import logging
 import os
 import time
+from collections.abc import Hashable, Sequence
 from typing import Any
 
 import numpy as np
@@ -126,8 +127,8 @@ _VT_SCALE_MAX = 2.0
 
 def _align_weights_by_stock_id(
     w_old: np.ndarray,
-    old_ids: list[int],
-    new_ids: list[int],
+    old_ids: Sequence[Hashable],
+    new_ids: Sequence[Hashable],
 ) -> np.ndarray:
     """
     Re-index portfolio weights from a previous fold's universe to the current
@@ -135,8 +136,8 @@ def _align_weights_by_stock_id(
     get weight 0; exited stocks are dropped.
 
     :param w_old (np.ndarray): Previous weights (n_old,)
-    :param old_ids (list[int]): Stock IDs for w_old
-    :param new_ids (list[int]): Stock IDs for the current fold
+    :param old_ids (Sequence[Hashable]): Stock IDs for w_old (int permnos or str)
+    :param new_ids (Sequence[Hashable]): Stock IDs for the current fold
 
     :return w_aligned (np.ndarray): Aligned weights (n_new,)
     """

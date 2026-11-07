@@ -44,6 +44,7 @@ from src.config import PipelineConfig
 from src.data_pipeline.data_loader import generate_synthetic_csv, load_stock_data, load_tiingo_data
 from src.data_pipeline.returns import compute_log_returns
 from src.data_pipeline.features import compute_trailing_volatility
+from src.integration.pipeline import _align_weights_by_stock_id
 from src.walk_forward.folds import generate_fold_schedule
 from src.walk_forward.selection import aggregate_fold_metrics, summary_statistics
 
@@ -209,7 +210,10 @@ def main() -> int:
             val_years=config.walk_forward.val_years,
         )
 
-        stock_ids_str = [str(c) for c in returns.columns]
+        # Benchmarks index by string stock IDs (same convention as
+        # FullPipeline._run_single_benchmark): align returns/vol columns.
+        returns.columns = pd.Index([str(c) for c in returns.columns])
+        trailing_vol.columns = pd.Index([str(c) for c in trailing_vol.columns])
 
         # Shared constraint parameters (INV-012)
         pc = config.portfolio
@@ -227,6 +231,7 @@ def main() -> int:
         # Run benchmarks on each fold
         all_results: dict[str, list[dict[str, float]]] = {b: [] for b in selected}
         w_olds: dict[str, np.ndarray | None] = {b: None for b in selected}
+        prev_ids: list[str] = []
 
         for fold_idx, fold in enumerate(folds):
             fold_id = fold["fold_id"]
@@ -238,6 +243,20 @@ def main() -> int:
             train_returns = returns.loc[:train_end]
             returns_oos = returns.loc[oos_start:oos_end]
 
+            # Drop stocks with >50% NaN in training (same rule as the pipeline;
+            # each benchmark handles residual NaN internally)
+            nan_frac = train_returns.isna().mean(axis=0)
+            stock_ids_str = [str(s) for s in nan_frac[nan_frac < 0.5].index]
+            train_returns = train_returns[stock_ids_str]
+            train_vol = trailing_vol.loc[:train_end, stock_ids_str]
+            returns_oos = returns_oos[stock_ids_str]
+
+            # Universe may change between folds: re-index previous weights
+            # (kept stocks keep their weight, new stocks start at 0).
+            for b, w_prev in w_olds.items():
+                if w_prev is not None and prev_ids != stock_ids_str:
+                    w_olds[b] = _align_weights_by_stock_id(w_prev, prev_ids, stock_ids_str)
+
             logger.info("[Fold %s] Running benchmarks", fold_id)
 
             for bench_code in selected:
@@ -245,7 +264,11 @@ def main() -> int:
                 benchmark = bench_cls(constraint_params=constraint_params)
 
                 try:
-                    benchmark.fit(train_returns, stock_ids_str)
+                    benchmark.fit(
+                        train_returns, stock_ids_str,
+                        trailing_vol=train_vol,
+                        current_date=train_end,
+                    )
                     w = benchmark.optimize(w_old=w_olds[bench_code], is_first=is_first)
                 except Exception as e:
                     logger.warning("Benchmark %s failed at fold %s: %s", bench_code, fold_id, e)
@@ -257,6 +280,8 @@ def main() -> int:
                 all_results[bench_code].append(metrics)
 
                 w_olds[bench_code] = w
+
+            prev_ids = stock_ids_str
 
         # Save results
         os.makedirs(args.output_dir, exist_ok=True)
