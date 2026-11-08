@@ -27,9 +27,15 @@ docs/
     analyse_critique_strategie.md                    # Analyse Critique de la Stratégie de Facteurs de Risque Latents
     assertions/
         cross_reference_report.md                    # Cross-Reference Report: Test Suite vs Reference Documents
+    REDESIGN.md                                      # Consolidated redesign of record (from both audits)
+    audit_theory/
+        INDEX.md                                     # Theory-only re-audit — units, verdicts, stream-cut annex
+        REDESIGN.md                                  # Theory-only re-audit — redesign proposal (source)
+        findings.jsonl
+        reports/                                     # 38 raw advocate/critic reports
     audit_v5/
         INDEX.md                                     # Strategy re-audit v5 — Index
-        REDESIGN.md                                  # Strategy re-audit v5 — Systemic redesign proposal
+        REDESIGN.md                                  # Strategy re-audit v5 — Systemic redesign proposal (source)
         findings.jsonl
     data_preprocessing_diagnostic.md                 # Data Preprocessing Pipeline Diagnostic
     diagnostic.md                                    # Guide d'Interprétation des Diagnostics

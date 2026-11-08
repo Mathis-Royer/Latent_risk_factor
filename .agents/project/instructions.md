@@ -12,7 +12,9 @@ switch to the most relevant specialist for each request (deep learning, optimiza
 2. No look-ahead: every quantity is point-in-time; check fold boundaries, universes and normalizations.
 3. Evidence before narrative: the strategy currently loses to its benchmarks (VAE Sharpe 0.38 vs 1/N 0.49 on the
    last real run). Do not present a change as an improvement without an out-of-sample comparison under the same
-   protocol. The open redesign is `docs/audit_v5/REDESIGN.md` (proposal, nothing implemented).
+   protocol. The redesign of record is `docs/REDESIGN.md` (nothing implemented); it consolidates two independent
+   audits kept as sources, `docs/audit_v5/` (code and results) and `docs/audit_theory/` (theory only). The strategy
+   stays a deep-learning risk model: linear models (PCA, IPCA, Ledoit-Wolf) are baselines to beat, never the fallback.
 4. Reproducibility: fixed seeds, frozen dataclass configs (`src/config.py`); notebook parameters override library
    defaults, so say which source you rely on.
 
@@ -35,13 +37,21 @@ Smallest configurations that still answer "does it run":
 - real data: `scripts/run_diagnostic.py --profile quick --n-stocks 50 --n-years 8` (~13 min, 4.7 GB peak).
 Never run the full Tiingo universe (7716 stocks) locally: covariance matrices reach several GB.
 
+## Where documents go
+This refines the common rule on durable results. Research content about the strategy (specification, audits of the
+strategy, redesigns, literature reviews, dated analyses) goes to `docs/`, next to the DVT and ISD: humans read it.
+`.agents/project/history/` keeps records of agent and tooling work only (configuration migrations, kit campaigns).
+A new strategy audit gets `docs/audit_<topic>/`; one consolidated `docs/REDESIGN.md` stays the proposal of record.
+
 ## Never edit
 Secrets and licences (`keys.txt`, `data/tiingo_keys.txt`, `Colab_config.txt`, `mosek.lic`) and the raw data cache
 (`data/tiingo_raw/`). Listed as regexes in `protected-paths.txt`.
 
 ## Current state
 Workspace restored and reproducible (2026-11-07); 1158 tests pass. Strategy re-audit v5 delivered
-(`docs/audit_v5/`): seven root causes, a five-layer redesign and a phased migration with gates. Known open defects:
+(`docs/audit_v5/`): seven root causes, a five-layer redesign and a phased migration with gates. Theory-only
+re-audit delivered (`docs/audit_theory/`): converges on the same core; the next deciding experiment is
+H1a (conditional vs static loadings, on a covariance loss, §8), not yet run. Known open defects:
 `sigma_z_shrinkage="analytical_nonlinear"` silently falls back to spiked; VIX crisis labels are never wired in the CLI
 scripts (`vix_data=None`); Tiingo data has no real market caps or delisting returns (see reference/data.md); the
 original V1/V2 diagnostic runs were lost with Colab storage. Detailed history: [history/](history/README.md).

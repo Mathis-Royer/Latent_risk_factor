@@ -1,3 +1,5 @@
+> Source document. The redesign of record is [docs/REDESIGN.md](../REDESIGN.md).
+
 # Strategy re-audit v5 — Systemic redesign proposal
 
 > **Date:** 2026-11-07 · **Inputs:** 34 blind reports (17 units × advocate/critic, DeepSeek v4.1 Flash, max effort,
