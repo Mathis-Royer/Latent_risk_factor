@@ -50,8 +50,10 @@ Secrets and licences (`keys.txt`, `data/tiingo_keys.txt`, `Colab_config.txt`, `m
 ## Current state
 Workspace restored and reproducible (2026-11-07); 1158 tests pass. Strategy re-audit v5 delivered
 (`docs/audit_v5/`): seven root causes, a five-layer redesign and a phased migration with gates. Theory-only
-re-audit delivered (`docs/audit_theory/`): converges on the same core; the next deciding experiment is
-H1a (conditional vs static loadings, on a covariance loss, §8), not yet run. Known open defects:
+re-audit delivered (`docs/audit_theory/`). `docs/REDESIGN.md` revised 2026-11-08 from a web-grounded architecture
+study and review (`docs/architecture_survey.md`, `docs/redesign_review.md`): conditional probabilistic deep factor
+model vs matched linear twins; owner decision OD1 open; nothing run yet (next: E0 foundations, then E1, E2).
+Known open defects:
 `sigma_z_shrinkage="analytical_nonlinear"` silently falls back to spiked; VIX crisis labels are never wired in the CLI
 scripts (`vix_data=None`); Tiingo data has no real market caps or delisting returns (see reference/data.md); the
 original V1/V2 diagnostic runs were lost with Colab storage. Detailed history: [history/](history/README.md).
